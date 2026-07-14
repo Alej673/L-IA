@@ -8,3 +8,10 @@ __pycache__/
 
 # Variables de entorno (Aquí guardaremos tu API Key más adelante por seguridad)
 .env
+
+# Capturas de pantalla temporales del asistente
+captura_temp.png
+captura_temp.jpg
+*.png
+*.jpg
+*.jpeg
