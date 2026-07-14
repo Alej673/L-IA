@@ -1,4 +1,5 @@
 import os
+import time
 from dotenv import load_dotenv
 from google import genai
 from mss import mss
@@ -13,42 +14,44 @@ if not api_key:
 
 client = genai.Client(api_key=api_key)
 
-# 2. Función optimizada para capturar la pantalla
-def tomar_captura():
-    print("\n[OJO] Tomando captura de pantalla optimizada...")
+# 2. Función optimizada de captura 100% en Memoria RAM
+def tomar_captura_en_memoria():
+    print("\n[OJO] Capturando pantalla directamente en memoria RAM...")
     with mss() as sct:
         monitor = sct.monitors[1]
         sct_img = sct.grab(monitor)
         img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-        img.thumbnail((1280, 720))  # Redimensionar
-        
-        # OPTIMIZACIÓN: Guardar como JPEG con compresión del 70%
-        img.save("captura_temp.jpg", "JPEG", quality=70) 
-        
-    return "captura_temp.jpg"
+        img.thumbnail((1024, 576)) 
+        return img
 
-# 3. Flujo principal
-try:
-    # Tomamos la captura antes de llamar a la IA
-    ruta_imagen = tomar_captura()
-    
-    # Abrimos la imagen guardada usando Pillow
-    imagen_procesada = Image.open(ruta_imagen)
-    
-    print("[CEREBRO] Enviando imagen y pregunta a Gemini...")
-    
-    # Pasamos la imagen directamente en la lista de contenidos
-    response = client.models.generate_content(
-        model='gemini-3.5-flash',
-        contents=[
-            imagen_procesada, 
-            "Mira detenidamente esta captura de pantalla de mi computadora. Describe brevemente qué programas o ventanas tengo abiertos y en qué parece que estoy trabajando."
-        ]
-    )
-    
-    print("\n=== ANÁLISIS VISUAL DEL ASISTENTE ===")
-    print(response.text)
-    print("======================================\n")
+# 3. Flujo principal con reintentos para evitar el Error 503
+imagen_en_ram = tomar_captura_en_memoria()
 
-except Exception as e:
-    print(f"\nOcurrió un error: {e}")
+max_reintentos = 3
+espera = 2  # Segundos iniciales de espera
+
+for intento in range(max_reintentos):
+    try:
+        print(f"[CEREBRO] Enviando carga a Gemini (Intento {intento + 1}/{max_reintentos})...")
+        
+        response = client.models.generate_content(
+            model='gemini-3.5-flash',
+            contents=[
+                imagen_en_ram,
+                "Analiza mi pantalla de forma ultra resumida. ¿Qué programa principal tengo activo?"
+            ]
+        )
+        
+        print("\n=== RESPUESTA VELOZ ===")
+        print(response.text)
+        print("========================\n")
+        break  # Si tiene éxito, rompemos el ciclo y salimos
+
+    except Exception as e:
+        # Si es un error de servidor (503, 500, etc.), reintentamos
+        if intento < max_reintentos - 1:
+            print(f"⚠️ El servidor está ocupado o dio un error ({e}). Reintentando en {espera} segundos...")
+            time.sleep(espera)
+            espera *= 2  # Duplicamos el tiempo de espera para el siguiente intento
+        else:
+            print(f"\n❌ Error definitivo tras {max_reintentos} intentos: {e}")
