@@ -26,9 +26,10 @@ MODELO_LOCAL = 'gemma2'
 
 PALABRAS_CLAVE_VISION = ["pantalla", "mira", "observa", "ves", "viendo"]
 PALABRAS_CLAVE_ABRIR = ["abre", "abrir", "inicia", "ejecuta", "lanza"]
-
-# NUEVO: Añadimos las palabras clave para que el enrutador detecte cuándo quieres un diagnóstico.
-PALABRAS_CLAVE_ESTADO = ["estado", "diagnostico", "ram", "cpu", "bateria", "sistema", "computadora", "pc"]
+PALABRAS_CLAVE_ESTADO = [
+    "estado", "diagnostico", "ram", "cpu", "bateria", "sistema",
+    "computadora", "pc", "procesos", "recursos", "programas", "consume", "consumiendo"
+]
 
 # ==========================================
 # 2. HERRAMIENTAS DE VISIÓN
@@ -46,9 +47,15 @@ def tomar_captura_en_memoria():
 # ==========================================
 # 3. RUTA A: LA NUBE (Gemini - Visión + Tools nativas)
 # ==========================================
-def responder_con_nube(contexto_historico):
+def responder_con_nube(instrucciones_sistema, contexto_historico):
     print("\n[☁️ Enrutando a la Nube (Gemini 3.5 Flash)...]")
-    contenidos_api = [contexto_historico]
+
+    # La personalidad (system) y el historial (user) viajan juntos como
+    # un solo bloque de texto, ya que generate_content no distingue roles
+    # del mismo modo que la API de chat.
+    texto_completo = f"{instrucciones_sistema}\n\n{contexto_historico}"
+    contenidos_api = [texto_completo]
+
     imagen_en_ram = tomar_captura_en_memoria()
     contenidos_api.insert(0, imagen_en_ram)
 
@@ -108,12 +115,12 @@ def responder_con_nube(contexto_historico):
 
 
 # ==========================================
-# 4. RUTA B: CEREBRO LOCAL (gemma2 - tool calling manual)
+# 4. RUTA B: CEREBRO LOCAL (gemma2 - tool calling manual en dos pasadas)
 # ==========================================
 def _extraer_llamada_manual(texto):
     """
-    Busca un bloque JSON dentro del texto de respuesta.
-    Ahora no solo busca 'abrir_aplicacion', sino cualquier 'accion'.
+    gemma2 no genera tool_calls nativos, así que buscamos un bloque JSON
+    con la forma {"accion": "..."} dentro del texto de respuesta.
     """
     match = re.search(r'\{[^{}]*"accion"[^{}]*\}', texto, re.DOTALL)
     if not match:
@@ -124,26 +131,41 @@ def _extraer_llamada_manual(texto):
         return None
 
 
-# MODIFICADO: Ahora recibimos también 'quiere_estado' como parámetro
+def _instrucciones_clasificador(quiere_abrir_algo, quiere_estado):
+    """
+    Construye un system prompt "sin alma": convierte a gemma2 en un
+    clasificador de intenciones puro para forzar una salida JSON limpia,
+    sin que la personalidad sarcástica contamine el formato.
+    """
+    instrucciones = (
+        "Eres un clasificador de intenciones técnico y un generador de JSON estricto.\n"
+        "Tu única tarea es analizar el [MENSAJE ACTUAL DEL USUARIO] y mapearlo a la acción correcta.\n"
+        "NUNCA respondas con texto conversacional, saludos, explicaciones o markdown.\n"
+        "NUNCA uses tu personalidad. Solo responde con el objeto JSON correspondiente."
+    )
+    if quiere_abrir_algo:
+        instrucciones += (
+            '\nFormato para abrir aplicaciones: {"accion": "abrir_aplicacion", "nombre_app": "<nombre_de_la_app>"}'
+        )
+    elif quiere_estado:
+        instrucciones += (
+            '\nFormato para diagnóstico de hardware y procesos: {"accion": "obtener_estado_sistema"}'
+        )
+    return instrucciones
+
+
 def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir_algo, quiere_estado):
     print(f"\n[🏠 Enrutando al Cerebro Local ({MODELO_LOCAL})...]")
 
-    instrucciones_finales = instrucciones_sistema
-    
-    # MODIFICADO: El "Bozal Dinámico". Dependiendo de lo que el usuario pida,
-    # le enseñamos a gemma2 cómo debe ser el formato de su JSON.
-    if quiere_abrir_algo:
-        instrucciones_finales += (
-            "\n\nSi el usuario pide abrir una aplicación, responde ÚNICAMENTE "
-            "con este JSON exacto (sin texto extra, sin markdown):\n"
-            '{"accion": "abrir_aplicacion", "nombre_app": "<nombre_de_la_app>"}'
-        )
-    elif quiere_estado:
-        instrucciones_finales += (
-            "\n\nSi el usuario pide un diagnóstico, revisión o estado del sistema, responde ÚNICAMENTE "
-            "con este JSON exacto (sin texto extra, sin markdown):\n"
-            '{"accion": "obtener_estado_sistema"}'
-        )
+    requiere_herramienta = quiere_abrir_algo or quiere_estado
+
+    # Primera pasada: si hay intención de acción, usamos el "modo clasificador"
+    # (sin personalidad) para asegurar un JSON limpio. Si es charla normal,
+    # usamos la personalidad de L-IA desde el inicio.
+    instrucciones_finales = (
+        _instrucciones_clasificador(quiere_abrir_algo, quiere_estado)
+        if requiere_herramienta else instrucciones_sistema
+    )
 
     mensajes_estructurados = [
         {'role': 'system', 'content': instrucciones_finales},
@@ -154,53 +176,54 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir_
         response = ollama.chat(model=MODELO_LOCAL, messages=mensajes_estructurados)
         contenido_bruto = response['message']['content']
 
-        # MODIFICADO: Extraemos el JSON solo si el usuario pidió abrir o ver el estado.
-        llamada_manual = _extraer_llamada_manual(contenido_bruto) if (quiere_abrir_algo or quiere_estado) else None
+        llamada_manual = _extraer_llamada_manual(contenido_bruto) if requiere_herramienta else None
 
-        if llamada_manual:
-            accion = llamada_manual.get("accion")
-            
-            # --- RAMA 1: ABRIR APLICACIÓN ---
-            if accion == "abrir_aplicacion":
-                nombre_app = llamada_manual.get("nombre_app", "")
-                print(f"\n⚙️ [L-IA Local ejecutando: 'abrir_aplicacion']")
-                resultado_sistema = tools.abrir_aplicacion(nombre_app)
-                print(f"✅ [Sistema: {resultado_sistema}]")
+        if not llamada_manual:
+            # Charla normal, o el clasificador no detectó ninguna acción real.
+            return contenido_bruto
 
-                mensajes_estructurados.append({'role': 'assistant', 'content': contenido_bruto})
-                mensajes_estructurados.append({
-                    'role': 'user',
-                    'content': f'RESULTADO: {resultado_sistema}. Confirma brevemente con sarcasmo, sin JSON esta vez.'
-                })
-                
-                respuesta_final = ollama.chat(model=MODELO_LOCAL, messages=mensajes_estructurados)
-                texto_respuesta = respuesta_final['message']['content']
-                
-            # --- RAMA 2: DIAGNÓSTICO DEL SISTEMA ---
-            elif accion == "obtener_estado_sistema":
-                print(f"\n⚙️ [L-IA Local ejecutando: 'obtener_estado_sistema']")
-                resultado_sistema = tools.obtener_estado_sistema()
-                print(f"✅ [Sistema: Capturando métricas de hardware...]")
+        # Segunda pasada: ya detectamos la herramienta, así que restauramos
+        # el "alma" de L-IA para que la confirmación al usuario sí tenga
+        # su tono sarcástico habitual.
+        mensajes_estructurados[0]['content'] = instrucciones_sistema
+        accion = llamada_manual.get("accion")
 
-                # Le inyectamos los datos de la PC al modelo para que los comente
-                mensajes_estructurados.append({'role': 'assistant', 'content': contenido_bruto})
-                mensajes_estructurados.append({
-                    'role': 'user',
-                    'content': f'El sistema reporta esto: {resultado_sistema}. Dáselo al usuario con tu sarcasmo habitual, burlándote si consume mucho o poco. No uses JSON esta vez.'
-                })
-                
-                respuesta_final = ollama.chat(model=MODELO_LOCAL, messages=mensajes_estructurados)
-                texto_respuesta = respuesta_final['message']['content']
-                
-            else:
-                # Si alucina otra acción
-                texto_respuesta = contenido_bruto
-                
+        if accion == "abrir_aplicacion":
+            nombre_app = llamada_manual.get("nombre_app", "")
+            print("\n⚙️ [L-IA Local ejecutando: 'abrir_aplicacion']")
+            resultado_sistema = tools.abrir_aplicacion(nombre_app)
+            print(f"✅ [Sistema: {resultado_sistema}]")
+
+            mensajes_estructurados.append({'role': 'assistant', 'content': contenido_bruto})
+            mensajes_estructurados.append({
+                'role': 'user',
+                'content': f'RESULTADO DEL SISTEMA: {resultado_sistema}. Confírmale al usuario que abriste '
+                           'la aplicación usando tu estilo sarcástico habitual, sin usar JSON.'
+            })
+
+        elif accion == "obtener_estado_sistema":
+            print("\n⚙️ [L-IA Local ejecutando: 'obtener_estado_sistema']")
+            resultado_sistema = tools.obtener_estado_sistema()
+            print("✅ [Sistema: Analizando sensores y procesos activos...]")
+
+            mensajes_estructurados.append({'role': 'assistant', 'content': contenido_bruto})
+            mensajes_estructurados.append({
+                'role': 'user',
+                'content': (
+                    f'El sistema reporta estos datos reales de hardware y procesos: {resultado_sistema}.\n'
+                    'Comunícale este diagnóstico real al usuario con tu personalidad ácida y sarcástica.\n'
+                    'Búrlate de los programas específicos que estén consumiendo más recursos en su laptop Acer Nitro.\n'
+                    'No respondas con JSON esta vez.'
+                )
+            })
+
         else:
-            # Si no hubo llamada a herramienta, responde normal
-            texto_respuesta = contenido_bruto
+            # El clasificador alucinó una acción que no reconocemos: no hay
+            # nada que ejecutar, devolvemos el texto tal cual.
+            return contenido_bruto
 
-        return texto_respuesta
+        respuesta_final = ollama.chat(model=MODELO_LOCAL, messages=mensajes_estructurados)
+        return respuesta_final['message']['content']
 
     except ollama.ResponseError as e:
         print(f"\n❌ Error en el cerebro local (Ollama): {e}")
@@ -222,13 +245,10 @@ def charlar_con_lia(mensaje_usuario):
     usar_vision = any(p in mensaje_usuario.lower() for p in PALABRAS_CLAVE_VISION)
 
     if usar_vision:
-        texto_respuesta = responder_con_nube(contexto_historico)
+        texto_respuesta = responder_con_nube(instrucciones_sistema, contexto_historico)
     else:
-        # Evaluamos qué intenciones locales tiene el usuario
         quiere_abrir_algo = any(p in mensaje_usuario.lower() for p in PALABRAS_CLAVE_ABRIR)
         quiere_estado = any(p in mensaje_usuario.lower() for p in PALABRAS_CLAVE_ESTADO)
-        
-        # Pasamos ambas intenciones a la función local
         texto_respuesta = responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir_algo, quiere_estado)
 
     if texto_respuesta:

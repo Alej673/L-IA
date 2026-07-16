@@ -54,10 +54,11 @@ def abrir_aplicacion(nombre_app: str) -> str:
 
 def obtener_estado_sistema():
     """
-    Lee los sensores de hardware de la computadora y devuelve un reporte.
+    Lee los sensores de hardware (CPU, RAM, Batería, SSD) y audita los 3 procesos
+    que más memoria RAM están consumiendo en el sistema operativo.
     """
     try:
-        # 1. Medir CPU (intervalo corto para precisión)
+        # 1. Medir CPU 
         cpu_porcentaje = psutil.cpu_percent(interval=0.5)
         
         # 2. Medir RAM
@@ -72,14 +73,56 @@ def obtener_estado_sistema():
             estado_enchufe = "Conectada a la corriente" if bateria.power_plugged else "Usando batería"
             bateria_txt = f"{bateria.percent}% ({estado_enchufe})"
         else:
-            bateria_txt = "No se detectó batería (posiblemente es de escritorio o hay un error de sensor)"
+            bateria_txt = "No se detectó batería"
             
-        # Empaquetar el reporte para que la IA lo entienda
+        # 4. Medir Almacenamiento (Discos)
+        discos_txt = ""
+        particiones = psutil.disk_partitions()
+        
+        for particion in particiones:
+            if 'cdrom' in particion.opts or particion.fstype == '':
+                continue
+            try:
+                uso_disco = psutil.disk_usage(particion.mountpoint)
+                total_gb = round(uso_disco.total / (1024**3), 1)
+                libre_gb = round(uso_disco.free / (1024**3), 1)
+                porcentaje_uso = uso_disco.percent
+                discos_txt += f"[{particion.device} Total: {total_gb}GB, Libre: {libre_gb}GB ({porcentaje_uso}% usado)] "
+            except PermissionError:
+                continue 
+
+        if not discos_txt:
+            discos_txt = "Información de discos no disponible."
+
+        # 5. NUEVO: Auditar los procesos más "tragones" de RAM
+        procesos = []
+        for proc in psutil.process_iter(['name', 'memory_info']):
+            try:
+                # Extraemos el consumo en MB de cada proceso activo
+                mem_usada_mb = proc.info['memory_info'].rss / (1024**2)
+                procesos.append({
+                    'nombre': proc.info['name'],
+                    'memoria_mb': round(mem_usada_mb, 1)
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                # Ignoramos procesos que se cierren durante el escaneo o protegidos por Windows
+                continue
+
+        # Ordenamos la lista de mayor a menor consumo de RAM
+        procesos_ordenados = sorted(procesos, key=lambda x: x['memoria_mb'], reverse=True)
+        
+        # Tomamos los 3 primeros de la lista
+        top_3_procesos = procesos_ordenados[:3]
+        procesos_txt = ", ".join([f"{p['nombre']} ({p['memoria_mb']}MB)" for p in top_3_procesos])
+
+        # 6. Reporte definitivo consolidado
         reporte = (
             f"DIAGNÓSTICO DE HARDWARE: "
             f"CPU al {cpu_porcentaje}%. "
             f"RAM consumida: {ram_usada}GB de {ram_total}GB ({ram_porcentaje}%). "
-            f"Energía: {bateria_txt}."
+            f"Energía: {bateria_txt}. "
+            f"Almacenamiento SSD: {discos_txt.strip()}. "
+            f"Procesos que más RAM consumen actualmente: {procesos_txt}."
         )
         return reporte
         
