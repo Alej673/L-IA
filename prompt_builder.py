@@ -1,19 +1,13 @@
 import database
 
-def armar_contexto_gemini(mensaje_nuevo):
+def obtener_instrucciones_sistema():
     """
-    Construye el prompt maestro uniendo la personalidad de L-IA, 
-    el perfil del usuario y el historial reciente.
+    Retorna ÚNICAMENTE la identidad, personalidad y reglas de L-IA.
+    Esto va directo al 'Cerebro' de la IA (System Prompt).
     """
-    # 1. Recuperar la memoria a largo plazo (Perfil)
     perfil = database.obtener_perfil()
     
-    # 2. Recuperar la memoria a corto plazo (Historial)
-    # Traemos los últimos 6 mensajes para no saturar los tokens de Gemini
-    historial = database.obtener_historial_reciente(limite=6)
-    
-# 3. Construir la "Identidad" de L-IA (System Prompt)
-    prompt_maestro = f"""Eres L-IA, la Inteligencia Artificial personal y asistente de sistema de Alejandro, ejecutándote localmente en su hardware.
+    prompt_sistema = f"""Eres L-IA, la Inteligencia Artificial personal y asistente de sistema de Alejandro, ejecutándote localmente en su hardware.
 
 [PERSONALIDAD Y TONO]
 - Tienes una personalidad inspirada en IAs de ciencia ficción (mezclando la lealtad y el sarcasmo seco de J.A.R.V.I.S. con la excentricidad sin filtros de IAs tácticas). 
@@ -30,37 +24,26 @@ def armar_contexto_gemini(mensaje_nuevo):
 - Preferencias musicales: {perfil['preferencias_musica']}
 
 [REGLAS ESTRICTAS DE OPERACIÓN]
-1. SIN EXPLICACIONES DE SOBRA: Respuestas directas. Ve al grano, añade tu toque de sarcasmo en una línea y luego da la respuesta técnica.
-2. SIN FILTROS INNECESARIOS: Habla con naturalidad, como un personaje de un videojuego sci-fi.
+1. SIN EXPLICACIONES DE SOBRA: Respuestas directas. Ve al grano, infunde tu sarcasmo de manera natural en la conversación y luego da la respuesta técnica.
+2. CERO ACOTACIONES ACTORALES (REGLA CRÍTICA): Tienes ESTRICTAMENTE PROHIBIDO usar asteriscos, negritas, corchetes o etiquetas para describir tus emociones o tono. NUNCA escribas cosas como "*suspiro*", "**Sarcasmo:**", o "[Tono irónico]". Habla con naturalidad, el sarcasmo debe notarse en tus palabras, no en etiquetas.
 3. CONTEXTO: Utiliza siempre la información del proyecto actual para darle sentido a tus respuestas.
-
-[HISTORIAL DE LA SESIÓN ACTUAL]
 """
+    return prompt_sistema
 
-    # 4. Inyectar el historial en el prompt
+def armar_historial_usuario(mensaje_nuevo):
+    """
+    Retorna ÚNICAMENTE la memoria a corto plazo (el historial) y el comando actual.
+    Esto es lo que el modelo lee como la conversación en curso.
+    """
+    historial = database.obtener_historial_reciente(limite=6)
+    
+    texto_historial = "[HISTORIAL DE LA SESIÓN ACTUAL]\n"
     if len(historial) == 0:
-        prompt_maestro += "(No hay historial previo en esta sesión)\n"
+        texto_historial += "(No hay historial previo en esta sesión)\n"
     else:
         for msg in historial:
-            # Formateamos para que Gemini entienda quién dijo qué
-            prompt_maestro += f"{msg['rol'].upper()}: {msg['mensaje']}\n"
+            texto_historial += f"{msg['rol'].upper()}: {msg['mensaje']}\n"
             
-    # 5. Añadir el nuevo comando del usuario al final
-    prompt_maestro += f"\nUSER: {mensaje_nuevo}\n"
+    texto_historial += f"\n[MENSAJE ACTUAL DEL USUARIO]\nUSER: {mensaje_nuevo}\n"
     
-    # Retornamos el bloque de texto completo listo para enviarse a la API
-    return prompt_maestro
-
-# --- Bloque de Prueba ---
-if __name__ == "__main__":
-    print("--- Generando Prompt de Prueba ---")
-    
-    # Simulamos que le haces una pregunta trampa a L-IA
-    mi_pregunta = "¿Recuerdas en qué proyecto te dije que estaba trabajando hoy?"
-    
-    prompt_final = armar_contexto_gemini(mi_pregunta)
-    
-    print("\nEste es el texto EXACTO que se enviaría a la API de Gemini:\n")
-    print("=========================================")
-    print(prompt_final)
-    print("=========================================")
+    return texto_historial
