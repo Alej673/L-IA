@@ -30,6 +30,7 @@ PALABRAS_CLAVE_ESTADO = [
     "estado", "diagnostico", "ram", "cpu", "bateria", "sistema",
     "computadora", "pc", "procesos", "recursos", "programas", "consume", "consumiendo"
 ]
+PALABRAS_CLAVE_PORTAPAPELES = ["portapapeles", "copiado", "copie", "copié", "resaltado", "acabo de copiar"]
 
 # ==========================================
 # 2. HERRAMIENTAS DE VISIÓN
@@ -43,11 +44,29 @@ def tomar_captura_en_memoria():
         img.thumbnail((1024, 576))
         return img
 
+# lectura de lia
+
+def _extraer_ruta_archivo(mensaje):
+    """
+    Busca una ruta de archivo de Windows dentro del mensaje del usuario.
+    Soporta rutas con o sin comillas.
+    """
+    # Intenta capturar rutas entre comillas (lo típico al arrastrar archivos)
+    match_comillas = re.search(r'["\']([a-zA-Z]:\\[^"\']+\.\w+)["\']', mensaje)
+    if match_comillas:
+        return match_comillas.group(1)
+        
+    # Intenta capturar rutas directas sin comillas
+    match_directo = re.search(r'([a-zA-Z]:\\[^\s]+\.\w+)', mensaje)
+    if match_directo:
+        return match_directo.group(1)
+        
+    return None
 
 # ==========================================
 # 3. RUTA A: LA NUBE (Gemini - Visión + Tools nativas)
 # ==========================================
-def responder_con_nube(instrucciones_sistema, contexto_historico):
+def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision):
     print("\n[☁️ Enrutando a la Nube (Gemini 3.5 Flash)...]")
 
     # La personalidad (system) y el historial (user) viajan juntos como
@@ -56,8 +75,13 @@ def responder_con_nube(instrucciones_sistema, contexto_historico):
     texto_completo = f"{instrucciones_sistema}\n\n{contexto_historico}"
     contenidos_api = [texto_completo]
 
-    imagen_en_ram = tomar_captura_en_memoria()
-    contenidos_api.insert(0, imagen_en_ram)
+    # La captura de pantalla es costosa (tiempo + tokens): solo se toma si
+    # el usuario activó vision explícitamente. Un portapapeles pesado, por
+    # ejemplo, fuerza la nube por tamaño de texto, no porque quiera que
+    # L-IA vea su monitor.
+    if usar_vision:
+        imagen_en_ram = tomar_captura_en_memoria()
+        contenidos_api.insert(0, imagen_en_ram)
 
     max_reintentos = 3
     espera = 4
@@ -234,7 +258,78 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir_
 
 
 # ==========================================
-# 5. ENRUTADOR PRINCIPAL
+# 5. HERRAMIENTA: PORTAPAPELES (El Semáforo Híbrido)
+# ==========================================
+def _procesar_portapapeles(contexto_historico):
+    """
+    Lee el portapapeles y decide si su peso amerita forzar la ruta de la
+    nube. Devuelve el contexto (posiblemente enriquecido) y si se debe
+    forzar la nube. La captura de pantalla NO se activa aquí — solo se
+    activa por PALABRAS_CLAVE_VISION.
+    """
+    print("\n📋 [L-IA analizando el portapapeles...]")
+    datos_portapapeles = tools.leer_portapapeles()
+    forzar_nube = False
+
+    if "error" in datos_portapapeles:
+        print(f"❌ [Error del sistema: {datos_portapapeles['error']}]")
+        contexto_historico += (
+            "\n\n[NOTA DEL SISTEMA: El usuario intentó que leyeras el portapapeles, "
+            "pero estaba vacío o hubo un error. Búrlate de él por no copiar nada.]"
+        )
+        return contexto_historico, forzar_nube
+
+    contenido_copiado = datos_portapapeles["contenido"]
+    es_pesado = datos_portapapeles["es_pesado"]
+    peso_kb = datos_portapapeles["tamano_kb"]
+
+    contexto_historico += f"\n\n[EL USUARIO HA COPIADO ESTE TEXTO EN SU PORTAPAPELES ({peso_kb} KB)]:\n{contenido_copiado}"
+
+    if es_pesado:
+        print(f"☁️ [Texto pesado detectado ({peso_kb} KB). Enrutando a Gemini para análisis profundo...]")
+        forzar_nube = True
+    else:
+        print(f"🏠 [Texto ligero detectado ({peso_kb} KB). Enrutando a Gemma 2 local...]")
+
+    return contexto_historico, forzar_nube
+
+# ==========================================
+# 5.5 HERRAMIENTA: LECTURA DE ARCHIVOS
+# ==========================================
+def _procesar_archivo(ruta, contexto_historico):
+    """
+    Lee el archivo local y decide si su peso amerita forzar la ruta de la nube.
+    """
+    print(f"\n📄 [L-IA intentando acceder al archivo en: {ruta}]")
+    datos_archivo = tools.leer_archivo_local(ruta)
+    forzar_nube = False
+
+    if "error" in datos_archivo:
+        print(f"❌ [Error del sistema: {datos_archivo['error']}]")
+        contexto_historico += (
+            f"\n\n[NOTA DEL SISTEMA: El usuario pidió que leyeras el archivo en '{ruta}', "
+            f"pero falló con este error: {datos_archivo['error']}. Búrlate de su incapacidad para darte una ruta válida.]"
+        )
+        return contexto_historico, forzar_nube
+
+    contenido = datos_archivo["contenido"]
+    es_pesado = datos_archivo["es_pesado"]
+    peso_kb = datos_archivo["tamano_kb"]
+    nombre = datos_archivo["nombre"]
+
+    contexto_historico += f"\n\n[EL USUARIO TE HA COMPARTIDO EL ARCHIVO '{nombre}' ({peso_kb} KB)]:\n{contenido}"
+
+    if es_pesado:
+        print(f"☁️ [Archivo pesado detectado ({peso_kb} KB). Enrutando a Gemini para análisis profundo...]")
+        forzar_nube = True
+    else:
+        print(f"🏠 [Archivo ligero detectado ({peso_kb} KB). Enrutando a Gemma 2 local...]")
+
+    return contexto_historico, forzar_nube
+
+
+# ==========================================
+# 6. ENRUTADOR PRINCIPAL
 # ==========================================
 def charlar_con_lia(mensaje_usuario):
     database.guardar_mensaje("user", mensaje_usuario)
@@ -243,22 +338,40 @@ def charlar_con_lia(mensaje_usuario):
     contexto_historico = prompt_builder.armar_historial_usuario(mensaje_usuario)
 
     usar_vision = any(p in mensaje_usuario.lower() for p in PALABRAS_CLAVE_VISION)
+    quiere_portapapeles = any(p in mensaje_usuario.lower() for p in PALABRAS_CLAVE_PORTAPAPELES)
+    quiere_abrir_algo = any(p in mensaje_usuario.lower() for p in PALABRAS_CLAVE_ABRIR)
+    quiere_estado = any(p in mensaje_usuario.lower() for p in PALABRAS_CLAVE_ESTADO)
+    
+    # NUEVO: Extraemos la ruta si existe en el mensaje
+    ruta_detectada = _extraer_ruta_archivo(mensaje_usuario)
 
-    if usar_vision:
-        texto_respuesta = responder_con_nube(instrucciones_sistema, contexto_historico)
+    forzar_nube = False
+
+    # Intercepciones (Portapapeles o Archivos)
+    if quiere_portapapeles:
+        contexto_historico, forzar_nube = _procesar_portapapeles(contexto_historico)
+    elif ruta_detectada:
+        contexto_historico, forzar_nube = _procesar_archivo(ruta_detectada, contexto_historico)
+
+    # Decisión final de enrutamiento
+    if usar_vision or forzar_nube:
+        texto_respuesta = responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision)
     else:
-        quiere_abrir_algo = any(p in mensaje_usuario.lower() for p in PALABRAS_CLAVE_ABRIR)
-        quiere_estado = any(p in mensaje_usuario.lower() for p in PALABRAS_CLAVE_ESTADO)
         texto_respuesta = responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir_algo, quiere_estado)
 
     if texto_respuesta:
         database.guardar_mensaje("model", texto_respuesta)
-        origen = "Nube" if usar_vision else "Local"
+        origen = "Nube" if (usar_vision or forzar_nube) else "Local"
         print(f"\n🤖 L-IA ({origen}): {texto_respuesta}\n")
+        
+        # NUEVO: Devolvemos los datos para que la interfaz gráfica pueda leerlos
+        return texto_respuesta, origen
+    
+    return "Ocurrió un error en el razonamiento.", "Error"
 
 
 # ==========================================
-# 6. BUCLE DE EJECUCIÓN
+# 7. BUCLE DE EJECUCIÓN
 # ==========================================
 if __name__ == "__main__":
     print("=========================================")

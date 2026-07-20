@@ -1,6 +1,9 @@
 import os
 import subprocess
 import psutil
+import pyperclip
+import sys
+
 
 def abrir_aplicacion(nombre_app: str) -> str:
     """
@@ -128,6 +131,63 @@ def obtener_estado_sistema():
         
     except Exception as e:
         return f"Error al intentar leer los sensores del sistema: {e}"
+
+def leer_archivo_local(ruta_archivo):
+    """
+    Lee un archivo de texto o código desde una ruta local.
+    Retorna el contenido y verifica su peso para el enrutador híbrido.
+    """
+    # Limpiamos las comillas que Windows suele añadir al arrastrar archivos a la terminal
+    ruta_limpia = ruta_archivo.strip("'\"").strip()
+    
+    if not os.path.exists(ruta_limpia):
+        return {"error": f"No se encontró ningún archivo en la ruta: {ruta_limpia}"}
+    
+    try:
+        tamano_kb = os.path.getsize(ruta_limpia) / 1024
+        nombre_archivo = os.path.basename(ruta_limpia)
+        _, extension = os.path.splitext(nombre_archivo)
+        
+        # Extensiones de texto/código que tu sistema puede procesar nativamente
+        extensiones_validas = ['.txt', '.py', '.php', '.js', '.json', '.html', '.css', '.md', '.env', '.cpp', '.h']
+        
+        if extension.lower() not in extensiones_validas:
+            return {
+                "error": f"El formato '{extension}' no está soportado. Solo puedo leer código y archivos de texto plano."
+            }
+            
+        with open(ruta_limpia, 'r', encoding='utf-8', errors='ignore') as f:
+            contenido = f.read()
+            
+        return {
+            "nombre": nombre_archivo,
+            "contenido": contenido,
+            "tamano_kb": round(tamano_kb, 2),
+            "es_pesado": tamano_kb > 10.0  # Límite de 10KB (aprox. 300 líneas) para forzar la nube
+        }
+        
+    except Exception as e:
+        return {"error": f"No pude leer el archivo debido a un error del sistema: {e}"}
+
+def leer_portapapeles():
+    """
+    Lee el contenido de texto actual en el portapapeles del sistema operativo.
+    """
+    try:
+        contenido = pyperclip.paste()
+        if not contenido or contenido.strip() == "":
+            return {"error": "El portapapeles está vacío o no contiene texto legible."}
+        
+        # Calcular el tamaño aproximado en KB
+        tamano_kb = sys.getsizeof(contenido) / 1024
+        
+        return {
+            "contenido": contenido,
+            "tamano_kb": round(tamano_kb, 2),
+            "es_pesado": tamano_kb > 8.0  # Si es mayor a 8KB (aprox 200 líneas), es pesado
+        }
+    except Exception as e:
+        return {"error": f"No pude acceder al portapapeles: {e}"}
 
 # Aquí más adelante agregaremos:
 # - reproducir_musica(genero) -> Para Spotify
