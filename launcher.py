@@ -3,6 +3,7 @@ import tkinter as tk
 import threading
 import cerebro
 import database
+import contexto
 
 class InterfazLIA:
     def __init__(self):
@@ -91,7 +92,11 @@ class InterfazLIA:
         self.agregar_texto("🤖 L-IA está pensando...")
         
         try:
-            respuesta, origen = cerebro.charlar_con_lia(mensaje)
+            # MAGIA AQUÍ: Le inyectamos el contexto de la ventana y el texto resaltado
+            mensaje_con_contexto = contexto.inyectar_contexto_implicito(mensaje)
+            
+            # El cerebro recibe el mensaje enriquecido
+            respuesta, origen = cerebro.charlar_con_lia(mensaje_con_contexto)
             self.agregar_texto(f"🤖 L-IA ({origen}):\n{respuesta}")
         except Exception as e:
             self.agregar_texto(f"❌ Error en el sistema: {e}")

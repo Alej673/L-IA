@@ -30,7 +30,7 @@ PALABRAS_CLAVE_ESTADO = [
     "estado", "diagnostico", "ram", "cpu", "bateria", "sistema",
     "computadora", "pc", "procesos", "recursos", "programas", "consume", "consumiendo"
 ]
-PALABRAS_CLAVE_PORTAPAPELES = ["portapapeles", "copiado", "copie", "copié", "resaltado", "acabo de copiar"]
+PALABRAS_CLAVE_PORTAPAPELES = ["portapapeles", "copiado", "copie", "copié", "acabo de copiar"]
 
 # ==========================================
 # 2. HERRAMIENTAS DE VISIÓN
@@ -337,23 +337,42 @@ def charlar_con_lia(mensaje_usuario):
     instrucciones_sistema = prompt_builder.obtener_instrucciones_sistema()
     contexto_historico = prompt_builder.armar_historial_usuario(mensaje_usuario)
 
-    usar_vision = any(p in mensaje_usuario.lower() for p in PALABRAS_CLAVE_VISION)
-    quiere_portapapeles = any(p in mensaje_usuario.lower() for p in PALABRAS_CLAVE_PORTAPAPELES)
-    quiere_abrir_algo = any(p in mensaje_usuario.lower() for p in PALABRAS_CLAVE_ABRIR)
-    quiere_estado = any(p in mensaje_usuario.lower() for p in PALABRAS_CLAVE_ESTADO)
-    
-    # NUEVO: Extraemos la ruta si existe en el mensaje
-    ruta_detectada = _extraer_ruta_archivo(mensaje_usuario)
+    # 1. AISLAMIENTO DE CONTEXTO: Separamos tu mensaje real de la inyección invisible
+    # Así evitamos falsos positivos si el código resaltado contiene palabras clave
+    if "[CONTEXTO DEL SISTEMA" in mensaje_usuario:
+        mensaje_real = mensaje_usuario.split("[CONTEXTO DEL SISTEMA")[0].strip()
+    else:
+        mensaje_real = mensaje_usuario.strip()
 
+    # 2. El Semáforo AHORA solo evalúa lo que tú escribiste (mensaje_real)
+    usar_vision = any(p in mensaje_real.lower() for p in PALABRAS_CLAVE_VISION)
+    quiere_portapapeles = any(p in mensaje_real.lower() for p in PALABRAS_CLAVE_PORTAPAPELES)
+    quiere_abrir_algo = any(p in mensaje_real.lower() for p in PALABRAS_CLAVE_ABRIR)
+    quiere_estado = any(p in mensaje_real.lower() for p in PALABRAS_CLAVE_ESTADO)
+    
+    PALABRAS_CLAVE_CODIGO = ["código", "codigo", "analiza", "bug", "error", "optimiza", "refactoriza"]
+    es_analisis_codigo = any(p in mensaje_real.lower() for p in PALABRAS_CLAVE_CODIGO)
+
+    ruta_detectada = _extraer_ruta_archivo(mensaje_real)
     forzar_nube = False
 
-    # Intercepciones (Portapapeles o Archivos)
+    # 3. Intercepciones manuales (Archivos o portapapeles invocado por comando)
     if quiere_portapapeles:
         contexto_historico, forzar_nube = _procesar_portapapeles(contexto_historico)
     elif ruta_detectada:
         contexto_historico, forzar_nube = _procesar_archivo(ruta_detectada, contexto_historico)
 
-    # Decisión final de enrutamiento
+    if es_analisis_codigo:
+        print("☁️ [Intención de programación detectada. Forzando Nube...]")
+        forzar_nube = True
+
+    # 4. SALVAVIDAS DE HARDWARE: Si usaste el Truco Ninja para resaltar mucho texto
+    peso_total_kb = len(mensaje_usuario) / 1024
+    if peso_total_kb > 2.5: # Límite de ~800 palabras
+        print(f"☁️ [Texto inyectado muy pesado ({peso_total_kb:.2f} KB). Forzando Nube para no saturar a Gemma 2...]")
+        forzar_nube = True
+
+    # 5. Decisión final de enrutamiento
     if usar_vision or forzar_nube:
         texto_respuesta = responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision)
     else:
@@ -364,7 +383,6 @@ def charlar_con_lia(mensaje_usuario):
         origen = "Nube" if (usar_vision or forzar_nube) else "Local"
         print(f"\n🤖 L-IA ({origen}): {texto_respuesta}\n")
         
-        # NUEVO: Devolvemos los datos para que la interfaz gráfica pueda leerlos
         return texto_respuesta, origen
     
     return "Ocurrió un error en el razonamiento.", "Error"
