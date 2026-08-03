@@ -1,0 +1,25 @@
+{
+  "alias": {
+    "unreal engine": "unreal editor",
+    "ue5": "unreal editor",
+    "github": "github desktop",
+    "word": "winword",
+    "vs code": "vscode",
+    "visual studio code": "vscode"
+  },
+  "carpetas_windows_nativas": {
+    "descargas": "shell:Downloads",
+    "documentos": "shell:Personal",
+    "escritorio": "shell:Desktop",
+    "imagenes": "shell:My Pictures",
+    "videos": "shell:My Video",
+    "musica": "shell:My Music"
+  },
+  "carpetas_personalizadas": {
+    "carpeta juegos": "C:\\Users\\ACER\\Desktop\\Juegos",
+    "carpeta programar": "C:\\Users\\ACER\\Desktop\\programar",
+    "documentos escritorio": "C:\\Users\\ACER\\Desktop\\Documentos",
+    "proyectos unreal": "C:\\Users\\ACER\\Documents\\Unreal Projects",
+    "sistema bastones": "C:\\laragon\\www\\sistema-bastones"
+  }
+}

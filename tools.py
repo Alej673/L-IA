@@ -1,193 +1,555 @@
 import os
+import json
+import shutil
+import difflib
 import subprocess
 import psutil
 import pyperclip
 import sys
+import re  # Necesario para dividir textos complejos
+
+try:
+    import winreg  # Solo existe en Windows; el resto del script sigue siendo Windows-only de todas formas
+except ImportError:
+    winreg = None
 
 
-def abrir_aplicacion(nombre_app: str) -> str:
+# ==========================================
+# CONFIGURACIÓN EXTERNA (config_apps.json)
+# ==========================================
+# En vez de hardcodear alias y carpetas dentro del código Python, los
+# guardamos en un JSON al lado de este archivo. Así, agregar "mis
+# juegos están en D:\Juegos" es editar un archivo de texto plano,
+# nunca tocar tools.py. Si el archivo no existe, se crea uno con
+# valores de ejemplo la primera vez que se ejecuta.
+_RUTA_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_apps.json")
+
+_CONFIG_POR_DEFECTO = {
+    "alias": {
+        "unreal engine": "unreal editor",
+        "ue5": "unreal editor",
+        "github": "github desktop",
+        "word": "winword",
+        "vs code": "vscode",
+        "visual studio code": "vscode",
+    },
+    "carpetas_windows_nativas": {
+        "descargas": "shell:Downloads",
+        "documentos": "shell:Personal",
+        "escritorio": "shell:Desktop",
+        "imagenes": "shell:My Pictures",
+        "videos": "shell:My Video",
+        "musica": "shell:My Music",
+    },
+    "carpetas_personalizadas": {
+        # Aquí van SOLO las rutas que Windows no puede adivinar solo:
+        # tus proyectos, tus juegos, etc. Edita este archivo directo,
+        # o usa aprender_carpeta() para que L-IA lo haga por ti.
+    },
+}
+
+
+def _cargar_config():
+    """Carga config_apps.json, o lo crea con valores de ejemplo si no existe."""
+    if not os.path.exists(_RUTA_CONFIG):
+        with open(_RUTA_CONFIG, "w", encoding="utf-8") as f:
+            json.dump(_CONFIG_POR_DEFECTO, f, ensure_ascii=False, indent=2)
+        return json.loads(json.dumps(_CONFIG_POR_DEFECTO))
+
+    try:
+        with open(_RUTA_CONFIG, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        # Rellenamos claves faltantes por si el usuario editó el archivo
+        # a mano y borró alguna sección sin querer.
+        for clave, valor_defecto in _CONFIG_POR_DEFECTO.items():
+            config.setdefault(clave, valor_defecto)
+        return config
+    except (json.JSONDecodeError, OSError):
+        # Si el JSON quedó mal formado, no tumbamos el programa: devolvemos
+        # el default en memoria (el archivo en disco lo puede arreglar el usuario).
+        print("⚠️ [tools.py] config_apps.json está mal formado. Usando configuración por defecto en memoria.")
+        return json.loads(json.dumps(_CONFIG_POR_DEFECTO))
+
+
+def aprender_alias(nombre_hablado: str, nombre_real: str):
     """
-    Busca de forma dinámica y abre cualquier aplicación instalada en Windows
-    escaneando los directorios del Menú de Inicio de forma automática.
+    Permite enseñarle a L-IA un alias nuevo en caliente (ej. desde
+    cerebro.py, cuando el usuario diga "cuando diga X quiero decir Y").
+    Se guarda directo en config_apps.json, sin tocar código.
     """
-    nombre_app = nombre_app.lower()
-    
-    # 1. Definir rutas del Menú de Inicio (Para todos los usuarios y el usuario actual)
+    config = _cargar_config()
+    config["alias"][nombre_hablado.strip().lower()] = nombre_real.strip().lower()
+    with open(_RUTA_CONFIG, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+    return f"Aprendido: '{nombre_hablado}' ahora significa '{nombre_real}'."
+
+
+def aprender_carpeta(nombre_hablado: str, ruta: str):
+    """
+    Igual que aprender_alias(), pero para carpetas personalizadas
+    (ej. "carpeta juegos" -> "D:\\Juegos"). Se guarda en config_apps.json.
+    """
+    config = _cargar_config()
+    config["carpetas_personalizadas"][nombre_hablado.strip().lower()] = ruta.strip()
+    with open(_RUTA_CONFIG, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+    return f"Aprendido: '{nombre_hablado}' ahora abre '{ruta}'."
+
+
+# ==========================================
+# FUENTES DE BÚSQUEDA DE APLICACIONES
+# ==========================================
+def _buscar_en_registro_app_paths(nombre_app: str):
+    """
+    Windows guarda automáticamente la ruta de instalación de la mayoría
+    de programas (Chrome, VSCode, Steam, Discord, Spotify, etc.) en:
+      HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths
+      HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths
+    Consultando esta clave cubrimos programas nuevos SIN necesidad de
+    agregarlos a mano en ningún diccionario.
+    """
+    if winreg is None:
+        return None
+
+    claves_raiz = [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"),
+    ]
+
+    nombres_candidatos = []
+    for raiz, ruta_clave in claves_raiz:
+        try:
+            with winreg.OpenKey(raiz, ruta_clave) as clave:
+                i = 0
+                while True:
+                    try:
+                        subclave_nombre = winreg.EnumKey(clave, i)
+                        nombres_candidatos.append((subclave_nombre, raiz, ruta_clave))
+                        i += 1
+                    except OSError:
+                        break
+        except FileNotFoundError:
+            continue
+
+    # Fuzzy match contra los nombres de .exe registrados (sin la extensión)
+    nombres_limpios = [n[0].replace(".exe", "").lower() for n in nombres_candidatos]
+    coincidencias = difflib.get_close_matches(nombre_app, nombres_limpios, n=1, cutoff=0.6)
+
+    if not coincidencias:
+        return None
+
+    idx = nombres_limpios.index(coincidencias[0])
+    subclave_nombre, raiz, ruta_clave = nombres_candidatos[idx]
+
+    try:
+        with winreg.OpenKey(raiz, f"{ruta_clave}\\{subclave_nombre}") as clave_app:
+            ruta_exe, _ = winreg.QueryValueEx(clave_app, None)  # Valor por defecto = ruta al .exe
+            return ruta_exe
+    except (FileNotFoundError, OSError):
+        return None
+
+
+def _buscar_en_path(nombre_app: str):
+    """
+    Busca el ejecutable en el PATH del sistema (cubre herramientas de
+    consola/desarrollo: code, git, python, node, php, composer, etc.)
+    sin necesidad de hardcodear cada una.
+    """
+    candidatos = [nombre_app, f"{nombre_app}.exe", nombre_app.replace(" ", "")]
+    for candidato in candidatos:
+        ruta = shutil.which(candidato)
+        if ruta:
+            return ruta
+    return None
+
+
+# Cache en memoria del índice del Menú de Inicio: evitamos recorrer el
+# disco (os.walk) en CADA petición. Se construye una vez por ejecución
+# del programa y se puede forzar su reconstrucción con refrescar=True.
+_INDICE_MENU_INICIO = None
+
+
+def _indexar_menu_inicio(refrescar=False):
+    global _INDICE_MENU_INICIO
+    if _INDICE_MENU_INICIO is not None and not refrescar:
+        return _INDICE_MENU_INICIO
+
     rutas_inicio = [
         r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs",
-        os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs")
+        os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs"),
     ]
-    
-    print(f"🔍 [Buscando '{nombre_app}' en el sistema...]")
-    
-    # 2. Escanear las carpetas buscando un archivo .lnk que coincida con la búsqueda
+
+    indice = {}  # nombre_sin_extension_lower -> ruta_completa_lnk
     for ruta_base in rutas_inicio:
         if not os.path.exists(ruta_base):
             continue
-            
-        # os.walk recorre todas las subcarpetas automáticamente
         for raiz, _, archivos in os.walk(ruta_base):
             for archivo in archivos:
-                # Comparamos si es un acceso directo y si contiene el nombre de lo que buscamos
-                if archivo.lower().endswith(".lnk") and nombre_app in archivo.lower():
-                    ruta_completa = os.path.join(raiz, archivo)
-                    try:
-                        # Hacemos el "doble clic virtual" nativo de Windows
-                        os.startfile(ruta_completa)
-                        # Retornamos el nombre real del archivo que encontramos para que L-IA lo sepa
-                        nombre_limpio = archivo.replace(".lnk", "")
-                        return f"Éxito: Se encontró y abrió '{nombre_limpio}'."
-                    except Exception as e:
-                        return f"Error al abrir '{archivo}': {str(e)}"
-                        
-    # 3. Si no encuentra nada en el Menú de Inicio, intentamos usar comandos del sistema tradicionales
-    comandos_rapidos = {
-        "vscode": "code",
-        "chrome": "start chrome"
-    }
-    
-    if nombre_app in comandos_rapidos:
-        try:
-            subprocess.Popen(comandos_rapidos[nombre_app], shell=True)
-            return f"Éxito: Se ejecutó el comando alternativo para {nombre_app}."
-        except Exception as e:
-            return f"Error con comando alternativo: {str(e)}"
+                if archivo.lower().endswith(".lnk"):
+                    nombre_limpio = archivo[:-4].lower()  # quita ".lnk"
 
-    return f"Error: No se encontró ningún programa llamado '{nombre_app}' en el menú de inicio."
+                    if "uninstall" in nombre_limpio or "desinstalar" in nombre_limpio:
+                        continue
 
-def obtener_estado_sistema():
+                    indice[nombre_limpio] = os.path.join(raiz, archivo)
+
+    _INDICE_MENU_INICIO = indice
+    return indice
+
+
+def _buscar_en_menu_inicio(nombre_app: str):
     """
-    Lee los sensores de hardware (CPU, RAM, Batería, SSD) y audita los 3 procesos
-    que más memoria RAM están consumiendo en el sistema operativo.
+    Busca en el índice del Menú de Inicio con dos estrategias:
+    1. Substring (rápido y exacto, como antes).
+    2. Fuzzy match (difflib) para tolerar variaciones, plurales,
+       o nombres parecidos que no coinciden letra por letra.
     """
-    try:
-        # 1. Medir CPU 
-        cpu_porcentaje = psutil.cpu_percent(interval=0.5)
-        
-        # 2. Medir RAM
-        ram_info = psutil.virtual_memory()
-        ram_total = round(ram_info.total / (1024**3), 1)
-        ram_usada = round(ram_info.used / (1024**3), 1)
-        ram_porcentaje = ram_info.percent
-        
-        # 3. Medir Batería
-        bateria = psutil.sensors_battery()
-        if bateria:
-            estado_enchufe = "Conectada a la corriente" if bateria.power_plugged else "Usando batería"
-            bateria_txt = f"{bateria.percent}% ({estado_enchufe})"
-        else:
-            bateria_txt = "No se detectó batería"
+    indice = _indexar_menu_inicio()
+
+    # 1. Substring directo (comportamiento original)
+    for nombre_indexado, ruta in indice.items():
+        if nombre_app in nombre_indexado:
+            return ruta, nombre_indexado
+
+    # 2. Fuzzy match como respaldo
+    coincidencias = difflib.get_close_matches(nombre_app, list(indice.keys()), n=1, cutoff=0.6)
+    if coincidencias:
+        nombre_indexado = coincidencias[0]
+        return indice[nombre_indexado], nombre_indexado
+
+    return None, None
+
+
+# ==========================================
+# ABRIR APLICACIÓN / CARPETA (función principal)
+# ==========================================
+def abrir_aplicacion(nombres_apps: str) -> str:
+    """
+    Busca y abre una o múltiples aplicaciones o carpetas del sistema,
+    separadas por comas o la palabra "y". Orden de búsqueda por cada
+    nombre (de más específico/rápido a más costoso):
+
+      1. Alias configurado (config_apps.json) -> traduce el nombre hablado
+      2. Carpeta nativa de Windows (shell:Downloads, etc.) -> config_apps.json
+      3. Carpeta personalizada tuya (proyectos, juegos, etc.) -> config_apps.json
+      4. Registro de Windows (App Paths) -> cubre la mayoría de programas
+         instalados automáticamente, sin mantenimiento manual
+      5. PATH del sistema -> herramientas de consola/desarrollo
+      6. Menú de Inicio (con fuzzy match) -> resto de accesos directos
+    """
+    separadores = r',|\sy\s'
+    lista_apps = [app.strip().lower() for app in re.split(separadores, nombres_apps) if app.strip()]
+
+    config = _cargar_config()
+    alias = config.get("alias", {})
+    carpetas_nativas = config.get("carpetas_windows_nativas", {})
+    carpetas_personalizadas = config.get("carpetas_personalizadas", {})
+
+    resultados = []
+
+    for nombre_original in lista_apps:
+        # 1. Aplicamos el alias si el usuario usó un nombre distinto al real
+        nombre_app = alias.get(nombre_original, nombre_original)
+        print(f"🔍 [Buscando: '{nombre_app}'...]")
+        encontrado = False
+
+        # 2. Carpetas nativas de Windows (shell:...)
+        if nombre_app in carpetas_nativas:
+            try:
+                subprocess.Popen(f"explorer {carpetas_nativas[nombre_app]}", shell=True)
+                resultados.append(f"Éxito: Se abrió la carpeta '{nombre_original}'.")
+                encontrado = True
+                continue
+            except Exception:
+                pass
+
+        # 3. Carpetas personalizadas (tus proyectos, juegos, etc.) con Fuzzy Match
+        if not encontrado:
+            claves_carpetas = list(carpetas_personalizadas.keys())
+            # Comparamos lo que la IA entendió con las claves de tu JSON (60% de similitud)
+            coincidencia_carpeta = difflib.get_close_matches(nombre_app, claves_carpetas, n=1, cutoff=0.6)
             
-        # 4. Medir Almacenamiento (Discos)
-        discos_txt = ""
-        particiones = psutil.disk_partitions()
-        
-        for particion in particiones:
-            if 'cdrom' in particion.opts or particion.fstype == '':
+            if coincidencia_carpeta:
+                clave_real = coincidencia_carpeta[0]
+                ruta_carpeta = carpetas_personalizadas[clave_real]
+                
+                if os.path.exists(ruta_carpeta):
+                    try:
+                        os.startfile(ruta_carpeta)
+                        resultados.append(f"Éxito: Se abrió la carpeta '{clave_real}'.")
+                        encontrado = True
+                        continue
+                    except Exception as e:
+                        resultados.append(f"Error al abrir carpeta '{clave_real}': {e}")
+                        encontrado = True
+                        continue
+                else:
+                    resultados.append(
+                        f"Error: La carpeta configurada para '{clave_real}' ya no existe en '{ruta_carpeta}'. "
+                        f"Revisa config_apps.json."
+                    )
+                    encontrado = True
+                    continue
+
+        # 4. Registro de Windows (App Paths) — cubre programas instalados
+        #    sin que tengas que agregarlos a mano
+        if not encontrado:
+            ruta_registro = _buscar_en_registro_app_paths(nombre_app)
+            if ruta_registro:
+                try:
+                    os.startfile(ruta_registro)
+                    resultados.append(f"Éxito: Se ejecutó '{nombre_original}' (detectado en el Registro de Windows).")
+                    encontrado = True
+                    continue
+                except Exception as e:
+                    resultados.append(f"Error al abrir '{nombre_original}' desde el Registro: {e}")
+                    encontrado = True
+                    continue
+
+        # 5. PATH del sistema — herramientas de consola/desarrollo
+        if not encontrado:
+            ruta_path = _buscar_en_path(nombre_app)
+            if ruta_path:
+                try:
+                    subprocess.Popen([ruta_path], shell=True)
+                    resultados.append(f"Éxito: Se ejecutó '{nombre_original}' (encontrado en el PATH).")
+                    encontrado = True
+                    continue
+                except Exception as e:
+                    resultados.append(f"Error al ejecutar '{nombre_original}' desde el PATH: {e}")
+                    encontrado = True
+                    continue
+
+        # 6. Menú de Inicio, con fuzzy match como último recurso
+        if not encontrado:
+            ruta_lnk, nombre_detectado = _buscar_en_menu_inicio(nombre_app)
+            if ruta_lnk:
+                try:
+                    os.startfile(ruta_lnk)
+                    resultados.append(f"Éxito: Se abrió '{nombre_detectado}' (el más parecido a '{nombre_original}').")
+                    encontrado = True
+                    continue
+                except Exception as e:
+                    resultados.append(f"Error al abrir '{nombre_original}': {e}")
+                    encontrado = True
+                    continue
+
+        if not encontrado:
+            resultados.append(f"Error: No se encontró '{nombre_original}'.")
+
+    return " | ".join(resultados)
+
+
+def buscar_archivo_local(nombre_archivo: str) -> str:
+    """
+    Rastrea 'Zonas Seguras' buscando un archivo por su nombre.
+    Ahora lee dinámicamente las carpetas desde config_apps.json.
+    """
+    nombre_archivo = nombre_archivo.lower()
+    usuario_actual = os.path.expanduser("~")
+    
+    # 1. Rutas base obligatorias de Windows
+    zonas_seguras = [
+        os.path.join(usuario_actual, "Downloads"),
+        os.path.join(usuario_actual, "Desktop"),
+        os.path.join(usuario_actual, "Documents")
+    ]
+    
+    # 2. Leer tu JSON y agregar TODAS tus carpetas personalizadas automáticamente
+    config = _cargar_config()
+    carpetas_personalizadas = config.get("carpetas_personalizadas", {})
+    
+    for nombre, ruta in carpetas_personalizadas.items():
+        # Validamos que la ruta exista y no esté duplicada
+        if os.path.exists(ruta) and ruta not in zonas_seguras:
+            zonas_seguras.append(ruta)
+
+    coincidencias = []
+    print(f"🕵️‍♀️ [L-IA rastreando el archivo '{nombre_archivo}' en tus Zonas Seguras...]")
+    
+    for zona in zonas_seguras:
+        if not os.path.exists(zona):
+            continue
+            
+        for raiz, carpetas, archivos in os.walk(zona):
+            # Excluir carpetas pesadas para mantener la búsqueda en milisegundos
+            carpetas[:] = [c for c in carpetas if c not in ['node_modules', 'vendor', '.git', 'AppData', 'Saved', 'Intermediate']]
+            
+            for archivo in archivos:
+                # IGNORAR ARCHIVOS TEMPORALES DE WORD/EXCEL Y ARCHIVOS OCULTOS
+                if archivo.startswith("~$") or archivo.startswith("."):
+                    continue
+                    
+                if nombre_archivo in archivo.lower():
+                    ruta_completa = os.path.join(raiz, archivo)
+                    coincidencias.append(ruta_completa)
+
+    # Si la búsqueda exacta no encontró nada, probamos fuzzy match sobre
+    # TODOS los nombres de archivo vistos, para tolerar errores de tecleo
+    # o nombres parecidos (ej. "avances demo tecnica" vs "Avances_Demo_Tecnica.docx")
+    if len(coincidencias) == 0:
+        todos_los_archivos = []
+        for zona in zonas_seguras:
+            if not os.path.exists(zona):
                 continue
-            try:
-                uso_disco = psutil.disk_usage(particion.mountpoint)
-                total_gb = round(uso_disco.total / (1024**3), 1)
-                libre_gb = round(uso_disco.free / (1024**3), 1)
-                porcentaje_uso = uso_disco.percent
-                discos_txt += f"[{particion.device} Total: {total_gb}GB, Libre: {libre_gb}GB ({porcentaje_uso}% usado)] "
-            except PermissionError:
-                continue 
+            for raiz, carpetas, archivos in os.walk(zona):
+                carpetas[:] = [c for c in carpetas if c not in ['node_modules', 'vendor', '.git', 'AppData', 'Saved', 'Intermediate']]
+                for archivo in archivos:
+                    if archivo.startswith("~$") or archivo.startswith("."):
+                        continue
+                    todos_los_archivos.append(os.path.join(raiz, archivo))
 
-        if not discos_txt:
-            discos_txt = "Información de discos no disponible."
+        nombres_base = [os.path.basename(p).lower() for p in todos_los_archivos]
+        cercanos = difflib.get_close_matches(nombre_archivo, nombres_base, n=5, cutoff=0.5)
+        if cercanos:
+            coincidencias = [todos_los_archivos[nombres_base.index(c)] for c in cercanos]
 
-        # 5. NUEVO: Auditar los procesos más "tragones" de RAM
-        procesos = []
-        for proc in psutil.process_iter(['name', 'memory_info']):
-            try:
-                # Extraemos el consumo en MB de cada proceso activo
-                mem_usada_mb = proc.info['memory_info'].rss / (1024**2)
-                procesos.append({
-                    'nombre': proc.info['name'],
-                    'memoria_mb': round(mem_usada_mb, 1)
-                })
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                # Ignoramos procesos que se cierren durante el escaneo o protegidos por Windows
-                continue
+    if len(coincidencias) == 0:
+        return f"No se encontró ningún archivo relacionado con '{nombre_archivo}' en tus Zonas Seguras."
 
-        # Ordenamos la lista de mayor a menor consumo de RAM
-        procesos_ordenados = sorted(procesos, key=lambda x: x['memoria_mb'], reverse=True)
-        
-        # Tomamos los 3 primeros de la lista
-        top_3_procesos = procesos_ordenados[:3]
-        procesos_txt = ", ".join([f"{p['nombre']} ({p['memoria_mb']}MB)" for p in top_3_procesos])
+    elif len(coincidencias) == 1:
+        return leer_archivo_local(coincidencias[0], busqueda_automatica=True)
 
-        # 6. Reporte definitivo consolidado
-        reporte = (
-            f"DIAGNÓSTICO DE HARDWARE: "
-            f"CPU al {cpu_porcentaje}%. "
-            f"RAM consumida: {ram_usada}GB de {ram_total}GB ({ram_porcentaje}%). "
-            f"Energía: {bateria_txt}. "
-            f"Almacenamiento SSD: {discos_txt.strip()}. "
-            f"Procesos que más RAM consumen actualmente: {procesos_txt}."
+    else:
+        # Añadimos i+1 para que la lista salga numerada: 1., 2., 3.
+        lista_sugerencias = "\n".join([f"{i+1}. {ruta}" for i, ruta in enumerate(coincidencias[:5])])
+        return (
+            f"Encontré múltiples coincidencias para '{nombre_archivo}'. "
+            f"Muestra esta lista NUMERADA al usuario y pregúntale cuál quiere leer:\n{lista_sugerencias}"
         )
-        return reporte
-        
-    except Exception as e:
-        return f"Error al intentar leer los sensores del sistema: {e}"
 
-def leer_archivo_local(ruta_archivo):
+
+def leer_archivo_local(ruta_archivo: str, busqueda_automatica=False):
     """
-    Lee un archivo de texto o código desde una ruta local.
-    Retorna el contenido y verifica su peso para el enrutador híbrido.
+    Lee un archivo de texto, código, Word (.docx) o PDF desde una ruta.
     """
-    # Limpiamos las comillas que Windows suele añadir al arrastrar archivos a la terminal
     ruta_limpia = ruta_archivo.strip("'\"").strip()
-    
+
     if not os.path.exists(ruta_limpia):
-        return {"error": f"No se encontró ningún archivo en la ruta: {ruta_limpia}"}
-    
+        if not busqueda_automatica and "\\" not in ruta_limpia and "/" not in ruta_limpia:
+            return buscar_archivo_local(ruta_limpia)
+        return {"error": f"No se encontró la ruta: {ruta_limpia}"}
+
     try:
         tamano_kb = os.path.getsize(ruta_limpia) / 1024
         nombre_archivo = os.path.basename(ruta_limpia)
         _, extension = os.path.splitext(nombre_archivo)
-        
-        # Extensiones de texto/código que tu sistema puede procesar nativamente
-        extensiones_validas = ['.txt', '.py', '.php', '.js', '.json', '.html', '.css', '.md', '.env', '.cpp', '.h']
-        
+
+        # 1. Agregamos .docx y .pdf a las extensiones válidas
+        extensiones_validas = ['.txt', '.py', '.php', '.js', '.json', '.html', '.css', '.md', '.env', '.cpp', '.h', '.docx', '.pdf']
+
         if extension.lower() not in extensiones_validas:
-            return {
-                "error": f"El formato '{extension}' no está soportado. Solo puedo leer código y archivos de texto plano."
-            }
-            
-        with open(ruta_limpia, 'r', encoding='utf-8', errors='ignore') as f:
-            contenido = f.read()
-            
+            return {"error": f"El formato '{extension}' no está soportado."}
+
+        contenido = ""
+
+        # 2. Lógica para documentos de Word
+        if extension.lower() == '.docx':
+            try:
+                import docx
+                doc = docx.Document(ruta_limpia)
+                contenido = "\n".join([parrafo.text for parrafo in doc.paragraphs if parrafo.text.strip() != ""])
+            except ImportError:
+                return {"error": "Falta la librería. Ejecuta en la terminal: pip install python-docx"}
+
+        # 3. Lógica para PDFs
+        elif extension.lower() == '.pdf':
+            try:
+                import PyPDF2
+                with open(ruta_limpia, 'rb') as f:
+                    lector = PyPDF2.PdfReader(f)
+                    for pagina in lector.pages:
+                        texto = pagina.extract_text()
+                        if texto:
+                            contenido += texto + "\n"
+            except ImportError:
+                return {"error": "Falta la librería. Ejecuta en la terminal: pip install PyPDF2"}
+
+        # 4. Lógica original para texto plano y código
+        else:
+            with open(ruta_limpia, 'r', encoding='utf-8', errors='ignore') as f:
+                contenido = f.read()
+
         return {
             "nombre": nombre_archivo,
             "contenido": contenido,
             "tamano_kb": round(tamano_kb, 2),
-            "es_pesado": tamano_kb > 10.0  # Límite de 10KB (aprox. 300 líneas) para forzar la nube
+            "es_pesado": tamano_kb > 35.0
         }
-        
     except Exception as e:
-        return {"error": f"No pude leer el archivo debido a un error del sistema: {e}"}
+        return {"error": f"Error de lectura: {e}"}
+
+
+def obtener_estado_sistema() -> str:
+    """
+    Lee los sensores de hardware de la laptop usando psutil.
+    Retorna un string con el uso de CPU, RAM, Batería y el Top 3 de procesos.
+    """
+    try:
+        # 1. Lectura de CPU
+        cpu_percent = psutil.cpu_percent(interval=1)
+
+        # 2. Lectura de RAM
+        ram = psutil.virtual_memory()
+        ram_total = round(ram.total / (1024**3), 2)
+        ram_usada = round(ram.used / (1024**3), 2)
+        ram_percent = ram.percent
+
+        # 3. Lectura de Batería
+        bateria_info = "No detectada"
+        if hasattr(psutil, "sensors_battery"):
+            bateria = psutil.sensors_battery()
+            if bateria:
+                estado_enchufe = "Conectada a la corriente" if bateria.power_plugged else "Usando batería"
+                bateria_info = f"{bateria.percent}% ({estado_enchufe})"
+
+        # 4. Top 3 Procesos que más RAM consumen
+        procesos = []
+        for proc in psutil.process_iter(['name', 'memory_percent']):
+            try:
+                if proc.info['memory_percent'] is not None:
+                    procesos.append(proc.info)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        # Ordenamos de mayor a menor y sacamos los primeros 3
+        procesos = sorted(procesos, key=lambda p: p['memory_percent'], reverse=True)[:3]
+        top_apps = ", ".join([f"{p['name']} ({round(p['memory_percent'], 1)}%)" for p in procesos])
+
+        # 5. Estructurar el reporte
+        reporte = (
+            f"CPU Uso: {cpu_percent}% | "
+            f"RAM Uso: {ram_usada}GB de {ram_total}GB ({ram_percent}%) | "
+            f"Batería: {bateria_info} | "
+            f"Top Apps consumiendo RAM: {top_apps}"
+        )
+        return reporte
+
+    except Exception as e:
+        return f"Error crítico al leer los sensores de hardware: {str(e)}"
+
 
 def leer_portapapeles():
     """
-    Lee el contenido de texto actual en el portapapeles del sistema operativo.
+    Lee el contenido actual del portapapeles del sistema.
+    Devuelve un diccionario estructurado con los límites de seguridad.
     """
     try:
         contenido = pyperclip.paste()
-        if not contenido or contenido.strip() == "":
-            return {"error": "El portapapeles está vacío o no contiene texto legible."}
-        
-        # Calcular el tamaño aproximado en KB
-        tamano_kb = sys.getsizeof(contenido) / 1024
-        
+        if not contenido or not str(contenido).strip():
+            return {"error": "El portapapeles está vacío o contiene una imagen, no texto."}
+
+        # Calculamos el peso en Kilobytes para proteger la RAM local
+        peso_kb = len(contenido.encode('utf-8')) / 1024
+
         return {
             "contenido": contenido,
-            "tamano_kb": round(tamano_kb, 2),
-            "es_pesado": tamano_kb > 8.0  # Si es mayor a 8KB (aprox 200 líneas), es pesado
+            "tamano_kb": round(peso_kb, 2),
+            # Usamos el mismo límite de 35 KB que definiste para los archivos
+            "es_pesado": peso_kb > 35.0
         }
     except Exception as e:
-        return {"error": f"No pude acceder al portapapeles: {e}"}
+        return {"error": f"Fallo al leer portapapeles: {str(e)}"}
 
 # Aquí más adelante agregaremos:
 # - reproducir_musica(genero) -> Para Spotify
