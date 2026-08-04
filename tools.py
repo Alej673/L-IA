@@ -722,7 +722,11 @@ def _ejecutar_dinamico(nombre_herramienta, **kwargs):
     elif nombre_herramienta == "leer_repositorio_git":
         return leer_repositorio_git(kwargs.get("ruta_repo", ""))
     elif nombre_herramienta == "hacer_commit_git":
-        return hacer_commit_git(kwargs.get("ruta_repo", ""), kwargs.get("mensaje_commit", "Update automático"))
+        return hacer_commit_git(
+            kwargs.get("ruta_repo", ""), 
+            kwargs.get("titulo_commit", "Commit sin título"), 
+            kwargs.get("descripcion_commit", "")
+        )
     else:
         return f"Error: No hay lógica de despacho para {nombre_herramienta}"
 # Aquí más adelante agregaremos:
