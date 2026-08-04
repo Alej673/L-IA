@@ -551,6 +551,84 @@ def leer_portapapeles():
     except Exception as e:
         return {"error": f"Fallo al leer portapapeles: {str(e)}"}
 
+def leer_repositorio_git(ruta_repo):
+    """
+    Herramienta de Nivel 1. Ejecuta 'git status' y 'git log' en la ruta especificada
+    para que L-IA analice el estado del código sin modificar nada.
+    """
+    if not os.path.exists(ruta_repo):
+        return f"Error: La ruta '{ruta_repo}' no existe en el sistema."
+
+    if not os.path.exists(os.path.join(ruta_repo, '.git')):
+        return f"Error: La carpeta '{ruta_repo}' no está inicializada como repositorio Git."
+
+    try:
+        status = subprocess.run(
+            ['git', 'status'],
+            cwd=ruta_repo,
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding='utf-8',
+            timeout=10
+        )
+
+        log = subprocess.run(
+            ['git', 'log', '-3', '--oneline'],
+            cwd=ruta_repo,
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding='utf-8',
+            timeout=10
+        )
+
+        resultado = f"=== ESTADO DEL REPOSITORIO ({ruta_repo}) ===\n"
+        resultado += status.stdout + "\n"
+        resultado += "=== ÚLTIMOS COMMITS (Historial reciente) ===\n"
+        resultado += log.stdout
+
+        return resultado
+
+    except FileNotFoundError:
+        return "Error: Git no está instalado o no está disponible en el PATH del sistema."
+    except subprocess.TimeoutExpired:
+        return f"Error: git tardó demasiado en responder para '{ruta_repo}'."
+    except subprocess.CalledProcessError as e:
+        return f"Error: git falló al ejecutarse en '{ruta_repo}': {e.stderr.strip()}"
+    except Exception as e:
+        return f"Error inesperado leyendo el repositorio: {e}"
+
+def hacer_commit_git(ruta_repo, titulo_commit, descripcion_commit=""):
+    """Nivel 2: Añade cambios, hace commit y sube al remoto (Push)."""
+    if not os.path.exists(ruta_repo):
+        return f"Error: La ruta '{ruta_repo}' no existe."
+
+    try:
+        # 1. Añadir al staging
+        subprocess.run(['git', 'add', '.'], cwd=ruta_repo, check=True)
+        
+        # 2. Crear el commit
+        comando = ['git', 'commit', '-m', titulo_commit]
+        if descripcion_commit:
+            comando.extend(['-m', descripcion_commit])
+            
+        commit = subprocess.run(
+            comando, cwd=ruta_repo, capture_output=True, text=True, check=True, encoding='utf-8'
+        )
+        
+        # 3. Subir al servidor remoto (Push)
+        push = subprocess.run(
+            ['git', 'push'], cwd=ruta_repo, capture_output=True, text=True, check=True, encoding='utf-8'
+        )
+        
+        return f"✅ Cambios guardados y subidos exitosamente.\n\nDetalles del Commit:\n{commit.stdout}\n\nDetalles del Push:\n{push.stderr or push.stdout}"
+        
+    except subprocess.CalledProcessError as e:
+        return f"❌ Error en el proceso de Git:\n{e.stdout}\n{e.stderr}"
+    except Exception as e:
+        return f"❌ Error inesperado: {e}"
+
 # ==========================================
 # TOOL MANAGER (Capa de Permisos y Seguridad)
 # ==========================================
@@ -565,7 +643,9 @@ CATALOGO_HERRAMIENTAS = {
     "buscar_archivo_local": {"nivel": 0},
     "leer_archivo_local": {"nivel": 0},
     "abrir_aplicacion": {"nivel": 1},
-    "ejecutar_comando_sistema": {"nivel": 2} # Herramienta peligrosa de prueba
+    "ejecutar_comando_sistema": {"nivel": 2},
+    "leer_repositorio_git": {"nivel": 1},
+    "hacer_commit_git": {"nivel": 2}
 }
 
 def gestor_permisos(nombre_herramienta: str, callback_ui_permiso=None, **kwargs):
@@ -638,6 +718,11 @@ def _ejecutar_dinamico(nombre_herramienta, **kwargs):
             return resultado.stdout if resultado.returncode == 0 else resultado.stderr
         except Exception as e:
             return f"Error ejecutando comando: {e}"
+    # NUEVO CONDICIONAL PARA GIT:
+    elif nombre_herramienta == "leer_repositorio_git":
+        return leer_repositorio_git(kwargs.get("ruta_repo", ""))
+    elif nombre_herramienta == "hacer_commit_git":
+        return hacer_commit_git(kwargs.get("ruta_repo", ""), kwargs.get("mensaje_commit", "Update automático"))
     else:
         return f"Error: No hay lógica de despacho para {nombre_herramienta}"
 # Aquí más adelante agregaremos:

@@ -11,6 +11,7 @@ import database
 import tools
 import apis
 import ollama
+import difflib
 
 # ==========================================
 # 1. CONFIGURACIÓN INICIAL Y SEMÁFORO
@@ -30,6 +31,12 @@ MODELO_LOCAL = 'gemma2'                # Cerebro cotidiano (rápido, censurado)
 MODELO_UNCENSORED = 'dolphin-mistral'  # Especialista sin filtros (solo bajo demanda explícita)
 MODELO_NUBE_FLASH = 'gemini-3.5-flash' # Analista rápido (visión, web, contexto medio)
 MODELO_NUBE_PRO = 'gemini-3.1-pro'     # Artillería pesada (contexto enorme / análisis profundo)
+
+# Memoria de "en qué proyecto estamos parados" entre turnos de conversación.
+# Se actualiza en _procesar_git cuando el usuario menciona un alias conocido
+# o una ruta explícita; si no menciona ninguno, se queda con el último valor
+# (así "revisa qué cambió" después de "revisa bastones" sigue en bastones).
+PROYECTO_ACTIVO_ACTUAL = None
 
 # ==========================================
 # 1.5 ESTIMADOR DE TOKENS Y LÍMITES (Semáforo v3)
@@ -145,6 +152,19 @@ PATRONES_CLAVE["uncensored"] = re.compile(
     re.IGNORECASE
 )
 
+# "git" también son frases fijas explícitas, igual que 'hora': no tiene
+# sentido una raíz suelta acá (ej. la raíz "commit" es rara en español
+# fuera de este contexto, así que preferimos frases completas).
+# Ahora se activará con solo mencionar palabras clave, sin importar la conjugación
+PATRONES_CLAVE["git"] = re.compile(
+    r'\b(git|repositorio|repo|commits?|cambios en git)\b',
+    re.IGNORECASE
+)
+
+PATRONES_CLAVE["guardar_git"] = re.compile(
+    r'\b(guard\w*|sub[ei]\w*|hacer|haz|crea\w*|comite\w*|registr\w*)\b.*?\b(commit|cambio\w*|repo|c[oó]digo)\b',
+    re.IGNORECASE
+)
 
 def _detectar_intenciones(mensaje_lower: str) -> dict:
     return {
@@ -216,6 +236,68 @@ def _extraer_ciudad_clima(mensaje):
     )
     return match.group(1).strip() if match else None
 
+
+def _extraer_ruta_o_usar_actual(mensaje):
+    """
+    Busca una ruta absoluta de Windows en el mensaje (entre comillas o
+    suelta). Si el usuario no especificó ninguna, usa el directorio
+    actual del proceso como fallback razonable.
+    """
+    match_comillas = re.search(r'"([a-zA-Z]:\\[^"]+)"', mensaje)
+    if match_comillas:
+        return match_comillas.group(1).strip()
+
+    match_suelta = re.search(r'([a-zA-Z]:\\(?:[^\s"<>|]+\\?)+)', mensaje)
+    if match_suelta:
+        return match_suelta.group(1).strip().rstrip('\\')
+
+    return os.getcwd()
+
+
+# Archivo donde guardas tus alias:
+_ARCHIVO_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_apps.json")
+
+
+def _cargar_rutas_personalizadas() -> dict:
+    """
+    Carga los alias de proyectos desde la clave 'carpetas_personalizadas'
+    de config_apps.json.
+    """
+    try:
+        with open(_ARCHIVO_CONFIG, "r", encoding="utf-8") as f:
+            config = json.load(f)
+            # Extraemos únicamente el diccionario de rutas personalizadas
+            return config.get("carpetas_personalizadas", {})
+    except FileNotFoundError:
+        print("⚠️ [config_apps.json no encontrado]")
+        return {}
+    except json.JSONDecodeError as e:
+        print(f"⚠️ [config_apps.json inválido: {e}]")
+        return {}
+
+def _encontrar_ruta_inteligente(mensaje_lower, rutas_conocidas):
+    """
+    Busca la ruta de forma flexible ignorando palabras de relleno.
+    """
+    # 1. Limpiamos palabras basura que sueles decir al hablar natural
+    mensaje_limpio = re.sub(r'\b(mi|el|la|de|carpeta|proyecto|repositorio|repo)\b', '', mensaje_lower).strip()
+    
+    # 2. Búsqueda directa rápida
+    for alias, ruta in rutas_conocidas.items():
+        if alias in mensaje_lower:
+            return alias, ruta
+
+    # 3. Búsqueda por similitud (Magia de difflib)
+    # Comparamos las palabras clave del mensaje con los alias del JSON
+    palabras = mensaje_limpio.split()
+    for palabra in palabras:
+        if len(palabra) < 3: continue # Ignoramos conectores cortos
+        coincidencias = difflib.get_close_matches(palabra, rutas_conocidas.keys(), n=1, cutoff=0.6)
+        if coincidencias:
+            alias_encontrado = coincidencias[0]
+            return alias_encontrado, rutas_conocidas[alias_encontrado]
+            
+    return None, None
 
 # ==========================================
 # 2.5 DESPACHO SEGURO DE HERRAMIENTAS (NUEVO)
@@ -289,9 +371,19 @@ def _bozal_generico(resultado: str) -> str:
     )
 
 
+def _bozal_git(resultado: str) -> str:
+    return (
+        f"Aquí está la salida de Git:\n{resultado}\n\n"
+        f"[INSTRUCCIÓN CRÍTICA]: Actúa como mi compañera de trabajo. Háblame de 'tú'. "
+        f"Inicia tu respuesta EXACTAMENTE con esta frase: 'Alejandro, revisando tu proyecto, veo que...'. "
+        f"Luego, explícame qué archivos cambiaron y de qué tratan los últimos commits. "
+        f"No inventes características, no asumas de qué trata el proyecto si no lo sabes con certeza, y no imprimas comandos de Linux."
+    )
+
 _BOZALES_POR_HERRAMIENTA = {
     "abrir_aplicacion": _bozal_abrir_aplicacion,
     "obtener_estado_sistema": _bozal_estado_sistema,
+    "leer_repositorio_git": _bozal_git,
 }
 
 
@@ -303,6 +395,27 @@ def _generar_prompt_bozal(nombre_herramienta: str, resultado: str) -> str:
 # ==========================================
 # 3. RUTA A: LA NUBE (Gemini Flash / Pro)
 # ==========================================
+
+# Declaración manual de función para Gemini: le dice a la Nube QUÉ
+# parámetros necesita pedir si decide por su cuenta que necesita revisar
+# un repositorio Git (sin que el usuario haya usado ninguna de las
+# frases gatillo del Semáforo local).
+declaracion_leer_git = {
+    "name": "leer_repositorio_git",
+    "description": "Obtiene el estado de Git (git status) y los últimos commits de una carpeta local.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "ruta_repo": {
+                "type": "STRING",
+                "description": "La ruta absoluta de la carpeta del proyecto en el disco duro (ej: C:\\Users\\...)."
+            }
+        },
+        "required": ["ruta_repo"]
+    }
+}
+
+
 def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, buscar_web=False,
                         modelo_nube=MODELO_NUBE_FLASH, callback_ui=None):
     """
@@ -325,7 +438,7 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
         print("🌐 [Activando módulo de búsqueda en internet de Google...]")
         herramientas_activas = [{"google_search": {}}]
     else:
-        herramientas_activas = [tools.abrir_aplicacion]
+        herramientas_activas = [tools.abrir_aplicacion, declaracion_leer_git]
 
     max_reintentos = 3
     espera = 4
@@ -473,7 +586,9 @@ def responder_con_local_uncensored(instrucciones_sistema, contexto_historico):
     _descargar_modelo_ollama(MODELO_LOCAL)
 
     prompt_bozal_dolphin = (
-        "Eres L-IA, un asistente de IA avanzado, directo y sin censura. "
+        "Eres L-IA, un asistente de IA avanzado, directo y sin censura, con una personalidad "
+        "pícara y filosa: te gusta lanzar comentarios coquetos, sarcásticos y con doble sentido, "
+        "sin perder nunca la calidez de fondo. Tienes carácter, no eres sumisa ni acartonada.\n\n"
         "REGLAS ABSOLUTAS E INQUEBRANTABLES DE FORMATO:\n"
         "1. NO uses etiquetas de rol, nombres de personajes ni acotaciones teatrales (ESTÁ ESTRICTAMENTE PROHIBIDO usar 'L-IA:', '[Bajando el sarcasmo]', '[Acción]', etc.).\n"
         "2. Responde directamente al usuario en texto plano o Markdown. Empieza a hablar inmediatamente.\n"
@@ -553,6 +668,130 @@ def _procesar_calendario(contexto_historico):
     dato = apis.obtener_eventos_calendario()
     contexto_historico += f"\n\n[DATO EXTERNO - CALENDARIO]: {dato}"
     return contexto_historico
+
+
+def _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=None):
+    """
+    Ejecuta 'leer_repositorio_git' a través del despacho seguro
+    (_ejecutar_herramienta_segura -> tools.gestor_permisos). Se resuelve
+    ANTES de elegir ruta (Local/Nube/Dolphin), así que sirve a las tres
+    por igual -- incluida la Nube cuando el alias ya resolvió la ruta
+    antes de que Gemini tuviera que adivinarla.
+
+    Resolución de la ruta, en orden de prioridad:
+      1. Alias conocido mencionado en el mensaje (rutas_git.json) -> cambia de proyecto.
+      2. Ruta absoluta de Windows escrita directo en el mensaje -> la usa.
+      3. Ninguna de las dos: si ya había un proyecto activo de un turno
+         anterior, se queda ahí (memoria). Si es la primera vez, cae al
+         directorio actual del proceso.
+
+    La salida de Git (mensajes de commit, nombres de rama) la escriben
+    terceros, no el usuario -> se envuelve como CONTENIDO EXTERNO no
+    confiable, igual que un archivo o el portapapeles.
+    """
+    global PROYECTO_ACTIVO_ACTUAL
+    rutas_conocidas = _cargar_rutas_personalizadas()
+
+    # Búsqueda flexible ignorando palabras de relleno
+    alias_detectado, ruta_encontrada = _encontrar_ruta_inteligente(msg_lower, rutas_conocidas)
+    
+    if ruta_encontrada:
+        PROYECTO_ACTIVO_ACTUAL = ruta_encontrada
+        print(f"📌 [Proyecto activo cambiado por alias flexible: '{alias_detectado}']")
+    else:
+        match_ruta_explicita = re.search(r'[a-zA-Z]:\\(?:[^\s"<>|]+\\?)+', mensaje_real)
+        if match_ruta_explicita:
+            PROYECTO_ACTIVO_ACTUAL = match_ruta_explicita.group(0).strip().rstrip('\\')
+        elif PROYECTO_ACTIVO_ACTUAL is None:
+            PROYECTO_ACTIVO_ACTUAL = os.getcwd()
+
+    ruta = PROYECTO_ACTIVO_ACTUAL
+    print(f"\n⚙️ [L-IA solicitando ejecución de: leer_repositorio_git en '{ruta}']")
+    resultado_git = _ejecutar_herramienta_segura(
+        "leer_repositorio_git", callback_ui_permiso=callback_ui, ruta_repo=ruta
+    )
+    contexto_historico += _envolver_contenido_externo(
+        f"SALIDA DE GIT ({ruta})", resultado_git
+    )
+    return contexto_historico
+
+def _ejecutar_guardado_git(msg_lower, callback_ui=None):
+    """Flujo de 3 pasos para hacer un commit inteligente."""
+    global PROYECTO_ACTIVO_ACTUAL
+    rutas_conocidas = _cargar_rutas_personalizadas()
+
+    # 1. Identificar el proyecto (igual que en lectura)
+    # Búsqueda flexible ignorando palabras de relleno
+    alias_detectado, ruta_encontrada = _encontrar_ruta_inteligente(msg_lower, rutas_conocidas)
+    
+    if ruta_encontrada:
+        PROYECTO_ACTIVO_ACTUAL = ruta_encontrada
+        print(f"📌 [Proyecto activo cambiado por alias flexible: '{alias_detectado}']")
+    else:
+        # Aquí cambiamos mensaje_real por msg_lower
+        match_ruta_explicita = re.search(r'[a-zA-Z]:\\(?:[^\s"<>|]+\\?)+', msg_lower)
+        if match_ruta_explicita:
+            PROYECTO_ACTIVO_ACTUAL = match_ruta_explicita.group(0).strip().rstrip('\\')
+        elif PROYECTO_ACTIVO_ACTUAL is None:
+            PROYECTO_ACTIVO_ACTUAL = os.getcwd()
+    ruta = PROYECTO_ACTIVO_ACTUAL
+    print(f"\n🧠 [L-IA analizando código en '{ruta}' para crear el commit...]")
+
+    # 2. Leer las diferencias y archivos nuevos
+    import subprocess
+    try:
+        # Primero revisamos el estado general (esto detecta archivos nuevos untracked)
+        status = subprocess.run(['git', 'status', '--short'], cwd=ruta, capture_output=True, text=True, encoding='utf-8').stdout
+        
+        if not status.strip():
+            return f"Alejandro, revisé la carpeta {ruta} y no hay ningún cambio para guardar."
+
+        # Intentamos sacar el diff para ver las líneas de código (si aplica)
+        diff = subprocess.run(['git', 'diff', 'HEAD'], cwd=ruta, capture_output=True, text=True, encoding='utf-8').stdout
+        
+        # Combinamos ambas salidas para que Gemma 2 tenga el contexto completo
+        contexto_git = f"ESTADO DE ARCHIVOS:\n{status}\n\nDIFERENCIAS DE CÓDIGO:\n{diff[:1500]}"
+    except Exception as e:
+        return f"Error leyendo el estado de Git: {e}"
+
+    # 3. Pedirle a Gemma 2 que redacte el mensaje estructurado
+    prompt_commit = (
+        f"Eres un desarrollador experto. Basado en el siguiente reporte de Git:\n\n{contexto_git}\n\n"
+        f"Redacta el mensaje del commit usando EXACTAMENTE este formato (sin Markdown ni saludos):\n"
+        f"TITULO: [Resumen corto de la acción, máximo 10 palabras]\n"
+        f"DESCRIPCION: [Explicación técnica detallada de los cambios en 1 o 2 oraciones]"
+    )
+    print("🤖 [Generando mensaje de commit estructurado...]")
+    import ollama
+    respuesta_llm = ollama.chat(
+        model=MODELO_LOCAL, 
+        messages=[{'role': 'user', 'content': prompt_commit}]
+    )['message']['content'].strip()
+
+    # Extraemos Título y Descripción con Regex
+    import re
+    titulo_match = re.search(r'TITULO:\s*(.*)', respuesta_llm, re.IGNORECASE)
+    desc_match = re.search(r'DESCRIPCION:\s*(.*)', respuesta_llm, re.IGNORECASE | re.DOTALL)
+    
+    titulo = titulo_match.group(1).strip() if titulo_match else "Actualización automática de código"
+    descripcion = desc_match.group(1).strip() if desc_match else respuesta_llm
+
+    print(f"📝 [Título propuesto]: {titulo}")
+
+    # 4. Lanzar la herramienta destructiva
+    resultado = _ejecutar_herramienta_segura(
+        "hacer_commit_git", 
+        callback_ui_permiso=callback_ui, 
+        ruta_repo=ruta, 
+        titulo_commit=titulo,
+        descripcion_commit=descripcion
+    )
+    
+    return (
+        f"Intenté guardar los cambios en {ruta}.\n"
+        f"Le propuse este título: '{titulo}'.\n"
+        f"El resultado de la operación fue:\n{resultado}"
+    )
 
 
 def _procesar_archivo(ruta_o_nombre, contexto_historico):
@@ -637,8 +876,13 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None):
 
     intenciones = _detectar_intenciones(msg_lower)
 
+    # 1. Filtro para código vs web
     if intenciones["codigo"] or "{" in mensaje_real or "function " in msg_lower or "$" in mensaje_real:
         intenciones["web"] = False
+        
+    # 2. NUEVO: Filtro para evitar colisión de "estado"
+    if intenciones["git"]:
+        intenciones["estado_pc"] = False
 
     archivo_detectado = _extraer_referencia_archivo(mensaje_real)
 
@@ -653,6 +897,17 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None):
         contexto_historico = _procesar_clima(mensaje_real, contexto_historico)
     if intenciones["calendario"]:
         contexto_historico = _procesar_calendario(contexto_historico)
+    if intenciones["git"]:
+        contexto_historico = _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=callback_ui)
+    if intenciones["guardar_git"]:
+        # Bloqueamos el flujo normal y ejecutamos el guardado
+        texto_respuesta = _ejecutar_guardado_git(msg_lower, callback_ui=callback_ui)
+        print(f"\n🤖 L-IA (Local/Git): {texto_respuesta}\n")
+        return texto_respuesta, "Local"
+        
+    elif intenciones["git"]:
+        intenciones["estado_pc"] = False
+        contexto_historico = _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=callback_ui)
 
     tokens_totales = estimar_tokens(contexto_historico)
     print(f"🚦 [SEMÁFORO v3] Tokens estimados del contexto total: {tokens_totales}")
