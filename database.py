@@ -1,23 +1,34 @@
 import sqlite3
+import json
 from datetime import datetime
 
 # Nombre del archivo de base de datos local
 DB_NAME = "lia_memory.db"
 
+
 def obtener_conexion():
     """Establece una conexión con la base de datos SQLite."""
-    # Si el archivo .db no existe, SQLite lo creará automáticamente en la carpeta
     conexion = sqlite3.connect(DB_NAME)
-    # Esto permite acceder a las columnas por su nombre (como si fuera un diccionario)
     conexion.row_factory = sqlite3.Row
+    # Buena práctica: activar foreign keys por si en el futuro las usas
+    conexion.execute("PRAGMA foreign_keys = ON")
     return conexion
 
+
+def _ahora():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+# ============================================================
+# INICIALIZACIÓN
+# ============================================================
+
 def inicializar_base_datos():
-    """Crea las tablas de perfil e historial si no existen, e inserta el perfil inicial."""
+    """Crea todas las tablas si no existen e inserta los datos base."""
     conexion = obtener_conexion()
     cursor = conexion.cursor()
 
-    # 1. Crear tabla de perfil de usuario (Memoria a largo plazo)
+    # 1. Perfil de usuario (memoria estructurada de largo plazo)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS perfil_usuario (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,115 +40,349 @@ def inicializar_base_datos():
     )
     """)
 
-    # 2. Crear tabla de historial de conversación (Memoria a corto plazo)
+    # 2. Historial de conversación (memoria de corto plazo)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS historial_conversacion (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         timestamp TEXT NOT NULL,
-        rol TEXT NOT NULL, -- 'user' o 'model'
-        mensaje TEXT NOT NULL
+        rol TEXT NOT NULL,          -- 'user' o 'model'
+        mensaje TEXT NOT NULL,
+        sesion_id TEXT              -- para agrupar conversaciones distintas en el futuro
+    )
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_historial_timestamp
+    ON historial_conversacion (timestamp)
+    """)
+
+    # 3. Self-state: identidad y límites de L-IA (singleton, id fijo = 1)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS self_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        nombre TEXT,
+        proposito TEXT,
+        arquitectura TEXT,
+        creador TEXT,
+        cpu TEXT,
+        ram_total_gb INTEGER,
+        vram_gpu_gb INTEGER,
+        gpu_modelo TEXT,
+        limite_procesamiento_local_kb INTEGER,
+        accion_exceso_limite TEXT,
+        restricciones_ejecucion TEXT,
+        ultima_actualizacion TEXT
     )
     """)
 
-    # 3. Insertar un perfil por defecto de Alejandro si la tabla está vacía
-    cursor.execute("SELECT COUNT(*) FROM perfil_usuario")
-    if cursor.fetchone()[0] == 0:
-        ahora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("""
-        INSERT INTO perfil_usuario (nombre, proyecto_actual, preferencias_musica, formato_respuesta, ultima_actualizacion)
-        VALUES (?, ?, ?, ?, ?)
-        """, (
-            "Alejandro", 
-            "Desarrollo de L-IA (asistente personal)", 
-            "Rock, música para concentrarse", 
-            "Directo, amigable, con un toque de humor y técnico", 
-            ahora
-        ))
-        print("¡Perfil inicial creado con éxito para Alejandro!")
+    # 4. Herramientas disponibles (en vez de lista JSON plana)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS herramientas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nombre TEXT UNIQUE NOT NULL,
+        descripcion TEXT,
+        activa INTEGER NOT NULL DEFAULT 1,
+        fecha_agregada TEXT
+    )
+    """)
+
+    # 5. Memoria de hechos sueltos (clave-valor extensible, sin migrar esquema)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS memoria_hechos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        clave TEXT UNIQUE NOT NULL,
+        valor TEXT,
+        categoria TEXT,
+        ultima_actualizacion TEXT
+    )
+    """)
+
+    conexion.commit()
+
+    # --- Seed data ---
+    _seed_perfil(cursor)
+    _seed_self_state(cursor)
+    _seed_herramientas(cursor)
 
     conexion.commit()
     conexion.close()
 
+
+def _seed_perfil(cursor):
+    cursor.execute("SELECT COUNT(*) FROM perfil_usuario")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("""
+        INSERT INTO perfil_usuario (nombre, proyecto_actual, preferencias_musica, formato_respuesta, ultima_actualizacion)
+        VALUES (?, ?, ?, ?, ?)
+        """, (
+            "Alejandro",
+            "Desarrollo de L-IA (asistente personal)",
+            "Rock, música para concentrarse",
+            "Directo, amigable, con un toque de humor y técnico",
+            _ahora()
+        ))
+        print("Perfil inicial creado para Alejandro.")
+
+
+def _seed_self_state(cursor):
+    cursor.execute("SELECT COUNT(*) FROM self_state")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("""
+        INSERT INTO self_state (
+            id, nombre, proposito, arquitectura, creador,
+            cpu, ram_total_gb, vram_gpu_gb, gpu_modelo,
+            limite_procesamiento_local_kb, accion_exceso_limite, restricciones_ejecucion,
+            ultima_actualizacion
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            "L-IA",
+            "Asistente Híbrido Local/Nube",
+            "Sistema de enrutamiento de dos capas (Semáforo)",
+            "Alejandro Larco",
+            "Intel Core i5",
+            16,
+            6,
+            "RTX 4050",
+            35,
+            "Delegar automáticamente a la nube (Gemini) para evitar desbordamiento de VRAM/RAM",
+            "No ejecutar comandos destructivos. Pasar siempre por el Tool Manager.",
+            _ahora()
+        ))
+        print("Self-state inicial creado.")
+
+
+def _seed_herramientas(cursor):
+    cursor.execute("SELECT COUNT(*) FROM herramientas")
+    if cursor.fetchone()[0] == 0:
+        herramientas_base = [
+            ("vision_pantalla", "Captura y analiza pantalla (mss + Gemini)"),
+            ("abrir_aplicacion", "Abre apps locales (difflib + config_apps.json)"),
+            ("diagnostico_hardware", "Diagnóstico de hardware (psutil)"),
+            ("obtener_hora_actual", "Devuelve la hora actual"),
+            ("obtener_clima", "Consulta el clima (Open-Meteo)"),
+            ("obtener_eventos_calendario", "Consulta eventos (Google Calendar)"),
+            ("leer_portapapeles", "Lee el contenido del portapapeles"),
+            ("leer_archivos_ofimaticos_y_codigo", "Lee archivos de oficina y código"),
+        ]
+        cursor.executemany("""
+            INSERT INTO herramientas (nombre, descripcion, activa, fecha_agregada)
+            VALUES (?, ?, 1, ?)
+        """, [(n, d, _ahora()) for n, d in herramientas_base])
+        print("Herramientas base registradas.")
+
+
+# ============================================================
+# PERFIL DE USUARIO
+# ============================================================
+
 def obtener_perfil():
-    """Recupera los datos del perfil de Alejandro."""
     conexion = obtener_conexion()
     cursor = conexion.cursor()
-    # Como solo hay un usuario, traemos el registro con ID 1
     cursor.execute("SELECT * FROM perfil_usuario WHERE id = 1")
     perfil = cursor.fetchone()
     conexion.close()
     return dict(perfil) if perfil else None
 
-def actualizar_proyecto(nuevo_proyecto):
-    """Permite actualizar el proyecto en el que estás trabajando actualmente."""
-    conexion = obtener_conexion()
-    cursor = conexion.cursor()
-    ahora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("""
-        UPDATE perfil_usuario 
-        SET proyecto_actual = ?, ultima_actualizacion = ? 
-        WHERE id = 1
-    """, (nuevo_proyecto, ahora))
-    conexion.commit()
-    conexion.close()
-    print(f"¡Proyecto actualizado a: '{nuevo_proyecto}'!")
 
-def guardar_mensaje(rol, mensaje):
-    """Guarda un mensaje en el historial (rol puede ser 'user' o 'model')."""
+def actualizar_proyecto(nuevo_proyecto):
     conexion = obtener_conexion()
     cursor = conexion.cursor()
-    ahora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute("""
-        INSERT INTO historial_conversacion (timestamp, rol, mensaje)
-        VALUES (?, ?, ?)
-    """, (ahora, rol, mensaje))
+        UPDATE perfil_usuario SET proyecto_actual = ?, ultima_actualizacion = ? WHERE id = 1
+    """, (nuevo_proyecto, _ahora()))
     conexion.commit()
     conexion.close()
+    print(f"Proyecto actualizado a: '{nuevo_proyecto}'")
+
+
+# ============================================================
+# SELF-STATE (identidad y límites de L-IA)
+# ============================================================
+
+def obtener_self_state():
+    """Devuelve el estado interno de L-IA como diccionario."""
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("SELECT * FROM self_state WHERE id = 1")
+    estado = cursor.fetchone()
+    conexion.close()
+    return dict(estado) if estado else None
+
+
+def actualizar_self_state(**campos):
+    """
+    Actualiza cualquier subconjunto de columnas de self_state.
+    Ejemplo: actualizar_self_state(vram_gpu_gb=8, gpu_modelo="RTX 4070")
+    """
+    if not campos:
+        return
+    campos["ultima_actualizacion"] = _ahora()
+    set_clause = ", ".join(f"{col} = ?" for col in campos)
+    valores = list(campos.values())
+
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute(f"UPDATE self_state SET {set_clause} WHERE id = 1", valores)
+    conexion.commit()
+    conexion.close()
+    print(f"Self-state actualizado: {list(campos.keys())}")
+
+
+# ============================================================
+# HERRAMIENTAS
+# ============================================================
+
+def listar_herramientas(solo_activas=True):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    if solo_activas:
+        cursor.execute("SELECT * FROM herramientas WHERE activa = 1 ORDER BY nombre")
+    else:
+        cursor.execute("SELECT * FROM herramientas ORDER BY nombre")
+    filas = cursor.fetchall()
+    conexion.close()
+    return [dict(f) for f in filas]
+
+
+def agregar_herramienta(nombre, descripcion=""):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO herramientas (nombre, descripcion, activa, fecha_agregada)
+            VALUES (?, ?, 1, ?)
+        """, (nombre, descripcion, _ahora()))
+        conexion.commit()
+        print(f"Herramienta agregada: {nombre}")
+    except sqlite3.IntegrityError:
+        print(f"La herramienta '{nombre}' ya existe.")
+    conexion.close()
+
+
+def establecer_estado_herramienta(nombre, activa: bool):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("""
+        UPDATE herramientas SET activa = ? WHERE nombre = ?
+    """, (1 if activa else 0, nombre))
+    conexion.commit()
+    conexion.close()
+    print(f"Herramienta '{nombre}' {'activada' if activa else 'desactivada'}.")
+
+
+# ============================================================
+# MEMORIA DE HECHOS (clave-valor extensible)
+# ============================================================
+
+def guardar_hecho(clave, valor, categoria=None):
+    """Guarda o actualiza un dato suelto aprendido sobre el usuario."""
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("""
+        INSERT INTO memoria_hechos (clave, valor, categoria, ultima_actualizacion)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(clave) DO UPDATE SET
+            valor = excluded.valor,
+            categoria = excluded.categoria,
+            ultima_actualizacion = excluded.ultima_actualizacion
+    """, (clave, valor, categoria, _ahora()))
+    conexion.commit()
+    conexion.close()
+
+
+def obtener_hecho(clave):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("SELECT valor FROM memoria_hechos WHERE clave = ?", (clave,))
+    fila = cursor.fetchone()
+    conexion.close()
+    return fila["valor"] if fila else None
+
+
+def listar_hechos(categoria=None):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    if categoria:
+        cursor.execute("SELECT * FROM memoria_hechos WHERE categoria = ?", (categoria,))
+    else:
+        cursor.execute("SELECT * FROM memoria_hechos")
+    filas = cursor.fetchall()
+    conexion.close()
+    return [dict(f) for f in filas]
+
+
+# ============================================================
+# HISTORIAL DE CONVERSACIÓN
+# ============================================================
+
+def guardar_mensaje(rol, mensaje, sesion_id=None):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("""
+        INSERT INTO historial_conversacion (timestamp, rol, mensaje, sesion_id)
+        VALUES (?, ?, ?, ?)
+    """, (_ahora(), rol, mensaje, sesion_id))
+    conexion.commit()
+    conexion.close()
+
 
 def obtener_historial_reciente(limite=10):
-    """Recupera los últimos X mensajes del historial para darle contexto a la IA."""
     conexion = obtener_conexion()
     cursor = conexion.cursor()
-    # Traemos los últimos mensajes ordenados por ID descendente
     cursor.execute("""
-        SELECT rol, mensaje FROM historial_conversacion 
+        SELECT rol, mensaje FROM historial_conversacion
         ORDER BY id DESC LIMIT ?
     """, (limite,))
     mensajes = cursor.fetchall()
     conexion.close()
-    
-    # Invertimos la lista para que queden en orden cronológico correcto (del más viejo al más nuevo)
     return [dict(msg) for msg in reversed(mensajes)]
 
+
 def borrar_historial():
-    """Limpia el historial de conversación (útil para iniciar una nueva sesión limpia)."""
     conexion = obtener_conexion()
     cursor = conexion.cursor()
     cursor.execute("DELETE FROM historial_conversacion")
     conexion.commit()
     conexion.close()
-    print("¡Historial de chat reiniciado con éxito!")
+    print("Historial de chat reiniciado.")
+
+
+# ============================================================
+# CONTEXTO COMPLETO PARA EL PROMPT BUILDER
+# ============================================================
+
+def construir_contexto_ia(limite_historial=10):
+    """
+    Junta perfil, self-state, herramientas activas e historial reciente
+    en un solo dict, listo para que prompt_builder.py arme el prompt del sistema.
+    """
+    return {
+        "perfil": obtener_perfil(),
+        "self_state": obtener_self_state(),
+        "herramientas": listar_herramientas(solo_activas=True),
+        "hechos": listar_hechos(),
+        "historial_reciente": obtener_historial_reciente(limite=limite_historial),
+    }
+
 
 if __name__ == "__main__":
-    print("--- Probando Memoria de L-IA ---")
+    print("--- Probando Memoria de L-IA (refactorizada) ---")
     inicializar_base_datos()
-    
-    # 1. Probar lectura de perfil
+
     perfil = obtener_perfil()
-    print(f"\n[Perfil Detectado] Nombre: {perfil['nombre']}, Proyecto: {perfil['proyecto_actual']}")
-    
-    # 2. Probar actualización de proyecto
-    actualizar_proyecto("Desarrollo del cerebro de L-IA paso a paso")
-    perfil_actualizado = obtener_perfil()
-    print(f"[Perfil Actualizado] Nuevo Proyecto: {perfil_actualizado['proyecto_actual']}")
-    
-    # 3. Probar escritura de historial
-    print("\nSimulando conversación rápida...")
+    print(f"\n[Perfil] {perfil['nombre']} - Proyecto: {perfil['proyecto_actual']}")
+
+    estado = obtener_self_state()
+    print(f"[Self-state] {estado['nombre']} corriendo en {estado['cpu']} / {estado['vram_gpu_gb']}GB VRAM")
+
+    print("\n[Herramientas activas]")
+    for h in listar_herramientas():
+        print(f"  - {h['nombre']}: {h['descripcion']}")
+
+    guardar_hecho("editor_preferido", "VS Code", categoria="preferencias_dev")
+    print(f"\n[Hecho guardado] editor_preferido = {obtener_hecho('editor_preferido')}")
+
     guardar_mensaje("user", "Hola L-IA, ¿cómo estás?")
-    guardar_mensaje("model", "¡Hola Alejandro! Estoy lista para ayudarte con tu nuevo proyecto.")
-    
-    # 4. Probar lectura de historial
-    historial = obtener_historial_reciente(limite=5)
-    print("\n--- Historial Reciente de Sesión ---")
-    for msg in historial:
-        print(f"{msg['rol'].upper()}: {msg['mensaje']}")
+    guardar_mensaje("model", "¡Hola Alejandro! Lista para ayudarte.")
+
+    print("\n[Contexto completo para prompt_builder]")
+    print(json.dumps(construir_contexto_ia(), indent=2, ensure_ascii=False, default=str))

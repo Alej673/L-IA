@@ -551,6 +551,95 @@ def leer_portapapeles():
     except Exception as e:
         return {"error": f"Fallo al leer portapapeles: {str(e)}"}
 
+# ==========================================
+# TOOL MANAGER (Capa de Permisos y Seguridad)
+# ==========================================
+# Niveles de riesgo:
+# 0 = Segura (lectura pasiva)
+# 1 = Local Benigna (ejecutar apps conocidas)
+# 2 = Peligrosa (borrar, modificar, comandos de terminal libre)
+
+CATALOGO_HERRAMIENTAS = {
+    "obtener_estado_sistema": {"nivel": 0},
+    "leer_portapapeles": {"nivel": 0},
+    "buscar_archivo_local": {"nivel": 0},
+    "leer_archivo_local": {"nivel": 0},
+    "abrir_aplicacion": {"nivel": 1},
+    "ejecutar_comando_sistema": {"nivel": 2} # Herramienta peligrosa de prueba
+}
+
+def gestor_permisos(nombre_herramienta: str, callback_ui_permiso=None, **kwargs):
+    """
+    Cortafuegos interno adaptado para interfaz gráfica.
+    - callback_ui_permiso: una función externa (idealmente un popup de Tkinter) 
+      que recibe el nombre de la herramienta y los argumentos, y retorna True (S) o False (N).
+    """
+    config = CATALOGO_HERRAMIENTAS.get(nombre_herramienta)
+    
+    if not config:
+        return f"🚫 [Tool Manager]: Herramienta '{nombre_herramienta}' no registrada en el catálogo de seguridad."
+        
+    nivel_riesgo = config["nivel"]
+    
+    # Nivel 0 y 1: Ejecución silenciosa o con log benigno
+    if nivel_riesgo <= 1:
+        if nivel_riesgo == 1:
+            print(f"🛡️ [Tool Manager]: Acción benigna permitida automáticamente ({nombre_herramienta})")
+        return _ejecutar_dinamico(nombre_herramienta, **kwargs)
+        
+    # Nivel 2: Intervención humana obligatoria
+    if nivel_riesgo == 2:
+        print(f"\n⚠️ [ALERTA DE SEGURIDAD L-IA] ⚠️")
+        print(f"El modelo intentó ejecutar una herramienta PELIGROSA: '{nombre_herramienta}'")
+        print(f"Argumentos detectados: {kwargs}")
+        
+        autorizado = False
+        
+        # Si la interfaz gráfica (interfaz_lia.py) pasó una función visual, la usamos
+        if callback_ui_permiso and callable(callback_ui_permiso):
+            autorizado = callback_ui_permiso(nombre_herramienta, kwargs)
+        else:
+            # Respaldo por consola si se ejecuta desde terminal pura
+            while True:
+                respuesta = input("¿Autorizas la ejecución en tu sistema? [S/N]: ").strip().upper()
+                if respuesta == 'S':
+                    autorizado = True
+                    break
+                elif respuesta == 'N':
+                    autorizado = False
+                    break
+                else:
+                    print("Por favor, responde 'S' para Sí o 'N' para No.")
+                    
+        if autorizado:
+            print("✅ Ejecución autorizada.")
+            return _ejecutar_dinamico(nombre_herramienta, **kwargs)
+        else:
+            print("⛔ Ejecución bloqueada.")
+            return f"🚫 [Tool Manager]: El usuario (Alejandro) bloqueó manualmente la ejecución de '{nombre_herramienta}' por razones de seguridad."
+
+def _ejecutar_dinamico(nombre_herramienta, **kwargs):
+    """Enrutador interno (dispatch) hacia la función real en tools.py"""
+    if nombre_herramienta == "abrir_aplicacion":
+        return abrir_aplicacion(kwargs.get("nombres_apps", ""))
+    elif nombre_herramienta == "obtener_estado_sistema":
+        return obtener_estado_sistema()
+    elif nombre_herramienta == "buscar_archivo_local":
+        return buscar_archivo_local(kwargs.get("nombre_archivo", ""))
+    elif nombre_herramienta == "leer_archivo_local":
+        return leer_archivo_local(kwargs.get("ruta_archivo", ""))
+    elif nombre_herramienta == "leer_portapapeles":
+        return leer_portapapeles()
+    elif nombre_herramienta == "ejecutar_comando_sistema":
+        # Ejemplo de ejecución futura controlada
+        cmd = kwargs.get("comando", "")
+        try:
+            resultado = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+            return resultado.stdout if resultado.returncode == 0 else resultado.stderr
+        except Exception as e:
+            return f"Error ejecutando comando: {e}"
+    else:
+        return f"Error: No hay lógica de despacho para {nombre_herramienta}"
 # Aquí más adelante agregaremos:
 # - reproducir_musica(genero) -> Para Spotify
 # - controlar_luces() -> Para IoT (Home Assistant)

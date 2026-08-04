@@ -114,8 +114,11 @@ class InterfazLIA:
             # MAGIA AQUÍ: Le inyectamos el contexto de la ventana y el texto resaltado
             mensaje_con_contexto = contexto.inyectar_contexto_implicito(mensaje)
 
-            # El cerebro recibe el mensaje enriquecido
-            respuesta, origen = cerebro.charlar_con_lia(mensaje_con_contexto)
+            # El cerebro recibe el mensaje enriquecido y la función del popup visual
+            respuesta, origen = cerebro.charlar_con_lia(
+                mensaje_con_contexto, 
+                callback_ui=self.solicitar_permiso_ui
+            )
 
             # --- INTERCEPTOR DE MÚLTIPLES ARCHIVOS ---
             # OJO: antes esto dependía de que la respuesta contuviera literalmente
@@ -149,6 +152,80 @@ class InterfazLIA:
 
         self.input_field.config(state=tk.NORMAL)
         self.input_field.focus_set()
+
+    # ==========================================
+    # VENTANA EMERGENTE DE PERMISOS (Tool Manager)
+    # ==========================================
+    def solicitar_permiso_ui(self, nombre_herramienta, argumentos):
+        """
+        Bloquea el hilo de ejecución de forma segura y lanza un popup visual
+        para que el usuario decida si autoriza o bloquea una herramienta de Nivel 2.
+        Usa un Event de threading para esperar la respuesta sin congelar la UI de Tkinter.
+        """
+        resultado_permiso = threading.Event()
+        decision = {"autorizado": False}
+
+        def _dibujar_popup_seguridad():
+            popup = tk.Toplevel(self.root)
+            popup.title("⚠️ L-IA: Alerta de Seguridad")
+            popup.geometry("450x220")
+            popup.configure(bg="#11111b")
+            popup.attributes('-topmost', True)
+
+            # Centrar sobre la ventana principal
+            x = self.root.winfo_x() + 100
+            y = self.root.winfo_y() + 100
+            popup.geometry(f"+{x}+{y}")
+
+            tk.Label(
+                popup, 
+                text="⚠️ ACCIÓN DEL SISTEMA BLOQUEADA", 
+                bg="#11111b", fg="#f38ba8", font=("Consolas", 11, "bold")
+            ).pack(pady=(15, 5))
+
+            texto_aviso = (
+                f"El modelo intenta ejecutar una acción de Nivel 2:\n"
+                f"Herramienta: {nombre_herramienta}\n"
+                f"Argumentos: {argumentos}"
+            )
+            tk.Label(
+                popup, text=texto_aviso, bg="#11111b", fg="#cdd6f4", 
+                font=("Consolas", 9), justify=tk.LEFT, wraplength=400
+            ).pack(pady=5)
+
+            def permitir():
+                decision["autorizado"] = True
+                popup.destroy()
+                resultado_permiso.set()
+
+            def bloquear():
+                decision["autorizado"] = False
+                popup.destroy()
+                resultado_permiso.set()
+
+            # Botones de decisión
+            frame_botones = tk.Frame(popup, bg="#11111b")
+            frame_botones.pack(pady=15)
+
+            tk.Button(
+                frame_botones, text="PERMITIR [S]", bg="#a6e3a1", fg="#11111b",
+                font=("Consolas", 9, "bold"), bd=0, padx=10, pady=5, command=permitir
+            ).pack(side=tk.LEFT, padx=10)
+
+            tk.Button(
+                frame_botones, text="BLOQUEAR [N]", bg="#f38ba8", fg="#11111b",
+                font=("Consolas", 9, "bold"), bd=0, padx=10, pady=5, command=bloquear
+            ).pack(side=tk.LEFT, padx=10)
+
+            # Si cierran la ventana con la 'X', se cuenta como bloqueado por defecto
+            popup.protocol("WM_DELETE_WINDOW", bloquear)
+
+        # Agenda el dibujo en el hilo principal de Tkinter de forma segura
+        self.root.after(0, _dibujar_popup_seguridad)
+        
+        # Espera a que el usuario haga clic en uno de los botones (bloquea solo el hilo en segundo plano)
+        resultado_permiso.wait()
+        return decision["autorizado"]
 
     # ==========================================
     # MÉTODOS PARA VENTANA EMERGENTE DE SELECCIÓN
