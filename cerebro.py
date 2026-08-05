@@ -12,6 +12,7 @@ import tools
 import apis
 import ollama
 import difflib
+import contexto
 
 # ==========================================
 # 1. CONFIGURACIÓN INICIAL Y SEMÁFORO
@@ -33,9 +34,6 @@ MODELO_NUBE_FLASH = 'gemini-3.5-flash' # Analista rápido (visión, web, context
 MODELO_NUBE_PRO = 'gemini-3.1-pro'     # Artillería pesada (contexto enorme / análisis profundo)
 
 # Memoria de "en qué proyecto estamos parados" entre turnos de conversación.
-# Se actualiza en _procesar_git cuando el usuario menciona un alias conocido
-# o una ruta explícita; si no menciona ninguno, se queda con el último valor
-# (así "revisa qué cambió" después de "revisa bastones" sigue en bastones).
 PROYECTO_ACTIVO_ACTUAL = None
 
 # ==========================================
@@ -47,12 +45,10 @@ def estimar_tokens(texto: str) -> int:
         return 0
     return len(texto) // 4
 
-# Umbrales dinámicos (Protección de VRAM local)
-LIMITE_TOKENS_CASUAL = 4000     # ~16 KB -> Tareas de charla (requieren menos output)
-LIMITE_TOKENS_CODIGO = 3000     # ~12 KB -> Tareas de código (requieren generar output largo)
-LIMITE_TOKENS_FLASH = 30000     # ~120 KB -> Límite superior antes de saltar a Gemini Pro
+LIMITE_TOKENS_CASUAL = 4000
+LIMITE_TOKENS_CODIGO = 3000
+LIMITE_TOKENS_FLASH = 30000
 
-# Frases que exigen razonamiento profundo
 _FRASES_ANALISIS_PROFUNDO = (
     "análisis profundo",
     "analisis profundo",
@@ -60,19 +56,17 @@ _FRASES_ANALISIS_PROFUNDO = (
     "revisa la arquitectura completa",
     "analiza todo el código",
     "analiza todo el código fuente",
-    "revisa la arquitectura completa",
-    "analiza profundamente"
+    "analiza profundamente",
+    "refactoriza todo el código"
 )
 
 # ------------------------------------------
-# "Semáforo" de intenciones — v2 (raíz + exclusiones)
+# "Semáforo" de intenciones — v3 (raíz + exclusiones, más conjugaciones)
 # ------------------------------------------
 def _construir_patron(raices, excluir=None):
     """
     Arma un regex que atrapa cualquier conjugación de una lista de raíces
-    (ej. raíz "abr" -> abre, abrir, abriste, abriendo, abrió, ábrelo...)
-    excluyendo palabras COMPLETAS que se parecen pero no son la acción
-    (ej. raíz "abr" no debe disparar con "abril", "abrigo", "abrazo").
+    excluyendo palabras COMPLETAS que se parecen pero no son la acción.
     """
     alternativas = "|".join(raices)
     if not excluir:
@@ -87,14 +81,17 @@ _RAICES = {
     "vision": [
         "pantall", "monitor", "mir", "observ",
         "ve", "vio", "vier", "viend", "vist", "vem",
+        "chequ", "escane", "fij[aá]te",
     ],
     "abrir_app": [
         "abr", "inici", "ejecut", "lanz", "lanc",
         "arranc", "activ", "prend", "corr[ée]",
+        "carg", "levant", "monta",
     ],
     "estado_pc": [
         "estado", "diagn[oó]stic", "bater[ií]",
         "proces", "consum", "rendimient", "lent",
+        "especific", "salud del sistema",
     ],
     "portapapeles": [
         "portapapeles", "copi", "peg", "clipboard",
@@ -102,15 +99,21 @@ _RAICES = {
     "codigo": [
         "c[oó]dig", "analiz", "bug", "error", "optimiz",
         "refactoriz", "revis", "depur", "corrig", "arregl",
+        "audit", "mejor[aá]", "prueb[ae]",
     ],
     "web": [
         "investig", "busc", "consult", "averigu", "googl",
+        "indag", "infórmate", "informate",
     ],
     "clima": [
         "clima", "temperatur", "pronostic", "meteorolog",
+        "llov", "llueve", "solead",
     ],
     "calendario": [
         "calendari", "agend", "evento", "reuni[oó]n", "cita", "compromis",
+    ],
+    "entorno_activo": [
+        "ventana", "programa", "abierto ahora", "en la pantalla", "herramienta", "proyecto actual"
     ],
 }
 
@@ -121,9 +124,19 @@ _EXCLUSIONES = {
         "abrazo", "abrazos", "abrupt[oa]s?",
         "inicial", "iniciales", "iniciativ[a]s?",
         "ejecutiv[oa]s?",
+        "cargador", "cargadores", "cargamento", "cargamentos",
+        "levantamiento", "levantamientos",
+        "montaña", "montañas", "montaje", "montajes",
     ],
     "estado_pc": [
         "procesion", "procesiones", "procesional",
+        "procesión", "procesiones",
+    ],
+    "codigo": [
+        "mejoramiento", "mejoramientos",
+    ],
+    "clima": [
+        "temperamento", "temperamentos", "temperamental",
     ],
 }
 
@@ -152,10 +165,6 @@ PATRONES_CLAVE["uncensored"] = re.compile(
     re.IGNORECASE
 )
 
-# "git" también son frases fijas explícitas, igual que 'hora': no tiene
-# sentido una raíz suelta acá (ej. la raíz "commit" es rara en español
-# fuera de este contexto, así que preferimos frases completas).
-# Ahora se activará con solo mencionar palabras clave, sin importar la conjugación
 PATRONES_CLAVE["git"] = re.compile(
     r'\b(git|repositorio|repo|commits?|cambios en git)\b',
     re.IGNORECASE
@@ -166,11 +175,74 @@ PATRONES_CLAVE["guardar_git"] = re.compile(
     re.IGNORECASE
 )
 
+# Fase 8 — Guía de capacidades. Frases fijas (no raíz) para no chocar
+# con pedidos normales como "ayúdame a refactorizar X".
+PATRONES_CLAVE["guia_capacidades"] = re.compile(
+    r'(qu[eé]\s+puedes\s+hacer|qu[eé]\s+sabes\s+hacer|c[oó]mo\s+te\s+uso|'
+    r'c[oó]mo\s+se\s+te\s+usa|c[oó]mo\s+funcionas|qu[eé]\s+comandos\s+tienes|'
+    r'lista\s+de\s+comandos|estoy\s+perdid[oa]|no\s+s[eé]\s+qu[eé]\s+pedirte|'
+    r'no\s+s[eé]\s+c[oó]mo\s+usarte|qu[eé]\s+funciones\s+tienes|'
+    r'dame\s+un\s+resumen\s+de\s+tus\s+funciones|qu[eé]\s+m[aá]s\s+puedes\s+hacer)',
+    re.IGNORECASE
+)
+
 def _detectar_intenciones(mensaje_lower: str) -> dict:
-    return {
+    intenciones = {
         clave: bool(patron.search(mensaje_lower))
         for clave, patron in PATRONES_CLAVE.items()
     }
+    # Señales de código por SINTAXIS (no por palabra hablada): variables PHP,
+    # llaves, palabra "function". Antes esto solo apagaba "web" en charlar_con_lia
+    # sin nunca confirmar "codigo" -- ahora vive en un solo lugar.
+    if not intenciones.get("codigo") and re.search(r'\$\w+|\bfunction\s|[{};]', mensaje_lower):
+        intenciones["codigo"] = True
+    return intenciones
+
+# Fase 7: Comando manual para el Workspace Activo
+PATRONES_CLAVE["fijar_workspace"] = re.compile(
+    r'\b(estoy\s+trabajando\s+en|fija\s+el\s+contexto\s+en|abre\s+el\s+proyecto|mira\s+el\s+archivo)\b',
+    re.IGNORECASE
+)
+
+PATRONES_CLAVE["limpiar_workspace"] = re.compile(
+    r'\b(cierra\s+el\s+proyecto|limpia\s+el\s+workspace|olvida\s+el\s+archivo\s+actual|ya\s+no\s+estamos\s+en)\b',
+    re.IGNORECASE
+)
+
+# ==========================================
+# 1.6 GUÍA DE CAPACIDADES (Fase 8)
+# ==========================================
+# Fuente única de verdad: si agregas una categoría nueva a _RAICES o un
+# patrón nuevo suelto, agrega su descripción aquí y la guía queda al día
+# sola. Nunca escribas un texto de ayuda aparte que se desincronice.
+_DESCRIPCIONES_CAPACIDADES = {
+    "vision":            "ver tu pantalla y describir o analizar lo que hay en ella",
+    "abrir_app":         "abrir aplicaciones, carpetas o proyectos por nombre o alias que le enseñes",
+    "estado_pc":         "revisar el estado de tu hardware: CPU, RAM, batería y qué procesos consumen más",
+    "portapapeles":      "leer y analizar lo que tengas copiado en el portapapeles",
+    "codigo":            "analizar, depurar, revisar o refactorizar código que le compartas",
+    "web":               "buscar información actual en internet cuando su conocimiento no alcanza",
+    "clima":             "consultar el clima de cualquier ciudad",
+    "calendario":        "revisar tus próximos eventos de calendario",
+    "git":               "leer el estado de un repositorio Git: cambios pendientes y últimos commits",
+    "guardar_git":       "redactar un mensaje de commit y subir los cambios (add, commit y push) automáticamente",
+    "fijar_workspace":   "fijar un archivo o proyecto como su 'workspace activo' para recordarlo en preguntas de seguimiento",
+    "limpiar_workspace": "olvidar el workspace activo actual",
+    "entorno_activo":    "saber qué ventana o programa tienes abierto en este momento sin tener que preguntarte",
+    "uncensored":        "cambiar temporalmente a un modo sin filtros para conversación más directa, si se lo pides explícitamente",
+}
+
+
+def _generar_nota_guia_capacidades():
+    lineas = "\n".join(f"- {desc}." for desc in _DESCRIPCIONES_CAPACIDADES.values())
+    return (
+        "\n\n[SISTEMA — EL USUARIO PIDIÓ UNA GUÍA DE TUS CAPACIDADES]\n"
+        f"Estas son tus funciones reales, en bruto:\n{lineas}\n\n"
+        "[INSTRUCCIÓN CRÍTICA]: NO copies esta lista textual ni la enumeres como manual técnico. "
+        "Explícasela a Alejandro con tu personalidad de siempre, en 1-2 párrafos naturales, agrupando "
+        "capacidades parecidas y dando 1 o 2 ejemplos concretos de frases que podría usar contigo. "
+        "Ciérralo invitándolo a probar algo, sin sonar corporativa ni como lista de features de una app."
+    )
 
 
 # ==========================================
@@ -238,11 +310,6 @@ def _extraer_ciudad_clima(mensaje):
 
 
 def _extraer_ruta_o_usar_actual(mensaje):
-    """
-    Busca una ruta absoluta de Windows en el mensaje (entre comillas o
-    suelta). Si el usuario no especificó ninguna, usa el directorio
-    actual del proceso como fallback razonable.
-    """
     match_comillas = re.search(r'"([a-zA-Z]:\\[^"]+)"', mensaje)
     if match_comillas:
         return match_comillas.group(1).strip()
@@ -254,19 +321,13 @@ def _extraer_ruta_o_usar_actual(mensaje):
     return os.getcwd()
 
 
-# Archivo donde guardas tus alias:
 _ARCHIVO_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_apps.json")
 
 
 def _cargar_rutas_personalizadas() -> dict:
-    """
-    Carga los alias de proyectos desde la clave 'carpetas_personalizadas'
-    de config_apps.json.
-    """
     try:
         with open(_ARCHIVO_CONFIG, "r", encoding="utf-8") as f:
             config = json.load(f)
-            # Extraemos únicamente el diccionario de rutas personalizadas
             return config.get("carpetas_personalizadas", {})
     except FileNotFoundError:
         print("⚠️ [config_apps.json no encontrado]")
@@ -275,58 +336,29 @@ def _cargar_rutas_personalizadas() -> dict:
         print(f"⚠️ [config_apps.json inválido: {e}]")
         return {}
 
+
 def _encontrar_ruta_inteligente(mensaje_lower, rutas_conocidas):
-    """
-    Busca la ruta de forma flexible ignorando palabras de relleno.
-    """
-    # 1. Limpiamos palabras basura que sueles decir al hablar natural
     mensaje_limpio = re.sub(r'\b(mi|el|la|de|carpeta|proyecto|repositorio|repo)\b', '', mensaje_lower).strip()
-    
-    # 2. Búsqueda directa rápida
+
     for alias, ruta in rutas_conocidas.items():
         if alias in mensaje_lower:
             return alias, ruta
 
-    # 3. Búsqueda por similitud (Magia de difflib)
-    # Comparamos las palabras clave del mensaje con los alias del JSON
     palabras = mensaje_limpio.split()
     for palabra in palabras:
-        if len(palabra) < 3: continue # Ignoramos conectores cortos
+        if len(palabra) < 3:
+            continue
         coincidencias = difflib.get_close_matches(palabra, rutas_conocidas.keys(), n=1, cutoff=0.6)
         if coincidencias:
             alias_encontrado = coincidencias[0]
             return alias_encontrado, rutas_conocidas[alias_encontrado]
-            
+
     return None, None
 
 # ==========================================
-# 2.5 DESPACHO SEGURO DE HERRAMIENTAS (NUEVO)
+# 2.5 DESPACHO SEGURO DE HERRAMIENTAS
 # ==========================================
-# ------------------------------------------
-# Antes: cada ruta (Local, Nube) tenía su propio código para llamar a la
-# herramienta pedida por el modelo. La ruta Local sí pasaba por
-# tools.gestor_permisos() para 'abrir_aplicacion', pero para
-# 'obtener_estado_sistema' llamaba a tools.obtener_estado_sistema() DIRECTO.
-# La ruta Nube llamaba a tools.abrir_aplicacion() DIRECTO, sin pasar por
-# el cortafuegos en absoluto.
-#
-# Esto funcionaba "por casualidad" porque ambas herramientas eran nivel 0/1
-# (auto-aprobadas). El problema es a futuro: en cuanto agregues una
-# herramienta nivel 2 (ejecutar_comando_sistema, borrar_archivo, etc.) a
-# cualquiera de las dos rutas, esa ruta se saltaría el permiso del usuario
-# por completo si no pasa por gestor_permisos.
-#
-# Ahora: TODA ejecución de herramienta, venga de donde venga (JSON manual
-# de Gemma2 o function_call nativo de Gemini), pasa por este único punto.
-# El nivel de riesgo lo decide el catálogo en tools.py, no el cerebro.
 def _ejecutar_herramienta_segura(nombre_herramienta: str, callback_ui_permiso=None, **kwargs):
-    """
-    Único punto de entrada para ejecutar CUALQUIER herramienta, sin
-    importar qué cerebro (Local, Dolphin o Nube) la solicitó. Delega
-    100% la decisión de riesgo/permiso a tools.gestor_permisos(), que
-    consulta el CATALOGO_HERRAMIENTAS y pide confirmación humana si
-    hace falta.
-    """
     print(f"⚙️ [Despacho seguro] Solicitando ejecución de: '{nombre_herramienta}' args={kwargs}")
     return tools.gestor_permisos(
         nombre_herramienta,
@@ -335,11 +367,6 @@ def _ejecutar_herramienta_segura(nombre_herramienta: str, callback_ui_permiso=No
     )
 
 
-# Plantillas de "bozal" por herramienta: qué le decimos al modelo que
-# haga con el resultado de cada tool call. Si una herramienta nueva no
-# tiene plantilla propia, usa _BOZAL_GENERICO como respaldo, así que
-# agregar una tool nueva a futuro no requiere tocar responder_con_nube
-# ni responder_con_local — solo (opcionalmente) agregar su entrada aquí.
 def _bozal_abrir_aplicacion(resultado: str) -> str:
     return (
         f"RESULTADO DE LA BÚSQUEDA EN WINDOWS: {resultado}\n\n"
@@ -395,35 +422,15 @@ def _generar_prompt_bozal(nombre_herramienta: str, resultado: str) -> str:
 # ==========================================
 # 3. RUTA A: LA NUBE (Gemini Flash / Pro)
 # ==========================================
-
-# Declaración manual de función para Gemini: le dice a la Nube QUÉ
-# parámetros necesita pedir si decide por su cuenta que necesita revisar
-# un repositorio Git (sin que el usuario haya usado ninguna de las
-# frases gatillo del Semáforo local).
-declaracion_leer_git = {
-    "name": "leer_repositorio_git",
-    "description": "Obtiene el estado de Git (git status) y los últimos commits de una carpeta local.",
-    "parameters": {
-        "type": "OBJECT",
-        "properties": {
-            "ruta_repo": {
-                "type": "STRING",
-                "description": "La ruta absoluta de la carpeta del proyecto en el disco duro (ej: C:\\Users\\...)."
-            }
-        },
-        "required": ["ruta_repo"]
-    }
-}
+def leer_repositorio_git(ruta_repo: str) -> str:
+    """
+    Obtiene el estado de Git (git status) y los últimos commits de una carpeta local.
+    """
+    pass  # Solo está aquí para que Gemini lea el nombre y el parámetro. El Cerebro interceptará la llamada.
 
 
 def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, buscar_web=False,
                         modelo_nube=MODELO_NUBE_FLASH, callback_ui=None):
-    """
-    Envía la conversación al modelo de Gemini indicado en `modelo_nube`.
-    `callback_ui` se propaga hasta tools.gestor_permisos() para que, si
-    Gemini pide ejecutar una herramienta de riesgo (nivel 2), la app
-    pueda mostrar el mismo popup de confirmación que usa la ruta Local.
-    """
     print(f"\n[☁️ Enrutando a la Nube ({modelo_nube})...]")
 
     texto_completo = f"{instrucciones_sistema}\n\n{contexto_historico}"
@@ -433,12 +440,11 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
         imagen_en_ram = tomar_captura_en_memoria()
         contenidos_api.insert(0, imagen_en_ram)
 
-    # AISLAMIENTO DE HERRAMIENTAS (Fix del Error 400 INVALID_ARGUMENT)
     if buscar_web:
         print("🌐 [Activando módulo de búsqueda en internet de Google...]")
         herramientas_activas = [{"google_search": {}}]
     else:
-        herramientas_activas = [tools.abrir_aplicacion, declaracion_leer_git]
+        herramientas_activas = [tools.abrir_aplicacion, leer_repositorio_git]
 
     max_reintentos = 3
     espera = 4
@@ -455,12 +461,6 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
                 llamada = response.function_calls[0]
                 argumentos = dict(llamada.args) if llamada.args else {}
 
-                # ANTES: tools.abrir_aplicacion(llamada.args.get("nombres_apps", ""))
-                #        -> saltaba el cortafuegos por completo.
-                # AHORA: pasa por el mismo despacho seguro que usa la ruta Local,
-                # usando llamada.name genéricamente (no hardcodeado a
-                # 'abrir_aplicacion'), así cualquier tool que agregues a
-                # `herramientas_activas` a futuro queda protegida automáticamente.
                 resultado_sistema = _ejecutar_herramienta_segura(
                     llamada.name,
                     callback_ui_permiso=callback_ui,
@@ -495,16 +495,26 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
 # ==========================================
 def _extraer_llamada_manual(texto):
     match = re.search(r'\{[^{}]*"accion"[^{}]*\}', texto, re.DOTALL)
-    return json.loads(match.group(0)) if match else None
+    if match:
+        return json.loads(match.group(0))
+
+    # --- Fallback: gemma2 a veces ignora el formato JSON estricto y en su
+    # lugar devuelve una pseudo-llamada entre corchetes, ej:
+    #   [abrir_aplicacion "bloc_de_notas"]
+    # Sin este respaldo, esa llamada nunca se ejecuta ni se detecta: la app
+    # no se abre y el texto crudo (con corchetes) se le muestra al usuario,
+    # violando además la regla de "cero acotaciones actorales".
+    match_corchete = re.search(r'\[\s*(abrir_aplicacion|obtener_estado_sistema)\s+"([^"]+)"\s*\]', texto)
+    if match_corchete:
+        accion = match_corchete.group(1)
+        if accion == "abrir_aplicacion":
+            return {"accion": accion, "nombres_apps": match_corchete.group(2)}
+        return {"accion": accion}
+
+    return None
 
 
 def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir, quiere_estado, callback_ui=None):
-    """
-    Envía la conversación al modelo local (Ollama / Gemma 2). Si detecta
-    que hay que abrir una app o consultar el estado del sistema, fuerza
-    JSON estricto, y ejecuta la herramienta correspondiente a través del
-    mismo despacho seguro (_ejecutar_herramienta_segura) que usa la Nube.
-    """
     print(f"\n[🏠 Enrutando al Cerebro Local ({MODELO_LOCAL})...]")
 
     requiere_herramienta = quiere_abrir or quiere_estado
@@ -513,9 +523,17 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
     if requiere_herramienta:
         instrucciones_finales = "Eres un generador de JSON estricto. NUNCA uses texto conversacional. "
         if quiere_abrir:
-            instrucciones_finales += 'Formato: {"accion": "abrir_aplicacion", "nombres_apps": "<nombres>"}'
+            instrucciones_finales += (
+                'Formato EXACTO: {"accion": "abrir_aplicacion", "nombres_apps": "<nombres>"}. '
+                'INCORRECTO (nunca hagas esto): [abrir_aplicacion "<nombres>"] ni ningún otro formato '
+                'con corchetes, texto explicativo o markdown. Responde ÚNICAMENTE el JSON, nada más.'
+            )
         if quiere_estado:
-            instrucciones_finales += 'Formato: {"accion": "obtener_estado_sistema"}'
+            instrucciones_finales += (
+                'Formato EXACTO: {"accion": "obtener_estado_sistema"}. '
+                'INCORRECTO (nunca hagas esto): [obtener_estado_sistema] ni ningún otro formato '
+                'con corchetes, texto explicativo o markdown. Responde ÚNICAMENTE el JSON, nada más.'
+            )
 
     mensajes = [
         {'role': 'system', 'content': instrucciones_finales},
@@ -523,10 +541,18 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
     ]
 
     try:
+        opciones_llamada = {'num_gpu': 31}
+        if requiere_herramienta:
+            # Temperatura baja SOLO cuando esperamos JSON estricto: reduce la
+            # variabilidad que lleva a gemma2 a "improvisar" formatos como
+            # los corchetes en vez del JSON pedido. No se toca la temperatura
+            # de la conversación casual para no volverla robótica.
+            opciones_llamada['temperature'] = 0.1
+
         response = ollama.chat(
             model=MODELO_LOCAL,
             messages=mensajes,
-            options={'num_gpu': 31}
+            options=opciones_llamada
         )
         contenido_bruto = response['message']['content']
         llamada_manual = _extraer_llamada_manual(contenido_bruto) if requiere_herramienta else None
@@ -537,10 +563,6 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
         mensajes[0]['content'] = instrucciones_sistema
         accion = llamada_manual.get("accion")
 
-        # ANTES: 'obtener_estado_sistema' llamaba a tools.obtener_estado_sistema()
-        # directo, sin pasar por gestor_permisos. Inofensivo hoy (nivel 0),
-        # pero rompía la regla de "todo pasa por el catálogo de seguridad".
-        # AHORA ambas acciones usan el mismo despacho seguro que la Nube.
         kwargs_herramienta = {}
         if accion == "abrir_aplicacion":
             kwargs_herramienta = {"nombres_apps": llamada_manual.get("nombres_apps", "")}
@@ -637,6 +659,17 @@ def _envolver_contenido_externo(etiqueta, contenido):
     )
 
 
+def _procesar_entorno_automatico(contexto_historico):
+    """
+    Fase 7.2/7.3: Inyecta silenciosamente la ventana activa, usando la
+    MISMA fuente que contexto.inyectar_contexto_implicito() (fusionado
+    en contexto._bloque_contexto_ventana), para que la instrucción
+    anti-alucinación de rutas viva en un solo lugar sin importar si
+    app.py también la llama por su cuenta.
+    """
+    return contexto_historico + contexto._bloque_contexto_ventana()
+
+
 def _procesar_portapapeles(contexto_historico):
     print("\n📋 [L-IA analizando el portapapeles...]")
     datos = tools.leer_portapapeles()
@@ -671,30 +704,11 @@ def _procesar_calendario(contexto_historico):
 
 
 def _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=None):
-    """
-    Ejecuta 'leer_repositorio_git' a través del despacho seguro
-    (_ejecutar_herramienta_segura -> tools.gestor_permisos). Se resuelve
-    ANTES de elegir ruta (Local/Nube/Dolphin), así que sirve a las tres
-    por igual -- incluida la Nube cuando el alias ya resolvió la ruta
-    antes de que Gemini tuviera que adivinarla.
-
-    Resolución de la ruta, en orden de prioridad:
-      1. Alias conocido mencionado en el mensaje (rutas_git.json) -> cambia de proyecto.
-      2. Ruta absoluta de Windows escrita directo en el mensaje -> la usa.
-      3. Ninguna de las dos: si ya había un proyecto activo de un turno
-         anterior, se queda ahí (memoria). Si es la primera vez, cae al
-         directorio actual del proceso.
-
-    La salida de Git (mensajes de commit, nombres de rama) la escriben
-    terceros, no el usuario -> se envuelve como CONTENIDO EXTERNO no
-    confiable, igual que un archivo o el portapapeles.
-    """
     global PROYECTO_ACTIVO_ACTUAL
     rutas_conocidas = _cargar_rutas_personalizadas()
 
-    # Búsqueda flexible ignorando palabras de relleno
     alias_detectado, ruta_encontrada = _encontrar_ruta_inteligente(msg_lower, rutas_conocidas)
-    
+
     if ruta_encontrada:
         PROYECTO_ACTIVO_ACTUAL = ruta_encontrada
         print(f"📌 [Proyecto activo cambiado por alias flexible: '{alias_detectado}']")
@@ -715,20 +729,17 @@ def _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=None)
     )
     return contexto_historico
 
+
 def _ejecutar_guardado_git(msg_lower, callback_ui=None):
-    """Flujo de 3 pasos para hacer un commit inteligente."""
     global PROYECTO_ACTIVO_ACTUAL
     rutas_conocidas = _cargar_rutas_personalizadas()
 
-    # 1. Identificar el proyecto (igual que en lectura)
-    # Búsqueda flexible ignorando palabras de relleno
     alias_detectado, ruta_encontrada = _encontrar_ruta_inteligente(msg_lower, rutas_conocidas)
-    
+
     if ruta_encontrada:
         PROYECTO_ACTIVO_ACTUAL = ruta_encontrada
         print(f"📌 [Proyecto activo cambiado por alias flexible: '{alias_detectado}']")
     else:
-        # Aquí cambiamos mensaje_real por msg_lower
         match_ruta_explicita = re.search(r'[a-zA-Z]:\\(?:[^\s"<>|]+\\?)+', msg_lower)
         if match_ruta_explicita:
             PROYECTO_ACTIVO_ACTUAL = match_ruta_explicita.group(0).strip().rstrip('\\')
@@ -737,24 +748,19 @@ def _ejecutar_guardado_git(msg_lower, callback_ui=None):
     ruta = PROYECTO_ACTIVO_ACTUAL
     print(f"\n🧠 [L-IA analizando código en '{ruta}' para crear el commit...]")
 
-    # 2. Leer las diferencias y archivos nuevos
     import subprocess
     try:
-        # Primero revisamos el estado general (esto detecta archivos nuevos untracked)
         status = subprocess.run(['git', 'status', '--short'], cwd=ruta, capture_output=True, text=True, encoding='utf-8').stdout
-        
+
         if not status.strip():
             return f"Alejandro, revisé la carpeta {ruta} y no hay ningún cambio para guardar."
 
-        # Intentamos sacar el diff para ver las líneas de código (si aplica)
         diff = subprocess.run(['git', 'diff', 'HEAD'], cwd=ruta, capture_output=True, text=True, encoding='utf-8').stdout
-        
-        # Combinamos ambas salidas para que Gemma 2 tenga el contexto completo
+
         contexto_git = f"ESTADO DE ARCHIVOS:\n{status}\n\nDIFERENCIAS DE CÓDIGO:\n{diff[:1500]}"
     except Exception as e:
         return f"Error leyendo el estado de Git: {e}"
 
-    # 3. Pedirle a Gemma 2 que redacte el mensaje estructurado
     prompt_commit = (
         f"Eres un desarrollador experto. Basado en el siguiente reporte de Git:\n\n{contexto_git}\n\n"
         f"Redacta el mensaje del commit usando EXACTAMENTE este formato (sin Markdown ni saludos):\n"
@@ -762,36 +768,93 @@ def _ejecutar_guardado_git(msg_lower, callback_ui=None):
         f"DESCRIPCION: [Explicación técnica detallada de los cambios en 1 o 2 oraciones]"
     )
     print("🤖 [Generando mensaje de commit estructurado...]")
-    import ollama
     respuesta_llm = ollama.chat(
-        model=MODELO_LOCAL, 
+        model=MODELO_LOCAL,
         messages=[{'role': 'user', 'content': prompt_commit}]
     )['message']['content'].strip()
 
-    # Extraemos Título y Descripción con Regex
-    import re
     titulo_match = re.search(r'TITULO:\s*(.*)', respuesta_llm, re.IGNORECASE)
     desc_match = re.search(r'DESCRIPCION:\s*(.*)', respuesta_llm, re.IGNORECASE | re.DOTALL)
-    
+
     titulo = titulo_match.group(1).strip() if titulo_match else "Actualización automática de código"
     descripcion = desc_match.group(1).strip() if desc_match else respuesta_llm
 
     print(f"📝 [Título propuesto]: {titulo}")
 
-    # 4. Lanzar la herramienta destructiva
     resultado = _ejecutar_herramienta_segura(
-        "hacer_commit_git", 
-        callback_ui_permiso=callback_ui, 
-        ruta_repo=ruta, 
+        "hacer_commit_git",
+        callback_ui_permiso=callback_ui,
+        ruta_repo=ruta,
         titulo_commit=titulo,
         descripcion_commit=descripcion
     )
-    
+
     return (
         f"Intenté guardar los cambios en {ruta}.\n"
         f"Le propuse este título: '{titulo}'.\n"
         f"El resultado de la operación fue:\n{resultado}"
     )
+
+
+def _procesar_workspace_fase_7(mensaje_real, msg_lower, fijar: bool):
+    if not fijar:
+        database.limpiar_workspace_activo()
+        database.obtener_conexion().execute("DELETE FROM memoria_hechos WHERE clave = 'workspace_resumen'")
+        print("🧹 [Fase 7] Workspace limpiado por orden del usuario.")
+        return "[SISTEMA: El Workspace activo ha sido limpiado. L-IA ya no tiene ningún archivo fijado en memoria.]"
+
+    rutas_conocidas = _cargar_rutas_personalizadas()
+    alias_detectado, ruta_encontrada = _encontrar_ruta_inteligente(msg_lower, rutas_conocidas)
+
+    match_ruta_explicita = re.search(r'[a-zA-Z]:\\(?:[^\s"<>|]+\\?)+', mensaje_real)
+    ruta_absoluta = match_ruta_explicita.group(0).strip().rstrip('\\') if match_ruta_explicita else None
+
+    archivo_detectado = _extraer_referencia_archivo(mensaje_real)
+
+    ruta_final = None
+    if ruta_encontrada:
+        ruta_final = ruta_encontrada
+    elif ruta_absoluta:
+        ruta_final = ruta_absoluta
+    elif archivo_detectado:
+        ruta_final = archivo_detectado
+
+    if ruta_final:
+        print(f"📌 [Fase 7] Analizando '{ruta_final}' para extraer micro-resumen...")
+
+        datos = tools.leer_archivo_local(ruta_final)
+        resumen_tecnico = "Ruta fijada, pero no se pudo generar un resumen del contenido."
+
+        if isinstance(datos, dict) and "contenido" in datos:
+            fragmento = datos['contenido'][:3000]
+            prompt_resumen = (
+                "Eres un analizador de código estricto. Lee este fragmento y devuelve UNICAMENTE un "
+                "resumen técnico de máximo 25 palabras indicando el lenguaje, propósito principal y "
+                f"tecnologías clave usadas. Cero saludos.\n\n{fragmento}"
+            )
+            try:
+                respuesta = ollama.chat(
+                    model=MODELO_LOCAL,
+                    messages=[{'role': 'user', 'content': prompt_resumen}],
+                    options={'num_gpu': 31, 'temperature': 0.1}
+                )
+                resumen_tecnico = respuesta['message']['content'].strip()
+            except Exception as e:
+                print(f"⚠️ [Error generando micro-resumen: {e}]")
+
+        database.establecer_workspace_activo(ruta_final)
+        database.guardar_hecho("workspace_resumen", resumen_tecnico, categoria="contexto_fase7")
+
+        print(f"📌 [Fase 7] Workspace fijado a: {ruta_final}")
+        print(f"🧠 [Micro-resumen guardado]: {resumen_tecnico}")
+
+        return (
+            f"[SISTEMA: El Workspace Activo se ha fijado en: '{ruta_final}'. "
+            f"Resumen técnico del archivo: {resumen_tecnico}. "
+            f"Confírmale al usuario con tu sarcasmo habitual que a partir de ahora recordarás este archivo.]"
+        )
+    else:
+        return "[SISTEMA: El usuario intentó fijar un entorno de trabajo, pero no reconozco la ruta, alias o archivo. Pídele que sea más específico.]"
 
 
 def _procesar_archivo(ruta_o_nombre, contexto_historico):
@@ -860,27 +923,69 @@ def _elegir_ruta(intenciones: dict, msg_lower: str, tokens_totales: int):
 # 7. ENRUTADOR PRINCIPAL
 # ==========================================
 def charlar_con_lia(mensaje_usuario, callback_ui=None):
-    """
-    Punto de entrada principal. `callback_ui` se propaga a TODAS las
-    rutas que pueden pedir ejecutar una herramienta (Local y Nube), para
-    que el firewall de tools.py pueda pedir confirmación humana sin
-    importar qué cerebro tomó el control.
-    """
     database.guardar_mensaje("user", mensaje_usuario)
 
     instrucciones_sistema = prompt_builder.obtener_instrucciones_sistema()
     contexto_historico = prompt_builder.armar_historial_usuario(mensaje_usuario)
+
+    contexto_historico = _procesar_entorno_automatico(contexto_historico)
 
     mensaje_real = mensaje_usuario.split("[CONTEXTO DEL SISTEMA")[0].strip() if "[CONTEXTO" in mensaje_usuario else mensaje_usuario.strip()
     msg_lower = mensaje_real.lower()
 
     intenciones = _detectar_intenciones(msg_lower)
 
+    # --- NUEVO: INTERCEPTOR DE ARCHIVOS AUTOMÁTICO (FASE 7.2) ---
+    # Si pides resumir "esto", Python busca el archivo por su cuenta sin preguntarle a la IA
+    frases_lectura = ["este archivo", "este documento", "este código", "resumen de este", "resumir este", "de este documento"]
+    
+    if any(frase in msg_lower for frase in frases_lectura):
+        ventana_actual = contexto.obtener_ventana_activa()
+        print(f"\n🕵️ [Interceptor] Ventana activa capturada: '{ventana_actual}'")
+        
+        nombre_archivo = None
+        
+        match_archivo = re.search(r'([a-zA-Z0-9_\-\s]+\.(html|php|js|css|py|docx|pdf|txt|md))', ventana_actual, re.IGNORECASE)
+        
+        if match_archivo:
+            nombre_archivo = match_archivo.group(1).strip()
+        elif " - Word" in ventana_actual:
+            # Limpiamos asteriscos de "archivo no guardado" o espacios
+            nombre_base = ventana_actual.split(" - Word")[0].replace("*", "").strip()
+            nombre_archivo = f"{nombre_base}.docx"
+            
+        # Si logramos deducir el nombre por cualquiera de las dos vías:
+        if nombre_archivo:
+            # 1. Ejecutamos la búsqueda automática
+            resultado = tools.leer_archivo_local(nombre_archivo)
+            
+            # --- NUEVO: PARCHE PARA MÚLTIPLES COINCIDENCIAS (DUPLICADOS) ---
+            if isinstance(resultado, str) and "múltiples coincidencias" in resultado.lower():
+                # Extraemos la ruta exacta de la opción "1."
+                match_primera = re.search(r'1\.\s+([a-zA-Z]:\\[^\n]+)', resultado)
+                if match_primera:
+                    ruta_absoluta = match_primera.group(1).strip()
+                    # 2. Re-ejecutamos la lectura, pero esta vez con la ruta absoluta directa
+                    resultado = tools.leer_archivo_local(ruta_absoluta)
+            
+            # 3. Validamos que ahora sí tengamos el diccionario con el texto
+            if isinstance(resultado, dict) and "contenido" in resultado:
+                # Inyectamos el texto real al CONTEXTO_HISTORICO
+                contexto_historico += (
+                    f"\n\n[SISTEMA - LECTURA AUTOMÁTICA DE VENTANA]:\n"
+                    f"Aquí está el contenido del archivo '{nombre_archivo}' que el usuario está viendo:\n"
+                    f"<<<INICIO>>>\n{resultado['contenido'][:15000]}\n<<<FIN>>>\n"
+                )
+                
+                # Apagamos forzosamente la intención de abrir apps
+                intenciones["abrir_app"] = False
+                intenciones["codigo"] = False
+
     # 1. Filtro para código vs web
     if intenciones["codigo"] or "{" in mensaje_real or "function " in msg_lower or "$" in mensaje_real:
         intenciones["web"] = False
-        
-    # 2. NUEVO: Filtro para evitar colisión de "estado"
+
+    # 2. Filtro para evitar colisión de "estado"
     if intenciones["git"]:
         intenciones["estado_pc"] = False
 
@@ -900,14 +1005,36 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None):
     if intenciones["git"]:
         contexto_historico = _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=callback_ui)
     if intenciones["guardar_git"]:
-        # Bloqueamos el flujo normal y ejecutamos el guardado
         texto_respuesta = _ejecutar_guardado_git(msg_lower, callback_ui=callback_ui)
         print(f"\n🤖 L-IA (Local/Git): {texto_respuesta}\n")
         return texto_respuesta, "Local"
-        
     elif intenciones["git"]:
         intenciones["estado_pc"] = False
         contexto_historico = _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=callback_ui)
+
+    # --- INTERCEPCIÓN FASE 7 ---
+    if intenciones.get("fijar_workspace") or intenciones.get("limpiar_workspace"):
+        respuesta_sistema = _procesar_workspace_fase_7(
+            mensaje_real,
+            msg_lower,
+            fijar=bool(intenciones.get("fijar_workspace"))
+        )
+        contexto_historico += f"\n\n{respuesta_sistema}"
+
+    # --- FILTRO DE ENTORNO (FASE 7) ---
+    if intenciones.get("entorno_activo"):
+        intenciones["vision"] = False
+        intenciones["web"] = False
+        intenciones["abrir_app"] = False
+        intenciones["codigo"] = False
+
+    # --- NUEVO: FASE 8 — GUÍA DE CAPACIDADES ---
+    # Pregunta meta sobre L-IA misma: apaga acciones reales de este turno
+    # para que no intente ejecutar nada, solo explicarse a sí misma.
+    if intenciones.get("guia_capacidades"):
+        for clave in ("abrir_app", "estado_pc", "git", "guardar_git", "codigo", "web", "vision", "clima", "calendario"):
+            intenciones[clave] = False
+        contexto_historico += _generar_nota_guia_capacidades()
 
     tokens_totales = estimar_tokens(contexto_historico)
     print(f"🚦 [SEMÁFORO v3] Tokens estimados del contexto total: {tokens_totales}")
@@ -919,7 +1046,7 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None):
             instrucciones_sistema, contexto_historico,
             intenciones["vision"], intenciones["web"],
             modelo_nube=modelo_nube_seleccionado,
-            callback_ui=callback_ui  # <-- Antes no se pasaba: la Nube no podía pedir permiso
+            callback_ui=callback_ui
         )
     elif ruta_elegida == "Dolphin":
         texto_respuesta = responder_con_local_uncensored(instrucciones_sistema, contexto_historico)

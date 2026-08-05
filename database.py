@@ -309,6 +309,39 @@ def listar_hechos(categoria=None):
     conexion.close()
     return [dict(f) for f in filas]
 
+# ============================================================
+# WORKSPACE / CONTEXTO ACTIVO (Fase 7)
+# ============================================================
+
+def establecer_workspace_activo(ruta_archivo_o_carpeta):
+    """
+    Define el proyecto, archivo o ruta en el que se está trabajando actualmente.
+    Esto evita la 'Alucinación Post-Lectura' manteniendo la ruta en memoria.
+    """
+    guardar_hecho("workspace_activo", ruta_archivo_o_carpeta, categoria="contexto_fase7")
+    print(f"[Fase 7] Workspace activo fijado a: {ruta_archivo_o_carpeta}")
+
+def obtener_workspace_activo():
+    """Recupera el workspace activo actual."""
+    return obtener_hecho("workspace_activo")
+
+def limpiar_workspace_activo():
+    """Borra el workspace activo cuando se termina la tarea o se cambia de contexto."""
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("DELETE FROM memoria_hechos WHERE clave = 'workspace_activo'")
+    conexion.commit()
+    conexion.close()
+    print("[Fase 7] Workspace activo limpiado. L-IA ya no tiene un archivo en foco.")
+
+def limpiar_workspace_resumen():
+    """Borra el resumen técnico cacheado del workspace activo (Fase 7)."""
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("DELETE FROM memoria_hechos WHERE clave = 'workspace_resumen'")
+    conexion.commit()
+    conexion.close()
+    print("[Fase 7] Resumen de workspace limpiado.")
 
 # ============================================================
 # HISTORIAL DE CONVERSACIÓN
@@ -355,34 +388,22 @@ def construir_contexto_ia(limite_historial=10):
     Junta perfil, self-state, herramientas activas e historial reciente
     en un solo dict, listo para que prompt_builder.py arme el prompt del sistema.
     """
+    hechos_generales = [
+        h for h in listar_hechos(categoria=None)
+        if h['clave'] != 'workspace_activo'
+    ]
+
     return {
         "perfil": obtener_perfil(),
         "self_state": obtener_self_state(),
         "herramientas": listar_herramientas(solo_activas=True),
-        "hechos": listar_hechos(),
+        "workspace_activo": obtener_workspace_activo(),
+        "hechos": hechos_generales,
         "historial_reciente": obtener_historial_reciente(limite=limite_historial),
     }
 
 
 if __name__ == "__main__":
-    print("--- Probando Memoria de L-IA (refactorizada) ---")
+    print("--- Base de datos L-IA (SQLite) ---")
     inicializar_base_datos()
-
-    perfil = obtener_perfil()
-    print(f"\n[Perfil] {perfil['nombre']} - Proyecto: {perfil['proyecto_actual']}")
-
-    estado = obtener_self_state()
-    print(f"[Self-state] {estado['nombre']} corriendo en {estado['cpu']} / {estado['vram_gpu_gb']}GB VRAM")
-
-    print("\n[Herramientas activas]")
-    for h in listar_herramientas():
-        print(f"  - {h['nombre']}: {h['descripcion']}")
-
-    guardar_hecho("editor_preferido", "VS Code", categoria="preferencias_dev")
-    print(f"\n[Hecho guardado] editor_preferido = {obtener_hecho('editor_preferido')}")
-
-    guardar_mensaje("user", "Hola L-IA, ¿cómo estás?")
-    guardar_mensaje("model", "¡Hola Alejandro! Lista para ayudarte.")
-
-    print("\n[Contexto completo para prompt_builder]")
-    print(json.dumps(construir_contexto_ia(), indent=2, ensure_ascii=False, default=str))
+    print("Base de datos inicializada y verificada correctamente.")

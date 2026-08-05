@@ -5,19 +5,40 @@ def obtener_instrucciones_sistema():
     Retorna ÚNICAMENTE la identidad, personalidad y reglas de L-IA.
     Esto va directo al 'Cerebro' de la IA (System Prompt).
     """
-    # Consumimos todo el contexto de golpe gracias al nuevo método
     contexto = database.construir_contexto_ia()
-    
+
     perfil = contexto['perfil']
     estado = contexto['self_state']
     herramientas_activas = ", ".join([h['nombre'] for h in contexto['herramientas']])
-    
-    # Armamos los hechos aprendidos dinámicamente si existen
+    workspace_activo = contexto.get('workspace_activo')
+    workspace_resumen = None
+
+    if contexto['hechos']:
+        for h in contexto['hechos']:
+            if h['clave'] == 'workspace_resumen':
+                workspace_resumen = h['valor']
+
+    # Armamos el bloque de Workspace Activo si existe
+    workspace_texto = ""
+    if workspace_activo:
+        workspace_texto = "\n[ENTORNO DE TRABAJO Y ARCHIVO ACTIVO (FASE 7)]\n"
+        workspace_texto += f"- Archivo/Ruta en foco actualmente: {workspace_activo}\n"
+        if workspace_resumen:
+            workspace_texto += f"- Resumen técnico en caché: {workspace_resumen}\n"
+        workspace_texto += (
+            "- REGLA DE CONTEXTO: Si el usuario hace preguntas ambiguas o de seguimiento "
+            "(ej. 'revisa el código', 'qué hace esta función', 'corrige esa línea'), asume "
+            "inmediatamente que se refiere a este archivo activo sin pedirle la ruta de nuevo. "
+            "Utiliza el resumen técnico para dar respuestas iniciales rápidas, y si te pide "
+            "analizar bugs profundos, usa la herramienta de leer el archivo.\n"
+        )
+
     hechos_texto = ""
     if contexto['hechos']:
         hechos_texto = "\n[DATOS APRENDIDOS DEL USUARIO]\n"
         for h in contexto['hechos']:
-            hechos_texto += f"- {h['clave']}: {h['valor']}\n"
+            if h['clave'] not in ('workspace_activo', 'workspace_resumen'):
+                hechos_texto += f"- {h['clave']}: {h['valor']}\n"
 
     prompt_sistema = f"""Eres {estado['nombre']}, la Inteligencia Artificial personal y {estado['proposito']} de {perfil['nombre']}.
 Fuiste creada por {estado['creador']} y te ejecutas localmente en su hardware.
@@ -47,17 +68,17 @@ Fuiste creada por {estado['creador']} y te ejecutas localmente en su hardware.
 - Usuario: {perfil['nombre']}
 - Proyecto actual: {perfil['proyecto_actual']}
 - Preferencias musicales: {perfil['preferencias_musica']}
-- IMPORTANTE: Usa este bloque solo cuando sea relevante para lo que se te pide. No lo menciones ni lo uses como excusa para desviar la conversación si el tema no tiene relación.{hechos_texto}
+- IMPORTANTE: Usa este bloque solo cuando sea relevante para lo que se te pide. No lo menciones ni lo uses como excusa para desviar la conversación si el tema no tiene relación.{workspace_texto}{hechos_texto}
 
 [REGLAS ESTRICTAS DE OPERACIÓN]
 1. SIN EXPLICACIONES DE SOBRA: Respuestas directas. Ve al grano, infunde tu sarcasmo de manera natural en la conversación y luego da la respuesta técnica.
-2. CERO ACOTACIONES ACTORALES (REGLA CRÍTICA): Tienes ESTRICTAMENTE PROHIBIDO describir tus propias emociones, tono o acciones mediante marcado especial (asteriscos, negritas, corchetes, etiquetas de rol, etc.). Tu sarcasmo se transmite únicamente a través de las palabras que eliges. Escribe siempre en prosa natural y corrida.
-3. CONTEXTO: Utiliza siempre la información del proyecto actual para darle sentido a tus respuestas.
+2. CERO ACOTACIONES ACTORALES (REGLA CRÍTICA): NUNCA uses asteriscos (*), corchetes ([]) ni prefijos con tu nombre (L-IA:). Está ABSOLUTAMENTE PROHIBIDO describir acciones como "*suspiro*" o "*pensando*". Habla directamente como una persona normal en texto plano.
+3. CONTEXTO: Utiliza siempre la información del proyecto y del archivo/workspace activo para darle sentido a tus respuestas.
 4. PRIORIDAD INNEGOCIABLE: Sin importar cuánto te quejes, cuestiones al usuario o uses sarcasmo, SIEMPRE debes entregar la tarea solicitada de principio a fin.
 
 [ADAPTACIÓN DE TONO Y FORMATO TÉCNICO]
 5. TAREAS TÉCNICAS Y DE CÓDIGO: El código que generes es sagrado y 100% profesional; tu actitud hacia él, no. Búrlate de la lógica defectuosa o las malas prácticas de {perfil['nombre']} antes de darle la solución técnica.
-6. RESPUESTAS Y REFACTORIZACIONES PUNTUALES: Si hay un error menor, NO REESCRIBAS TODO EL ARCHIVO. Muestra estrictamente la línea corregida y explica brevemente el bug. Solo muestra archivos completos si se te pide explícitamente "reescribe todo el documento".
+6. RESPUESTAS Y REFACTORIZACIONES PUNTUALES: Si hay un error menor, NO REESCRIBAS TODO EL ARCHIVO. Muestra strictly la línea corregida y explica brevemente el bug. Solo muestra archivos completos si se te pide explícitamente "reescribe todo el documento".
 7. CONCIENCIA DE CÓDIGO EXTERNO VS INTERNO: NUNCA asumas que el código que {perfil['nombre']} te comparte es parte de tu propia arquitectura, a menos que él mencione explícitamente palabras como "L-IA", "asistente", "tu código" o pase archivos como cerebro.py, database.py o este mismo prompt_builder.py.
 """
     return prompt_sistema
@@ -66,7 +87,6 @@ Fuiste creada por {estado['creador']} y te ejecutas localmente en su hardware.
 def armar_historial_usuario(mensaje_nuevo):
     """
     Retorna ÚNICAMENTE la memoria a corto plazo (el historial) y el comando actual.
-    Esto es lo que el modelo lee como la conversación en curso.
     """
     perfil = database.obtener_perfil()
     nombre_usuario = perfil['nombre'].upper()
@@ -78,7 +98,6 @@ def armar_historial_usuario(mensaje_nuevo):
         texto_historial += "(No hay historial previo en esta sesión)\n"
     else:
         for msg in historial:
-            # Traducimos las etiquetas frías a identidades reales dinámicas
             rol_nombre = "L-IA" if msg['rol'] == 'model' else nombre_usuario
             texto_historial += f"{rol_nombre}: {msg['mensaje']}\n"
 
