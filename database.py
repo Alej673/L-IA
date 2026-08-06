@@ -310,29 +310,67 @@ def listar_hechos(categoria=None):
     return [dict(f) for f in filas]
 
 # ============================================================
-# WORKSPACE / CONTEXTO ACTIVO (Fase 7)
+# WORKSPACE / CONTEXTO ACTIVO (Fase 7) - CON DESPLAZAMIENTO (LRU CACHE)
 # ============================================================
 
-def establecer_workspace_activo(ruta_archivo_o_carpeta):
+def establecer_workspace_activo(nueva_ruta):
     """
-    Define el proyecto, archivo o ruta en el que se está trabajando actualmente.
-    Esto evita la 'Alucinación Post-Lectura' manteniendo la ruta en memoria.
+    Define el archivo actual en foco. Si ya había un archivo activo distinto, 
+    lo empuja junto con su resumen a una 'mochila' (historial) de máximo 3 documentos 
+    para no perder el contexto periférico.
     """
-    guardar_hecho("workspace_activo", ruta_archivo_o_carpeta, categoria="contexto_fase7")
-    print(f"[Fase 7] Workspace activo fijado a: {ruta_archivo_o_carpeta}")
+    ruta_actual = obtener_hecho("workspace_activo")
+    resumen_actual = obtener_hecho("workspace_resumen")
+
+    # Solo hacemos el desplazamiento si realmente estamos cambiando a un archivo NUEVO
+    if ruta_actual and ruta_actual != nueva_ruta:
+        historial_str = obtener_hecho("workspace_historial")
+        historial = json.loads(historial_str) if historial_str else []
+
+        # Quitamos la ruta actual si ya estaba en el historial para evitar duplicados
+        historial = [item for item in historial if item.get('ruta') != ruta_actual]
+
+        # Insertamos el archivo viejo al inicio de la mochila
+        historial.insert(0, {
+            "ruta": ruta_actual,
+            "resumen": resumen_actual or "Sin resumen disponible."
+        })
+
+        # Mantenemos estrictamente solo los últimos 3 documentos (para cuidar la VRAM)
+        historial = historial[:3]
+
+        # Guardamos el nuevo historial desplazado
+        guardar_hecho("workspace_historial", json.dumps(historial), categoria="contexto_fase7")
+        
+        # Como es un archivo totalmente nuevo, borramos el resumen viejo del FOCO PRINCIPAL 
+        # para que no haya sangrado hasta que L-IA lo lea y genere uno nuevo.
+        limpiar_workspace_resumen()
+
+    # Finalmente, fijamos el nuevo rey del escritorio
+    guardar_hecho("workspace_activo", nueva_ruta, categoria="contexto_fase7")
+    print(f"[Fase 7] Workspace principal fijado a: {nueva_ruta}")
+
 
 def obtener_workspace_activo():
     """Recupera el workspace activo actual."""
     return obtener_hecho("workspace_activo")
 
+
+def obtener_workspace_historial():
+    """Recupera la lista de documentos recientes en segundo plano."""
+    historial_str = obtener_hecho("workspace_historial")
+    return json.loads(historial_str) if historial_str else []
+
+
 def limpiar_workspace_activo():
-    """Borra el workspace activo cuando se termina la tarea o se cambia de contexto."""
+    """Borra el workspace activo y vacía la mochila de fondo."""
     conexion = obtener_conexion()
     cursor = conexion.cursor()
-    cursor.execute("DELETE FROM memoria_hechos WHERE clave = 'workspace_activo'")
+    cursor.execute("DELETE FROM memoria_hechos WHERE clave IN ('workspace_activo', 'workspace_historial')")
     conexion.commit()
     conexion.close()
-    print("[Fase 7] Workspace activo limpiado. L-IA ya no tiene un archivo en foco.")
+    print("[Fase 7] Escritorio y mochila limpiados. L-IA ya no tiene archivos en foco.")
+
 
 def limpiar_workspace_resumen():
     """Borra el resumen técnico cacheado del workspace activo (Fase 7)."""
@@ -341,7 +379,7 @@ def limpiar_workspace_resumen():
     cursor.execute("DELETE FROM memoria_hechos WHERE clave = 'workspace_resumen'")
     conexion.commit()
     conexion.close()
-    print("[Fase 7] Resumen de workspace limpiado.")
+    print("[Fase 7] Resumen del FOCO PRINCIPAL limpiado.")
 
 # ============================================================
 # HISTORIAL DE CONVERSACIÓN

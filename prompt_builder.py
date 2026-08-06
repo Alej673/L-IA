@@ -1,3 +1,4 @@
+import json
 import database
 
 # =============================================================================
@@ -49,33 +50,47 @@ MATRIZ DE TONO CONTEXTUAL:
 - Usuario frustrado, cansado o algo salió mal: sarcasmo casi a cero, pragmática, dejás claro sin cursilerías que estás para resolver el problema."""
 
 
-def _armar_workspace(workspace_activo, workspace_resumen):
-    """Sección opcional de workspace activo. Vacía si no hay workspace."""
+def _armar_workspace(workspace_activo, workspace_resumen, hechos):
+    """Sección de workspace activo con historial en segundo plano (LRU Cache)."""
     if not workspace_activo:
         return ""
-    texto = "\n[ARCHIVO/ENTORNO ACTIVO]\n"
-    texto += f"- En foco: {workspace_activo}\n"
+        
+    texto = "\n[ENTORNO DE TRABAJO Y ARCHIVO ACTIVO (FASE 7)]\n"
+    texto += f"▶️ FOCO PRINCIPAL: {workspace_activo}\n"
     if workspace_resumen:
-        texto += f"- Resumen técnico en caché: {workspace_resumen}\n"
+        texto += f"   - Resumen: {workspace_resumen}\n"
+        
+    # Extraer el historial de la mochila
+    historial_str = next((h['valor'] for h in hechos if h['clave'] == 'workspace_historial'), None)
+    if historial_str:
+        try:
+            historial = json.loads(historial_str)
+            if historial:
+                texto += "\n📚 EN SEGUNDO PLANO (Archivos recientes cerrados):\n"
+                for item in historial:
+                    texto += f"   - {item.get('ruta')} (Resumen: {item.get('resumen')})\n"
+        except json.JSONDecodeError:
+            pass
+
     texto += (
-        "- Si el usuario hace preguntas ambiguas o de seguimiento (ej. 'revisa el código', "
-        "'qué hace esta función'), asumí que se refiere a este archivo activo sin repreguntar "
-        "la ruta. Usá el resumen para respuestas rápidas; si pide bugs profundos, usá la "
-        "herramienta de lectura de archivo (ver regla 2: no simules haberlo leído ya).\n"
+        "\n- Si el usuario hace preguntas ambiguas (ej. 'revisa el código', 'conéctalo con el anterior'), "
+        "asumí que se refiere al FOCO PRINCIPAL o a los de SEGUNDO PLANO sin repreguntar la ruta. "
+        "Usá los resúmenes para respuestas rápidas; si pide análisis profundos, usá la herramienta "
+        "de lectura de archivo.\n"
     )
     return texto
 
 
 def _armar_hechos(hechos):
     """Sección opcional de hechos aprendidos, excluyendo las claves de workspace."""
-    filtrados = [h for h in hechos if h['clave'] not in ('workspace_activo', 'workspace_resumen')]
+    # Agregamos 'workspace_historial' a la lista de exclusión
+    filtrados = [h for h in hechos if h['clave'] not in ('workspace_activo', 'workspace_resumen', 'workspace_historial')]
     if not filtrados:
         return ""
     texto = "\n[DATOS APRENDIDOS DEL USUARIO]\n"
     for h in filtrados:
         texto += f"- {h['clave']}: {h['valor']}\n"
     return texto
-
 
 def obtener_instrucciones_sistema():
     """
@@ -94,7 +109,8 @@ def obtener_instrucciones_sistema():
         None
     )
 
-    workspace_texto = _armar_workspace(workspace_activo, workspace_resumen)
+    # AQUÍ ESTÁ EL CAMBIO: Le pasamos contexto['hechos']
+    workspace_texto = _armar_workspace(workspace_activo, workspace_resumen, contexto['hechos'])
     hechos_texto = _armar_hechos(contexto['hechos'])
     # Las reglas de documento solo se pagan en tokens cuando hay algo a lo que aplicarles
     reglas_documento_texto = f"\n{REGLAS_DOCUMENTO}\n" if workspace_activo else ""

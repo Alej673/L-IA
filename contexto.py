@@ -3,37 +3,47 @@ import pygetwindow as gw
 def obtener_ventana_activa(titulo_excluir="L-IA Asistente"):
     """
     Escanea las ventanas en orden Z ignorando overlays, basura de Windows
-    y ventanas minimizadas.
+    y limpia sufijos de aplicaciones para aislar el nombre del archivo.
     """
     try:
         ventanas = gw.getAllWindows()
 
         ventanas_basura = [
             titulo_excluir,
-            "QA OSD",
-            "Program Manager",
-            "NVIDIA GeForce Overlay",
-            "NVIDIA ShadowPlay Helper",
-            "Windows Default Lock Screen",
-            "Taskbar",
-            "Configuración",
-            "Settings",
-            "Experiencia de entrada de Windows",
-            "Windows Input Experience",
-            "Zoom",
-            "Zoom Workplace",
+            "QA OSD", "Program Manager", "NVIDIA GeForce Overlay", 
+            "NVIDIA ShadowPlay Helper", "Windows Default Lock Screen", 
+            "Taskbar", "Configuración", "Settings", 
+            "Experiencia de entrada de Windows", "Windows Input Experience", 
+            "Zoom", "Zoom Workplace"
+        ]
+        
+        # Sufijos que las apps le pegan al nombre del archivo
+        sufijos_app = [
+            " - Word", " - Excel", " - PowerPoint", 
+            " - Visual Studio Code", " - Notepad++", " - Bloc de notas",
+            " - Google Chrome", " - Brave", " - Mozilla Firefox"
         ]
 
         for v in ventanas:
             titulo = v.title.strip()
 
             if titulo and v.visible and not v.isMinimized and not any(basura in titulo for basura in ventanas_basura):
-                return titulo
+                
+                titulo_limpio = titulo
+                # Limpiamos el ruido del programa
+                for sufijo in sufijos_app:
+                    if sufijo in titulo_limpio:
+                        titulo_limpio = titulo_limpio.replace(sufijo, "")
+                
+                # Limpiamos etiquetas molestas de Office
+                titulo_limpio = titulo_limpio.replace(" [Modo de compatibilidad]", "")
+                titulo_limpio = titulo_limpio.strip()
+                
+                return titulo_limpio
 
         return "Escritorio / Desconocido"
     except Exception as e:
         return f"Error leyendo ventana: {e}"
-
 
 def _bloque_contexto_ventana():
     """

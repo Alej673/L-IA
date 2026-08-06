@@ -112,7 +112,7 @@ _RAICES = {
     ],
     "entorno_activo": [
         "ventana", "programa", "abierto ahora", "en la pantalla", "herramienta", "proyecto actual",
-        "este documento", "este archivo" # <-- Agrega estas dos
+        "este documento", "este archivo", "este otro archivo", "este doc", "el otro archivo", "el otro documento"
     ],
 }
 
@@ -207,7 +207,7 @@ def _detectar_intenciones(mensaje_lower: str) -> dict:
 
 # Fase 7: Comando manual para el Workspace Activo
 PATRONES_CLAVE["fijar_workspace"] = re.compile(
-    r'\b(estoy\s+trabajando\s+en|fija\s+el\s+contexto\s+en|abre\s+el\s+proyecto|mira\s+el\s+archivo)\b',
+    r'\b(estoy\s+trabajando\s+en|fija\s+el\s+contexto\s+en|abre\s+el\s+proyecto|mira\s+el\s+archivo|resume\s+este\s+otro\s+archivo|cambia\s+a\s+este\s+archivo)\b',
     re.IGNORECASE
 )
 
@@ -343,15 +343,29 @@ def _cargar_rutas_personalizadas() -> dict:
         print(f"⚠️ [config_apps.json inválido: {e}]")
         return {}
 
-
 def _encontrar_ruta_inteligente(mensaje_lower, rutas_conocidas):
-    mensaje_limpio = re.sub(r'\b(mi|el|la|de|carpeta|proyecto|repositorio|repo)\b', '', mensaje_lower).strip()
+    # Agregamos "archivo" y "documento" a las palabras ignoradas
+    mensaje_limpio = re.sub(r'\b(mi|el|la|de|carpeta|proyecto|repositorio|repo|archivo|documento|doc)\b', '', mensaje_lower).strip()
 
+    # 1. Búsqueda exacta por alias (ej. "taller" -> "C:\Proyectos\ERP_Taller")
     for alias, ruta in rutas_conocidas.items():
         if alias in mensaje_lower:
             return alias, ruta
 
     palabras = mensaje_limpio.split()
+    
+    # 2. Búsqueda Inversa Inteligente (Basename match)
+    # Busca si el usuario nombró directamente el archivo de una ruta conocida
+    for ruta in rutas_conocidas.values():
+        import os
+        nombre_archivo = os.path.basename(ruta).lower()
+        nombre_sin_ext = os.path.splitext(nombre_archivo)[0]
+        
+        for palabra in palabras:
+            if len(palabra) > 2 and (palabra == nombre_sin_ext or palabra == nombre_archivo):
+                return nombre_archivo, ruta
+
+    # 3. Fuzzy Matching Original
     for palabra in palabras:
         if len(palabra) < 3:
             continue
@@ -359,6 +373,19 @@ def _encontrar_ruta_inteligente(mensaje_lower, rutas_conocidas):
         if coincidencias:
             alias_encontrado = coincidencias[0]
             return alias_encontrado, rutas_conocidas[alias_encontrado]
+            
+    # 4. Escáner de Extensiones Huérfanas (Fuzzy Extensions)
+    # Si detecta el nombre, pero le falta la extensión (.docx, .php, .cpp, etc.)
+    import os
+    extensiones_comunes = ['.docx', '.php', '.cpp', '.h', '.js', '.css', '.html', '.pdf', '.txt']
+    
+    for palabra in palabras:
+        if len(palabra) > 2:
+            for ext in extensiones_comunes:
+                posible_archivo = palabra + ext
+                # Busca si el archivo existe en la carpeta actual de ejecución
+                if os.path.exists(posible_archivo):
+                    return posible_archivo, os.path.abspath(posible_archivo)
 
     return None, None
 
@@ -439,6 +466,12 @@ def leer_repositorio_git(ruta_repo: str) -> str:
 def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, buscar_web=False,
                         modelo_nube=MODELO_NUBE_FLASH, callback_ui=None):
     print(f"\n[☁️ Enrutando a la Nube ({modelo_nube})...]")
+
+    if usar_vision:
+        contexto_historico += (
+            "\n\n[FUENTE_DEL_CONTENIDO: CAPTURA DE PANTALLA — vista parcial de lo visible "
+            "en el monitor, no es una lectura completa del archivo]"
+        )
 
     texto_completo = f"{instrucciones_sistema}\n\n{contexto_historico}"
     contenidos_api = [texto_completo]
@@ -824,8 +857,8 @@ def _ejecutar_guardado_git(msg_lower, callback_ui=None):
 
 def _procesar_workspace_fase_7(mensaje_real, msg_lower, fijar: bool):
     if not fijar:
-        database.limpiar_workspace_activo()
-        database.obtener_conexion().execute("DELETE FROM memoria_hechos WHERE clave = 'workspace_resumen'")
+        database.limpiar_workspace_activo() # <-- Esta función ya se encarga de borrar el activo y el historial de golpe en tu database.py
+        database.limpiar_workspace_resumen()
         print("🧹 [Fase 7] Workspace limpiado por orden del usuario.")
         return "[SISTEMA: El Workspace activo ha sido limpiado. L-IA ya no tiene ningún archivo fijado en memoria.]"
 
@@ -1006,6 +1039,8 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None):
                 # Apagamos forzosamente la intención de abrir apps
                 intenciones["abrir_app"] = False
                 intenciones["codigo"] = False
+                intenciones["vision"] = False
+                intenciones["web"] = False
 
     # 1. Filtro para código vs web
     if intenciones["codigo"] or "{" in mensaje_real or "function " in msg_lower or "$" in mensaje_real:
