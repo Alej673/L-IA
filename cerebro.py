@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from google import genai
 from mss import MSS
 from PIL import Image
-import prompt_builder
+import prompt_builder as prompt_builder
 import database
 import tools
 import apis

@@ -5,7 +5,7 @@ modo sin censura, y la nueva autoconciencia estructural de la IA.
 """
 
 import cerebro
-import prompt_builder
+import prompt_builder as prompt_builder
 import re # Asegúrate de que esto esté al inicio del script si no lo tienes
 
 

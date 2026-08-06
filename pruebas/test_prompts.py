@@ -47,7 +47,7 @@ def _bd_temporal():
     database.DB_NAME = tmp_db
     database.inicializar_base_datos()
 
-    import prompt_builder
+    import prompt_builder as prompt_builder
     return database, prompt_builder
 
 
