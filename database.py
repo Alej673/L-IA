@@ -143,7 +143,7 @@ def _seed_self_state(cursor):
             6,
             "RTX 4050",
             35,
-            "Delegar automáticamente a la nube (Gemini) para evitar desbordamiento de VRAM/RAM",
+            "Delegar automáticamente a la nube (Gemini) para evitar desbordamiento de memoria", # <-- ¡EL CAMBIO!
             "No ejecutar comandos destructivos. Pasar siempre por el Tool Manager.",
             _ahora()
         ))

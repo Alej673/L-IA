@@ -89,9 +89,7 @@ _RAICES = {
         "carg", "levant", "monta",
     ],
     "estado_pc": [
-        "estado", "diagn[oó]stic", "bater[ií]",
-        "proces", "consum", "rendimient", "lent",
-        "especific", "salud del sistema",
+        "bater[ií]", "hardware", "ventilador", "temperatura", "laptop",
     ],
     "portapapeles": [
         "portapapeles", "copi", "peg", "clipboard",
@@ -113,7 +111,8 @@ _RAICES = {
         "calendari", "agend", "evento", "reuni[oó]n", "cita", "compromis",
     ],
     "entorno_activo": [
-        "ventana", "programa", "abierto ahora", "en la pantalla", "herramienta", "proyecto actual"
+        "ventana", "programa", "abierto ahora", "en la pantalla", "herramienta", "proyecto actual",
+        "este documento", "este archivo" # <-- Agrega estas dos
     ],
 }
 
@@ -133,7 +132,7 @@ _EXCLUSIONES = {
         "procesión", "procesiones",
     ],
     "codigo": [
-        "mejoramiento", "mejoramientos",
+        "mejoramiento", "mejoramientos", "rendimiento" # <-- Agrega rendimiento
     ],
     "clima": [
         "temperamento", "temperamentos", "temperamental",
@@ -146,7 +145,8 @@ PATRONES_CLAVE = {
 }
 
 PATRONES_CLAVE["estado_pc"] = re.compile(
-    PATRONES_CLAVE["estado_pc"].pattern + r'|\b(ram|cpu|pc|sistema\w*)\b',
+    PATRONES_CLAVE["estado_pc"].pattern + 
+    r'|\b(estado|rendimiento|consumo|diagn[oó]stico)\s+(del?\s+|de\s+la\s+|mi\s+|de\s+mi\s+)?(pc|sistema|compu|cpu|ram|memoria|máquina|laptop)\b|\b(cpu|ram|bater[ií]a|llama-server)\b',
     re.IGNORECASE
 )
 PATRONES_CLAVE["web"] = re.compile(
@@ -182,7 +182,8 @@ PATRONES_CLAVE["guia_capacidades"] = re.compile(
     r'c[oó]mo\s+se\s+te\s+usa|c[oó]mo\s+funcionas|qu[eé]\s+comandos\s+tienes|'
     r'lista\s+de\s+comandos|estoy\s+perdid[oa]|no\s+s[eé]\s+qu[eé]\s+pedirte|'
     r'no\s+s[eé]\s+c[oó]mo\s+usarte|qu[eé]\s+funciones\s+tienes|'
-    r'dame\s+un\s+resumen\s+de\s+tus\s+funciones|qu[eé]\s+m[aá]s\s+puedes\s+hacer)',
+    r'dame\s+un\s+resumen\s+de\s+tus\s+funciones|qu[eé]\s+m[aá]s\s+puedes\s+hacer|'
+    r'cu[aá]les\s+son\s+tus\s+funciones)', # <-- NUEVA FRASE AQUÍ
     re.IGNORECASE
 )
 
@@ -191,11 +192,17 @@ def _detectar_intenciones(mensaje_lower: str) -> dict:
         clave: bool(patron.search(mensaje_lower))
         for clave, patron in PATRONES_CLAVE.items()
     }
-    # Señales de código por SINTAXIS (no por palabra hablada): variables PHP,
-    # llaves, palabra "function". Antes esto solo apagaba "web" en charlar_con_lia
-    # sin nunca confirmar "codigo" -- ahora vive en un solo lugar.
+    
+    # Señales de código por SINTAXIS
     if not intenciones.get("codigo") and re.search(r'\$\w+|\bfunction\s|[{};]', mensaje_lower):
         intenciones["codigo"] = True
+
+    # --- NUEVO FILTRO ANTI-COLISIÓN ---
+    # Si detectamos que el usuario quiere ver el hardware explícitamente,
+    # apagamos 'codigo' para que verbos como "revisa" o "analiza" no estorben.
+    if intenciones.get("estado_pc"):
+        intenciones["codigo"] = False
+
     return intenciones
 
 # Fase 7: Comando manual para el Workspace Activo
@@ -542,22 +549,38 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
 
     try:
         opciones_llamada = {'num_gpu': 31}
-        if requiere_herramienta:
-            # Temperatura baja SOLO cuando esperamos JSON estricto: reduce la
-            # variabilidad que lleva a gemma2 a "improvisar" formatos como
-            # los corchetes en vez del JSON pedido. No se toca la temperatura
-            # de la conversación casual para no volverla robótica.
-            opciones_llamada['temperature'] = 0.1
+        chat_kwargs = {
+            'model': MODELO_LOCAL,
+            'messages': mensajes,
+        }
 
-        response = ollama.chat(
-            model=MODELO_LOCAL,
-            messages=mensajes,
-            options=opciones_llamada
-        )
+        if requiere_herramienta:
+            # Doble capa de robustez cuando esperamos JSON de herramienta:
+            # 1) Temperatura baja: reduce la variabilidad que lleva a gemma2
+            #    a "improvisar" formatos raros (corchetes, texto extra) en
+            #    vez del JSON pedido.
+            # 2) format='json': fuerza el formato a nivel de DECODIFICACIÓN
+            #    en Ollama -- restringe qué tokens puede generar el modelo
+            #    para que la salida sea JSON válido sí o sí, sin depender
+            #    de que el modelo "obedezca" la instrucción de texto.
+            opciones_llamada['temperature'] = 0.1
+            chat_kwargs['format'] = 'json'
+
+        chat_kwargs['options'] = opciones_llamada
+
+        response = ollama.chat(**chat_kwargs)
         contenido_bruto = response['message']['content']
         llamada_manual = _extraer_llamada_manual(contenido_bruto) if requiere_herramienta else None
 
         if not llamada_manual:
+            if requiere_herramienta:
+                # Log de diagnóstico: antes esto fallaba en silencio y
+                # devolvía el texto conversacional como si nada, dando la
+                # falsa impresión de que la herramienta se había ejecutado.
+                print(
+                    f"⚠️ [L-IA Local] Se esperaba JSON de herramienta pero no se pudo extraer. "
+                    f"Contenido crudo del modelo: {contenido_bruto[:300]!r}"
+                )
             return contenido_bruto
 
         mensajes[0]['content'] = instrucciones_sistema
@@ -582,6 +605,9 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
                 {'role': 'user', 'content': prompt_bozal}
             ])
 
+        # La respuesta final (con personalidad, comentando el resultado)
+        # SÍ debe ser texto libre, por eso este segundo chat NO lleva
+        # format='json' ni temperatura baja.
         return ollama.chat(
             model=MODELO_LOCAL,
             messages=mensajes,

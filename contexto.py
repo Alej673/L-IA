@@ -19,7 +19,9 @@ def obtener_ventana_activa(titulo_excluir="L-IA Asistente"):
             "Configuración",
             "Settings",
             "Experiencia de entrada de Windows",
-            "Windows Input Experience"
+            "Windows Input Experience",
+            "Zoom",
+            "Zoom Workplace",
         ]
 
         for v in ventanas:

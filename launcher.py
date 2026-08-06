@@ -7,7 +7,20 @@ from PIL import Image, ImageDraw
 import sys
 import cerebro
 import database
-import contexto  # Tu módulo de visión de ventanas
+# NOTA: Ya NO importamos 'contexto' aquí. Antes esta interfaz llamaba a
+# contexto.inyectar_contexto_implicito(mensaje) ANTES de pasarle el mensaje
+# a cerebro.charlar_con_lia(). Eso duplicaba el bloque de contexto de
+# ventana, porque cerebro.py YA lo inyecta automáticamente por su cuenta
+# en cada turno (ver cerebro._procesar_entorno_automatico). Peor aún: el
+# "cortador" que cerebro.py usaba para separar el mensaje real del bloque
+# inyectado buscaba el marcador "[CONTEXTO DEL SISTEMA", que nunca existió
+# en el texto real inyectado (el marcador real es "[DATO DEL ENTORNO"). Al
+# no cortar nada, el mensaje que llegaba a la detección de intenciones
+# (msg_lower) venía contaminado con instrucciones de sistema completas,
+# lo que confundía al modelo local y lo llevaba a "narrar" en vez de
+# ejecutar herramientas. Quitar esta línea es lo que arregla ese
+# comportamiento -- la personalidad y el comportamiento del launcher
+# vuelven a ser idénticos a los de la consola (python cerebro.py).
 
 
 # ==========================================
@@ -32,6 +45,22 @@ class Tema:
     FUENTE_BOLD = ("Consolas", 11, "bold")
     FUENTE_TITULO = ("Consolas", 10, "bold")
     FUENTE_CHICA = ("Consolas", 9)
+
+
+# ==========================================
+# LIMPIEZA DE RESPUESTA DEL MODELO
+# ==========================================
+# El modelo a veces ignora la regla "CERO ACOTACIONES ACTORALES" del
+# prompt de sistema y mete su propio prefijo "L-IA:" al inicio de la
+# respuesta, duplicando lo que ya muestra la burbuja del chat (que trae
+# su propio remitente "🤖 L-IA (origen)"). Esto pasa igual en consola,
+# no es exclusivo del launcher -- pero acá lo limpiamos antes de
+# mostrarlo para que la burbuja quede consistente.
+_PATRON_PREFIJO_LIA = re.compile(r'^\s*L-?IA\s*:\s*', re.IGNORECASE)
+
+
+def _limpiar_respuesta_ia(texto: str) -> str:
+    return _PATRON_PREFIJO_LIA.sub('', texto, count=1).strip()
 
 
 class InterfazLIA:
@@ -315,11 +344,16 @@ class InterfazLIA:
         self.agregar_texto("", "🤖 L-IA está pensando...", tag_remitente="cuerpo_suave", tag_id="placeholder")
 
         try:
-            # MAGIA AQUÍ: Le inyectamos el contexto de la ventana y el texto resaltado
-            mensaje_con_contexto = contexto.inyectar_contexto_implicito(mensaje)
-
+            # ANTES: aquí se llamaba a contexto.inyectar_contexto_implicito(mensaje)
+            # para pre-inyectar el contexto de ventana ANTES de entrar a
+            # cerebro.charlar_con_lia(). Se quitó: cerebro.py ya inyecta ese
+            # mismo contexto automáticamente en cada turno, y hacerlo dos
+            # veces contaminaba la detección de intenciones y confundía al
+            # modelo local, provocando que "narrara" en vez de ejecutar
+            # herramientas -- justo la diferencia de comportamiento que
+            # notabas frente a la consola.
             respuesta, origen = cerebro.charlar_con_lia(
-                mensaje_con_contexto,
+                mensaje,
                 callback_ui=self.solicitar_permiso_ui
             )
 
@@ -340,7 +374,8 @@ class InterfazLIA:
                 )
                 self.lanzar_popup_archivos(rutas_encontradas, mensaje)
             else:
-                self.agregar_texto(f"🤖 L-IA ({origen})", respuesta, tag_remitente="remitente_lia")
+                respuesta_limpia = _limpiar_respuesta_ia(respuesta)
+                self.agregar_texto(f"🤖 L-IA ({origen})", respuesta_limpia, tag_remitente="remitente_lia")
 
         except Exception as e:
             self.borrar_bloque("placeholder")
