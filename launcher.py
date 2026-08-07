@@ -294,12 +294,14 @@ class InterfazLIA:
     def borrar_bloque(self, tag_id):
         """Borra un mensaje previamente marcado con agregar_texto(..., tag_id=...).
         Reemplaza el viejo hack de índices de línea ('end-3l', 'end-1l'), que
-        se rompía si el mensaje tenía saltos de línea internos."""
+        se rompía si el mensaje tenía saltos de línea internos.
+        Usa rangos[0] y rangos[-1] (en vez de rangos[0]/rangos[1]) por si el
+        tag llegara a estar partido en más de un sub-rango."""
         rangos = self.chat_area.tag_ranges(tag_id)
         if not rangos:
             return
         self.chat_area.config(state=tk.NORMAL)
-        self.chat_area.delete(rangos[0], rangos[1])
+        self.chat_area.delete(rangos[0], rangos[-1])
         self.chat_area.config(state=tk.DISABLED)
 
     # ==========================================
@@ -330,9 +332,22 @@ class InterfazLIA:
     def agregar_token_streaming(self, fragmento, tag_id=None):
         """Inserta un fragmento de texto SIEMPRE 2 caracteres antes del final
         del widget -- justo antes del '\\n\\n' que cierra la burbuja recién
-        creada. Ahora también aplica tag_id (si se pasa) para que el rango
-        tageado se mantenga contiguo y tag_ranges() siga devolviendo un único
-        par (inicio, fin) sin importar cuántos tokens se inserten."""
+        creada -- así el texto va creciendo dentro de la burbuja en vez de
+        aparecer después de ella.
+
+        CORRECCIÓN CLAVE: además del tag "cuerpo", ahora también se aplica
+        tag_id (si se pasa) a cada fragmento insertado. Antes solo el header
+        y el "\\n\\n" final llevaban tag_id, y como Tkinter NO extiende un
+        tag automáticamente sobre texto insertado en medio de un rango ya
+        tageado, cada token nuevo partía ese rango en dos sub-rangos
+        (header | hueco sin tag | cierre). Eso hacía que tag_ranges(tag_id)
+        devolviera múltiples pares de índices en vez de uno solo, rompiendo
+        tanto el borrado (borrar_bloque) como el reemplazo final
+        (_reemplazar_texto_burbuja), que asumían un único rango contiguo.
+
+        Solo es seguro llamarlo mientras la burbuja de streaming sea lo
+        último que hay en el chat_area, que es el caso mientras dura un
+        solo turno de conversación."""
         self.chat_area.config(state=tk.NORMAL)
         tags = ("cuerpo", tag_id) if tag_id else ("cuerpo",)
         self.chat_area.insert("end-2c", fragmento, tags)
@@ -343,12 +358,18 @@ class InterfazLIA:
         """Reemplaza TODO el contenido (header + cuerpo) de una burbuja de
         streaming ya existente. Se usa solo para el caso puntual de limpiar
         el prefijo 'L-IA:' que a veces mete el modelo, una vez que ya
-        sabemos el texto final completo."""
+        sabemos el texto final completo.
+
+        Usa rangos[0] y rangos[-1] (primer y último índice) en vez de
+        rangos[0]/rangos[1] como cinturón de seguridad: con el fix de
+        agregar_token_streaming el tag ya no debería partirse nunca, pero
+        si por algún motivo volviera a pasar, esto sigue borrando el
+        bloque completo en vez de solo el primer sub-rango."""
         rangos = self.chat_area.tag_ranges(tag_id)
         if not rangos:
             return
         self.chat_area.config(state=tk.NORMAL)
-        self.chat_area.delete(rangos[0], rangos[1])
+        self.chat_area.delete(rangos[0], rangos[-1])
         inicio = rangos[0]
         self.chat_area.insert(inicio, "🤖 L-IA\n", "remitente_lia")
         self.chat_area.insert(tk.INSERT, f"{texto_nuevo}\n\n", "cuerpo")
@@ -376,7 +397,7 @@ class InterfazLIA:
         """
         Envía el mensaje al cerebro (cerebro.charlar_con_lia) y muestra la respuesta.
 
-        Ahora la respuesta se va pintando EN VIVO en la burbuja conforme
+        La respuesta se va pintando EN VIVO en la burbuja conforme
         cerebro.py va transmitiendo tokens (vía callback_stream), en vez de
         esperar a que la función entera termine para mostrar todo de golpe.
 
@@ -394,6 +415,10 @@ class InterfazLIA:
         estado = {"tag_streaming": None, "buffer_inicial": "", "prefijo_revisado": False}
 
         def _pintar_fragmento(fragmento):
+            # Buffer chico al inicio para poder detectar y limpiar el
+            # prefijo "L-IA:" si el modelo lo mete, sin tener que
+            # reescribir la burbuja después. Una vez revisado, los
+            # tokens siguientes se pintan directo, sin demora perceptible.
             if not estado["prefijo_revisado"]:
                 estado["buffer_inicial"] += fragmento
                 if len(estado["buffer_inicial"]) < 12 and ":" not in estado["buffer_inicial"]:
@@ -406,6 +431,8 @@ class InterfazLIA:
             if estado["tag_streaming"] is None:
                 self.borrar_bloque("placeholder")
                 estado["tag_streaming"] = self.iniciar_burbuja_streaming()
+            # CORRECCIÓN: se pasa tag_id explícitamente para que el rango
+            # tageado se mantenga contiguo (ver agregar_token_streaming).
             self.agregar_token_streaming(fragmento, tag_id=estado["tag_streaming"])
 
         def _on_token(fragmento):
@@ -450,6 +477,9 @@ class InterfazLIA:
                     # Ya se mostró en vivo. Solo se retoca si el texto final
                     # limpio no coincide con lo que ya está pintado (caso
                     # raro: el prefijo se coló pese al buffer inicial).
+                    # CORRECCIÓN: usamos rangos[0]/rangos[-1] en vez de
+                    # desempaquetar *rangos directo en .get(), que rompía
+                    # si tag_ranges() devolvía más de un par de índices.
                     rangos = self.chat_area.tag_ranges(estado["tag_streaming"])
                     if rangos:
                         contenido_actual = self.chat_area.get(rangos[0], rangos[-1]).strip()

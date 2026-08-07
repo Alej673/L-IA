@@ -219,6 +219,14 @@ PATRONES_CLAVE["limpiar_workspace"] = re.compile(
     re.IGNORECASE
 )
 
+PATRON_LECTURA_IMPLICITA = re.compile(
+    r'\b(este|esta)\s+(archivo|documento|c[oó]digo|texto)\b'
+    r'|\b(del|de\s+la|el|la)\s+(archivo|documento|c[oó]digo|texto)\s+que\s+(estoy|tengo)\s+\w+'
+    r'|\bde\s+este\s+(archivo|documento|c[oó]digo)\b'
+    r'|\bres[uú]m\w*\s+esto\b',
+    re.IGNORECASE
+)
+
 # ==========================================
 # 1.6 GUÍA DE CAPACIDADES (Fase 8)
 # ==========================================
@@ -294,7 +302,10 @@ def _extraer_referencia_archivo(mensaje):
             r'consult[aaréiów]*|busc[aaréiów]*|extra[eráiów]*)\s+'
             r'(?:el\s+|la\s+|del\s+|un\s+|una\s+)?'
             r'(?:archivo|documento|nota|pdf|docx|word|script|codigo|código)\s+'
-            r'(?:llamado\s+|de\s+|titulado\s+)?([a-zA-Z0-9_\-\s]+)'
+            r'(?:llamado\s+|de\s+|titulado\s+)?'
+            r'(?!(?:que|para|porque|as[ií]|y)\b)'
+            r'([a-zA-Z0-9_\-\.]+(?:\s+[a-zA-Z0-9_\-\.]+){0,4}?)'
+            r'(?=\s+(?:que|para|porque|as[ií]|y)\b|\s*[\.\?!]|\Z)'
         )
         match_intencion = re.search(patron_accion_archivo, mensaje, re.IGNORECASE)
         if match_intencion:
@@ -457,7 +468,115 @@ def _generar_prompt_bozal(nombre_herramienta: str, resultado: str) -> str:
 
 
 # ==========================================
-# 3. RUTA A: LA NUBE (Gemini Flash / Pro)
+# 3. PIPELINE DE VOZ + STREAMING COMPARTIDO
+# ==========================================
+# Antes esta lógica (dos hilos productor-consumidor: uno sintetiza con
+# Edge TTS, otro reproduce con pygame) vivía SOLO dentro de
+# responder_con_local (Gemma2). Por eso Gemini (Nube) y Dolphin (sin
+# censura) nunca hablaban ni transmitían en vivo a la GUI: devolvían el
+# texto completo de una sola vez, sin pasar por ningún pipeline.
+#
+# Ahora esta función es la ÚNICA fuente de verdad para "hablar mientras
+# se transmite texto". Recibe un generador de fragmentos de texto (no
+# importa si son tokens reales de streaming o frases ya completas) y se
+# encarga de: acumular la respuesta completa, avisarle a la GUI fragmento
+# a fragmento vía callback_stream, y mandar cada frase a sintetizar +
+# reproducir en pipeline, igual que antes.
+def _generar_respuesta_con_voz(generador_texto, callback_stream=None):
+    """
+    Recorre `generador_texto` (cualquier iterable de fragmentos de string)
+    y devuelve la respuesta completa acumulada, hablando y transmitiendo
+    en vivo en el camino. Reutilizada por las 3 rutas (Local, Nube, Dolphin).
+    """
+    respuesta_completa = ""
+    bloque_actual = ""
+
+    cola_texto = queue.Queue()   # frases listas para sintetizar
+    cola_audio = queue.Queue()   # rutas de mp3 ya sintetizados, listas para sonar
+
+    def hilo_sintetizador():
+        while True:
+            frase = cola_texto.get()
+            if frase is None:  # señal de apagado
+                cola_audio.put(None)  # la propagamos al reproductor
+                cola_texto.task_done()
+                break
+            ruta = voz.sintetizar_a_archivo(frase)
+            if ruta:
+                cola_audio.put(ruta)
+            cola_texto.task_done()
+
+    def hilo_reproductor():
+        while True:
+            ruta = cola_audio.get()
+            if ruta is None:  # señal de apagado
+                cola_audio.task_done()
+                break
+            voz.reproducir_archivo(ruta)
+            cola_audio.task_done()
+
+    t_sintetizador = threading.Thread(target=hilo_sintetizador, daemon=True)
+    t_reproductor = threading.Thread(target=hilo_reproductor, daemon=True)
+    t_sintetizador.start()
+    t_reproductor.start()
+
+    # Solo cortamos en finales de oración reales
+    PUNTUACION_CORTE = ['.', '?', '!', '\n']
+
+    for fragmento_entrante in generador_texto:
+        if not fragmento_entrante:
+            continue
+
+        respuesta_completa += fragmento_entrante
+        bloque_actual += fragmento_entrante
+
+        print(fragmento_entrante, end="", flush=True)
+        if callback_stream:
+            callback_stream(fragmento_entrante)
+
+        # Cortamos solo si hay un signo final Y la oración tiene más de 15 caracteres
+        if any(puntuacion in fragmento_entrante for puntuacion in PUNTUACION_CORTE):
+            fragmento = bloque_actual.strip()
+            if len(fragmento) > 15:
+                cola_texto.put(fragmento)
+                bloque_actual = ""
+
+    # Procesar el último pedazo si no terminó en punto
+    fragmento_final = bloque_actual.strip()
+    if len(fragmento_final) > 2:
+        cola_texto.put(fragmento_final)
+
+    # Apagar el pipeline limpiamente
+    cola_texto.put(None)
+    t_sintetizador.join()
+    t_reproductor.join()
+
+    print()  # Salto de línea estético en consola
+    return respuesta_completa
+
+
+_PATRON_DIVISION_ORACIONES = re.compile(r'(?<=[\.\?\!\n])\s*')
+
+
+def _dividir_en_fragmentos_hablables(texto):
+    """
+    Convierte un texto YA COMPLETO (que llegó de una sola vez, como las
+    respuestas no-streaming de Gemini) en un generador de oraciones, para
+    poder reutilizar _generar_respuesta_con_voz también en esos casos.
+    Sin esto, todo el texto se trataría como un solo fragmento gigante y
+    la voz intentaría sintetizarlo de un tirón en vez de hablar frase por
+    frase como en las rutas que sí transmiten en vivo.
+    """
+    if not texto:
+        return
+    for parte in _PATRON_DIVISION_ORACIONES.split(texto.strip()):
+        parte = parte.strip()
+        if parte:
+            yield parte + " "
+
+
+# ==========================================
+# 4. RUTA A: LA NUBE (Gemini Flash / Pro)
 # ==========================================
 def leer_repositorio_git(ruta_repo: str) -> str:
     """
@@ -467,7 +586,7 @@ def leer_repositorio_git(ruta_repo: str) -> str:
 
 
 def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, buscar_web=False,
-                        modelo_nube=MODELO_NUBE_FLASH, callback_ui=None):
+                        modelo_nube=MODELO_NUBE_FLASH, callback_ui=None, callback_stream=None):
     print(f"\n[☁️ Enrutando a la Nube ({modelo_nube})...]")
 
     if usar_vision:
@@ -494,6 +613,10 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
 
     for intento in range(max_reintentos):
         try:
+            # PASO 1: llamada normal (sin streaming) SOLO para poder
+            # detectar de forma confiable si Gemini quiere ejecutar una
+            # herramienta. Los tool-calls no llegan bien fragmentados en
+            # modo streaming, así que la detección se queda como estaba.
             response = client.models.generate_content(
                 model=modelo_nube,
                 contents=contenidos_api,
@@ -513,12 +636,25 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
 
                 prompt_bozal = _generar_prompt_bozal(llamada.name, resultado_sistema)
                 contenidos_api.append(prompt_bozal)
-                return client.models.generate_content(
+
+                # PASO 2: la respuesta final en lenguaje natural (después de
+                # ejecutar la herramienta) SÍ va con streaming real, para
+                # que la voz y la GUI se comporten igual que en Local.
+                print("\n🤖 L-IA (Nube, hablando en bloques)...")
+                stream = client.models.generate_content_stream(
                     model=modelo_nube,
                     contents=contenidos_api
-                ).text
+                )
+                generador = (chunk.text for chunk in stream if chunk.text)
+                return _generar_respuesta_con_voz(generador, callback_stream=callback_stream)
 
-            return response.text
+            # Sin tool-call: la respuesta ya es la final. Como se pidió sin
+            # streaming (para poder chequear function_calls primero), la
+            # troceamos en oraciones y la pasamos igual por el pipeline de
+            # voz, para que hable en bloques en vez de todo de un tirón.
+            print("\n🤖 L-IA (Nube, hablando en bloques)...")
+            generador = _dividir_en_fragmentos_hablables(response.text)
+            return _generar_respuesta_con_voz(generador, callback_stream=callback_stream)
 
         except Exception as e:
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
@@ -534,7 +670,7 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
 
 
 # ==========================================
-# 4. RUTA B: CEREBRO LOCAL (Gemma 2)
+# 5. RUTA B: CEREBRO LOCAL (Gemma 2)
 # ==========================================
 def _extraer_llamada_manual(texto):
     match = re.search(r'\{[^{}]*"accion"[^{}]*\}', texto, re.DOTALL)
@@ -557,13 +693,6 @@ def _extraer_llamada_manual(texto):
     return None
 
 
-# ==========================================================================
-# REEMPLAZO para responder_con_local en cerebro.py
-# Único cambio real: desde "La respuesta final con streaming (Chunking..."
-# hasta el "return respuesta_completa". Todo lo anterior (JSON de
-# herramientas, _extraer_llamada_manual, etc.) queda exactamente igual.
-# ==========================================================================
-
 def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir, quiere_estado,
                          callback_ui=None, callback_stream=None):
     # callback_stream(fragmento: str): se llama por cada trozo de texto que
@@ -583,13 +712,8 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
     # ==========================================================
     # PASO 1: SI HACE FALTA HERRAMIENTA, DETECTARLA Y EJECUTARLA
     # ==========================================================
-    # IMPORTANTE: antes esta rama tenía un `return` temprano cuando NO se
-    # detectaba una llamada a herramienta. Eso hacía que la conversación
-    # normal (sin pedir abrir apps ni ver el estado del PC) NUNCA llegara
-    # al bloque de streaming+voz de más abajo -> la voz sonaba en las
-    # pruebas de voz.py sueltas, pero jamás en un chat normal por la GUI.
-    # Ahora esta rama solo prepara `mensajes`; el streaming+voz de abajo
-    # se ejecuta SIEMPRE, haya habido herramienta o no.
+    # IMPORTANTE: esta rama solo prepara `mensajes`; el streaming+voz de
+    # abajo se ejecuta SIEMPRE, haya habido herramienta o no.
     if requiere_herramienta:
         instrucciones_finales = "Eres un generador de JSON estricto. NUNCA uses texto conversacional. "
         if quiere_abrir:
@@ -653,91 +777,25 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
                 ])
 
     # ==================================================================
-    # PASO 2: RESPUESTA FINAL CON STREAMING + VOZ EN PIPELINE (Fase 5)
+    # PASO 2: RESPUESTA FINAL CON STREAMING + VOZ (pipeline compartido)
     # ==================================================================
-    # Este bloque ahora corre SIEMPRE (con o sin herramienta de por medio),
-    # que es justo lo que faltaba para que la voz sonara en charla normal.
-    #
-    # Dos hilos con dos colas (pipeline productor-consumidor):
-    #   - hilo_sintetizador: toma texto de cola_texto, genera el MP3
-    #     con voz.sintetizar_a_archivo() y deja la RUTA en cola_audio.
-    #   - hilo_reproductor: toma rutas de cola_audio y las reproduce
-    #     con voz.reproducir_archivo(), en orden.
     try:
         print("\n🤖 L-IA (Pensando y hablando en bloques)...")
-        respuesta_completa = ""
-        bloque_actual = ""
-
-        cola_texto = queue.Queue()   # frases listas para sintetizar
-        cola_audio = queue.Queue()   # rutas de mp3 ya sintetizados, listas para sonar
-
-        def hilo_sintetizador():
-            while True:
-                frase = cola_texto.get()
-                if frase is None:  # señal de apagado
-                    cola_audio.put(None)  # la propagamos al reproductor
-                    cola_texto.task_done()
-                    break
-                ruta = voz.sintetizar_a_archivo(frase)
-                if ruta:
-                    cola_audio.put(ruta)
-                cola_texto.task_done()
-
-        def hilo_reproductor():
-            while True:
-                ruta = cola_audio.get()
-                if ruta is None:  # señal de apagado
-                    cola_audio.task_done()
-                    break
-                voz.reproducir_archivo(ruta)
-                cola_audio.task_done()
-
-        t_sintetizador = threading.Thread(target=hilo_sintetizador, daemon=True)
-        t_reproductor = threading.Thread(target=hilo_reproductor, daemon=True)
-        t_sintetizador.start()
-        t_reproductor.start()
-
-        # Solo cortamos en finales de oración reales
-        PUNTUACION_CORTE = ['.', '?', '!', '\n']
-
         response_stream = ollama.chat(
             model=MODELO_LOCAL,
             messages=mensajes,
             options={'num_gpu': 31},
             stream=True
         )
-
-        for chunk in response_stream:
-            token = chunk['message']['content']
-            respuesta_completa += token
-            bloque_actual += token
-
-            print(token, end="", flush=True)
-            if callback_stream:
-                callback_stream(token)
-
-            if any(puntuacion in token for puntuacion in PUNTUACION_CORTE):
-                fragmento = bloque_actual.strip()
-                if len(fragmento) > 15:
-                    cola_texto.put(fragmento)
-                    bloque_actual = ""
-
-        fragmento_final = bloque_actual.strip()
-        if len(fragmento_final) > 2:
-            cola_texto.put(fragmento_final)
-
-        cola_texto.put(None)
-        t_sintetizador.join()
-        t_reproductor.join()
-
-        print()
-        return respuesta_completa
+        generador = (chunk['message']['content'] for chunk in response_stream)
+        return _generar_respuesta_con_voz(generador, callback_stream=callback_stream)
 
     except Exception as e:
         return f"❌ Error en el cerebro local: {e}"
 
+
 # ==========================================
-# 4.5 RUTA C: CEREBRO LOCAL SIN CENSURA (Dolphin-Mistral)
+# 5.5 RUTA C: CEREBRO LOCAL SIN CENSURA (Dolphin-Mistral)
 # ==========================================
 def _descargar_modelo_ollama(nombre_modelo):
     try:
@@ -747,7 +805,7 @@ def _descargar_modelo_ollama(nombre_modelo):
         print(f"⚠️ [No se pudo liberar '{nombre_modelo}' de VRAM: {e}]")
 
 
-def responder_con_local_uncensored(instrucciones_sistema, contexto_historico):
+def responder_con_local_uncensored(instrucciones_sistema, contexto_historico, callback_stream=None):
     print(f"\n[🐬 Enrutando al Especialista Sin Censura ({MODELO_UNCENSORED})...]")
     _descargar_modelo_ollama(MODELO_LOCAL)
 
@@ -770,17 +828,21 @@ def responder_con_local_uncensored(instrucciones_sistema, contexto_historico):
     ]
 
     try:
-        response = ollama.chat(
+        print("\n🤖 L-IA (Dolphin, pensando y hablando en bloques)...")
+        response_stream = ollama.chat(
             model=MODELO_UNCENSORED,
             messages=mensajes,
-            options={'num_gpu': 31, 'temperature': 0.4}
+            options={'num_gpu': 31, 'temperature': 0.4},
+            stream=True
         )
-        return response['message']['content']
+        generador = (chunk['message']['content'] for chunk in response_stream)
+        return _generar_respuesta_con_voz(generador, callback_stream=callback_stream)
+
     except Exception as e:
         return f"❌ Error en el cerebro Dolphin: {e}"
 
 # ==========================================
-# 5. HERRAMIENTAS DE INTERCEPCIÓN (inyección de contexto)
+# 6. HERRAMIENTAS DE INTERCEPCIÓN (inyección de contexto)
 # ==========================================
 REGLA_CUMPLIMIENTO_OBLIGATORIO = (
     "[INSTRUCCIÓN CRÍTICA]: Tienes permitido quejarte un poco y ser sarcástica al inicio, con cariño de fondo, "
@@ -1039,7 +1101,7 @@ def _procesar_archivo(ruta_o_nombre, contexto_historico):
 
 
 # ==========================================
-# 6. SEMÁFORO v3 — DECISIÓN DE RUTA
+# 7. SEMÁFORO v3 — DECISIÓN DE RUTA
 # ==========================================
 def _elegir_ruta(intenciones: dict, msg_lower: str, tokens_totales: int):
     es_analisis_profundo = any(frase in msg_lower for frase in _FRASES_ANALISIS_PROFUNDO)
@@ -1064,10 +1126,9 @@ def _elegir_ruta(intenciones: dict, msg_lower: str, tokens_totales: int):
     return "Local", None
 
 # ==========================================
-# 7. ENRUTADOR PRINCIPAL
+# 8. ENRUTADOR PRINCIPAL
 # ==========================================
-# CAMBIO 1 (marcado abajo con >>>): se agregó el parámetro callback_stream=None
-def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):  # >>> CAMBIO 1
+def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
     database.guardar_mensaje("user", mensaje_usuario)
 
     instrucciones_sistema = prompt_builder.obtener_instrucciones_sistema()
@@ -1080,31 +1141,29 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):  #
 
     intenciones = _detectar_intenciones(msg_lower)
 
-    # --- NUEVO: INTERCEPTOR DE ARCHIVOS AUTOMÁTICO (FASE 7.2) ---
+    # --- INTERCEPTOR DE ARCHIVOS AUTOMÁTICO (FASE 7.2) ---
     # Si pides resumir "esto", Python busca el archivo por su cuenta sin preguntarle a la IA
-    frases_lectura = ["este archivo", "este documento", "este código", "resumen de este", "resumir este", "de este documento"]
-
-    if any(frase in msg_lower for frase in frases_lectura):
+    if PATRON_LECTURA_IMPLICITA.search(msg_lower):
         ventana_actual = contexto.obtener_ventana_activa()
         print(f"\n🕵️ [Interceptor] Ventana activa capturada: '{ventana_actual}'")
 
-        nombre_archivo = None
+        # contexto.obtener_ventana_activa() ya devuelve el título CON la
+        # extensión inferida (ej. "informe.docx") cuando pudo deducirla del
+        # sufijo de la app (" - Word", " - Excel", etc.), así que un único
+        # regex de extensión alcanza -- ya no hace falta el fallback manual
+        # de " - Word" que antes vivía acá duplicado y desincronizado.
+        match_archivo = re.search(
+            r'([a-zA-Z0-9_\-\s]+\.(html|php|js|css|py|docx|pdf|txt|md|pptx|xlsx))',
+            ventana_actual, re.IGNORECASE
+        )
+        nombre_archivo = match_archivo.group(1).strip() if match_archivo else None
 
-        match_archivo = re.search(r'([a-zA-Z0-9_\-\s]+\.(html|php|js|css|py|docx|pdf|txt|md))', ventana_actual, re.IGNORECASE)
-
-        if match_archivo:
-            nombre_archivo = match_archivo.group(1).strip()
-        elif " - Word" in ventana_actual:
-            # Limpiamos asteriscos de "archivo no guardado" o espacios
-            nombre_base = ventana_actual.split(" - Word")[0].replace("*", "").strip()
-            nombre_archivo = f"{nombre_base}.docx"
-
-        # Si logramos deducir el nombre por cualquiera de las dos vías:
+        # Si logramos deducir el nombre:
         if nombre_archivo:
             # 1. Ejecutamos la búsqueda automática
             resultado = tools.leer_archivo_local(nombre_archivo)
 
-            # --- NUEVO: PARCHE PARA MÚLTIPLES COINCIDENCIAS (DUPLICADOS) ---
+            # --- PARCHE PARA MÚLTIPLES COINCIDENCIAS (DUPLICADOS) ---
             if isinstance(resultado, str) and "múltiples coincidencias" in resultado.lower():
                 # Extraemos la ruta exacta de la opción "1."
                 match_primera = re.search(r'1\.\s+([a-zA-Z]:\\[^\n]+)', resultado)
@@ -1175,7 +1234,7 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):  #
         intenciones["abrir_app"] = False
         intenciones["codigo"] = False
 
-    # --- NUEVO: FASE 8 — GUÍA DE CAPACIDADES ---
+    # --- FASE 8 — GUÍA DE CAPACIDADES ---
     # Pregunta meta sobre L-IA misma: apaga acciones reales de este turno
     # para que no intente ejecutar nada, solo explicarse a sí misma.
     if intenciones.get("guia_capacidades"):
@@ -1189,23 +1248,24 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):  #
     ruta_elegida, modelo_nube_seleccionado = _elegir_ruta(intenciones, msg_lower, tokens_totales)
 
     if ruta_elegida == "Nube":
-        # callback_stream NO se pasa acá a propósito: la ruta de nube todavía
-        # no transmite por bloques. Si en el futuro se agrega streaming ahí
-        # también, se reenvía igual que en la rama local de abajo.
         texto_respuesta = responder_con_nube(
             instrucciones_sistema, contexto_historico,
             intenciones["vision"], intenciones["web"],
             modelo_nube=modelo_nube_seleccionado,
-            callback_ui=callback_ui
+            callback_ui=callback_ui,
+            callback_stream=callback_stream
         )
     elif ruta_elegida == "Dolphin":
-        texto_respuesta = responder_con_local_uncensored(instrucciones_sistema, contexto_historico)
+        texto_respuesta = responder_con_local_uncensored(
+            instrucciones_sistema, contexto_historico,
+            callback_stream=callback_stream
+        )
     else:
         texto_respuesta = responder_con_local(
             instrucciones_sistema, contexto_historico,
             intenciones["abrir_app"], intenciones["estado_pc"],
             callback_ui=callback_ui,
-            callback_stream=callback_stream  # >>> CAMBIO 2: se reenvía el callback de streaming
+            callback_stream=callback_stream
         )
 
     if texto_respuesta:
