@@ -1,27 +1,13 @@
 import keyboard
 import tkinter as tk
 import threading
+import time
 import re
 import pystray
 from PIL import Image, ImageDraw
 import sys
 import cerebro
 import database
-# NOTA: Ya NO importamos 'contexto' aquí. Antes esta interfaz llamaba a
-# contexto.inyectar_contexto_implicito(mensaje) ANTES de pasarle el mensaje
-# a cerebro.charlar_con_lia(). Eso duplicaba el bloque de contexto de
-# ventana, porque cerebro.py YA lo inyecta automáticamente por su cuenta
-# en cada turno (ver cerebro._procesar_entorno_automatico). Peor aún: el
-# "cortador" que cerebro.py usaba para separar el mensaje real del bloque
-# inyectado buscaba el marcador "[CONTEXTO DEL SISTEMA", que nunca existió
-# en el texto real inyectado (el marcador real es "[DATO DEL ENTORNO"). Al
-# no cortar nada, el mensaje que llegaba a la detección de intenciones
-# (msg_lower) venía contaminado con instrucciones de sistema completas,
-# lo que confundía al modelo local y lo llevaba a "narrar" en vez de
-# ejecutar herramientas. Quitar esta línea es lo que arregla ese
-# comportamiento -- la personalidad y el comportamiento del launcher
-# vuelven a ser idénticos a los de la consola (python cerebro.py).
-
 
 # ==========================================
 # TEMA / PALETA DE COLORES (Catppuccin Mocha)
@@ -317,6 +303,61 @@ class InterfazLIA:
         self.chat_area.config(state=tk.DISABLED)
 
     # ==========================================
+    # STREAMING EN VIVO DE LA RESPUESTA (Fase 5)
+    # ==========================================
+    # Estos métodos conectan cerebro.py con la burbuja de chat en tiempo
+    # real. IMPORTANTE: cerebro.py corre en un hilo de fondo (ver
+    # procesar_en_fondo), y Tkinter NO es thread-safe -- nunca se debe
+    # tocar self.chat_area directamente desde ese hilo. Por eso el callback
+    # que se le pasa a cerebro (ver más abajo) siempre reenvuelve la
+    # actualización real en self.root.after(0, ...), que la agenda para
+    # ejecutarse en el hilo principal de Tkinter.
+    def iniciar_burbuja_streaming(self):
+        """Crea una burbuja vacía para L-IA y devuelve un tag_id único para
+        poder seguir escribiendo dentro de ella (o borrarla entera después,
+        p. ej. si termina siendo el caso especial de archivos duplicados)."""
+        tag_id = f"stream_{time.time_ns()}"
+        self.chat_area.config(state=tk.NORMAL)
+        inicio = self.chat_area.index(tk.END)
+        self.chat_area.insert(tk.END, "🤖 L-IA\n", "remitente_lia")
+        self.chat_area.insert(tk.END, "\n\n", "cuerpo")
+        fin = self.chat_area.index(tk.END)
+        self.chat_area.tag_add(tag_id, inicio, fin)
+        self.chat_area.see(tk.END)
+        self.chat_area.config(state=tk.DISABLED)
+        return tag_id
+
+    def agregar_token_streaming(self, fragmento, tag_id=None):
+        """Inserta un fragmento de texto SIEMPRE 2 caracteres antes del final
+        del widget -- justo antes del '\\n\\n' que cierra la burbuja recién
+        creada. Ahora también aplica tag_id (si se pasa) para que el rango
+        tageado se mantenga contiguo y tag_ranges() siga devolviendo un único
+        par (inicio, fin) sin importar cuántos tokens se inserten."""
+        self.chat_area.config(state=tk.NORMAL)
+        tags = ("cuerpo", tag_id) if tag_id else ("cuerpo",)
+        self.chat_area.insert("end-2c", fragmento, tags)
+        self.chat_area.see(tk.END)
+        self.chat_area.config(state=tk.DISABLED)
+
+    def _reemplazar_texto_burbuja(self, tag_id, texto_nuevo):
+        """Reemplaza TODO el contenido (header + cuerpo) de una burbuja de
+        streaming ya existente. Se usa solo para el caso puntual de limpiar
+        el prefijo 'L-IA:' que a veces mete el modelo, una vez que ya
+        sabemos el texto final completo."""
+        rangos = self.chat_area.tag_ranges(tag_id)
+        if not rangos:
+            return
+        self.chat_area.config(state=tk.NORMAL)
+        self.chat_area.delete(rangos[0], rangos[1])
+        inicio = rangos[0]
+        self.chat_area.insert(inicio, "🤖 L-IA\n", "remitente_lia")
+        self.chat_area.insert(tk.INSERT, f"{texto_nuevo}\n\n", "cuerpo")
+        fin = self.chat_area.index(tk.INSERT)
+        self.chat_area.tag_add(tag_id, inicio, fin)
+        self.chat_area.see(tk.END)
+        self.chat_area.config(state=tk.DISABLED)
+
+    # ==========================================
     # ENVÍO / PROCESAMIENTO DE MENSAJES
     # ==========================================
     def enviar_mensaje(self, event):
@@ -335,6 +376,10 @@ class InterfazLIA:
         """
         Envía el mensaje al cerebro (cerebro.charlar_con_lia) y muestra la respuesta.
 
+        Ahora la respuesta se va pintando EN VIVO en la burbuja conforme
+        cerebro.py va transmitiendo tokens (vía callback_stream), en vez de
+        esperar a que la función entera termine para mostrar todo de golpe.
+
         Caso especial: si el buscador de archivos de tools.py encontró varias
         coincidencias, en vez de mostrar la lista como texto plano, se abre un
         popup con un botón por cada archivo encontrado (ver lanzar_popup_archivos).
@@ -343,21 +388,45 @@ class InterfazLIA:
         self.status_dot.config(fg=Tema.ACCENT_WARN)
         self.agregar_texto("", "🤖 L-IA está pensando...", tag_remitente="cuerpo_suave", tag_id="placeholder")
 
+        # Estado compartido entre este hilo y los callbacks agendados con
+        # root.after (por eso es un dict, no variables sueltas: evita
+        # líos con 'nonlocal' anidado en dos funciones distintas).
+        estado = {"tag_streaming": None, "buffer_inicial": "", "prefijo_revisado": False}
+
+        def _pintar_fragmento(fragmento):
+            if not estado["prefijo_revisado"]:
+                estado["buffer_inicial"] += fragmento
+                if len(estado["buffer_inicial"]) < 12 and ":" not in estado["buffer_inicial"]:
+                    return
+                estado["prefijo_revisado"] = True
+                fragmento = _limpiar_respuesta_ia(estado["buffer_inicial"])
+                if not fragmento:
+                    return
+
+            if estado["tag_streaming"] is None:
+                self.borrar_bloque("placeholder")
+                estado["tag_streaming"] = self.iniciar_burbuja_streaming()
+            self.agregar_token_streaming(fragmento, tag_id=estado["tag_streaming"])
+
+        def _on_token(fragmento):
+            # Se llama desde el hilo de cerebro.py -- SIEMPRE reenviar a
+            # través de root.after para tocar el widget desde el hilo
+            # correcto (el de Tkinter).
+            self.root.after(0, lambda f=fragmento: _pintar_fragmento(f))
+
         try:
-            # ANTES: aquí se llamaba a contexto.inyectar_contexto_implicito(mensaje)
-            # para pre-inyectar el contexto de ventana ANTES de entrar a
-            # cerebro.charlar_con_lia(). Se quitó: cerebro.py ya inyecta ese
-            # mismo contexto automáticamente en cada turno, y hacerlo dos
-            # veces contaminaba la detección de intenciones y confundía al
-            # modelo local, provocando que "narrara" en vez de ejecutar
-            # herramientas -- justo la diferencia de comportamiento que
-            # notabas frente a la consola.
             respuesta, origen = cerebro.charlar_con_lia(
                 mensaje,
-                callback_ui=self.solicitar_permiso_ui
+                callback_ui=self.solicitar_permiso_ui,
+                callback_stream=_on_token
             )
 
-            self.borrar_bloque("placeholder")
+            # Si por algún motivo esa ruta de cerebro.py nunca llamó a
+            # callback_stream (p. ej. una ruta vieja que todavía no lo
+            # propaga), no quedó ninguna burbuja dibujada -- nos aseguramos
+            # de no dejar embarrado el "pensando...".
+            if estado["tag_streaming"] is None:
+                self.borrar_bloque("placeholder")
 
             # --- INTERCEPTOR DE MÚLTIPLES ARCHIVOS ---
             # No confiamos en las PALABRAS de la IA (se rompía cuando reescribía
@@ -367,6 +436,8 @@ class InterfazLIA:
             rutas_encontradas = re.findall(r'\d+\.\s+([a-zA-Z]:\\[^\n]+)', respuesta)
 
             if rutas_encontradas:
+                if estado["tag_streaming"] is not None:
+                    self.borrar_bloque(estado["tag_streaming"])
                 self.agregar_texto(
                     f"🤖 L-IA ({origen})",
                     "[Abriendo interfaz de selección de archivos...]",
@@ -375,10 +446,23 @@ class InterfazLIA:
                 self.lanzar_popup_archivos(rutas_encontradas, mensaje)
             else:
                 respuesta_limpia = _limpiar_respuesta_ia(respuesta)
-                self.agregar_texto(f"🤖 L-IA ({origen})", respuesta_limpia, tag_remitente="remitente_lia")
+                if estado["tag_streaming"] is not None:
+                    # Ya se mostró en vivo. Solo se retoca si el texto final
+                    # limpio no coincide con lo que ya está pintado (caso
+                    # raro: el prefijo se coló pese al buffer inicial).
+                    rangos = self.chat_area.tag_ranges(estado["tag_streaming"])
+                    if rangos:
+                        contenido_actual = self.chat_area.get(rangos[0], rangos[-1]).strip()
+                        esperado = f"🤖 L-IA\n{respuesta_limpia}".strip()
+                        if contenido_actual != esperado:
+                            self._reemplazar_texto_burbuja(estado["tag_streaming"], respuesta_limpia)
+                else:
+                    self.agregar_texto(f"🤖 L-IA ({origen})", respuesta_limpia, tag_remitente="remitente_lia")
 
         except Exception as e:
             self.borrar_bloque("placeholder")
+            if estado["tag_streaming"] is not None:
+                self.borrar_bloque(estado["tag_streaming"])
             self.agregar_texto("❌ Error en el sistema", str(e), tag_remitente="remitente_error")
 
         self.status_dot.config(fg=Tema.ACCENT_LIA)

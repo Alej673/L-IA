@@ -2,17 +2,20 @@ import os
 import time
 import json
 import re
+import threading
 from dotenv import load_dotenv
 from google import genai
 from mss import MSS
 from PIL import Image
-import prompt_builder as prompt_builder
+import prompt_builder
 import database
 import tools
 import apis
 import ollama
 import difflib
 import contexto
+import voz
+import queue
 
 # ==========================================
 # 1. CONFIGURACIÓN INICIAL Y SEMÁFORO
@@ -554,12 +557,39 @@ def _extraer_llamada_manual(texto):
     return None
 
 
-def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir, quiere_estado, callback_ui=None):
+# ==========================================================================
+# REEMPLAZO para responder_con_local en cerebro.py
+# Único cambio real: desde "La respuesta final con streaming (Chunking..."
+# hasta el "return respuesta_completa". Todo lo anterior (JSON de
+# herramientas, _extraer_llamada_manual, etc.) queda exactamente igual.
+# ==========================================================================
+
+def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir, quiere_estado,
+                         callback_ui=None, callback_stream=None):
+    # callback_stream(fragmento: str): se llama por cada trozo de texto que
+    # se va generando, ANTES de que la función termine. Es lo que le
+    # permite a interfaz_lia.py pintar la respuesta en vivo en la burbuja,
+    # en vez de esperar el `return` final. Si es None (ej. llamado desde
+    # consola sin GUI), simplemente no se usa y todo sigue igual.
     print(f"\n[🏠 Enrutando al Cerebro Local ({MODELO_LOCAL})...]")
 
     requiere_herramienta = quiere_abrir or quiere_estado
 
-    instrucciones_finales = instrucciones_sistema
+    mensajes = [
+        {'role': 'system', 'content': instrucciones_sistema},
+        {'role': 'user', 'content': contexto_historico}
+    ]
+
+    # ==========================================================
+    # PASO 1: SI HACE FALTA HERRAMIENTA, DETECTARLA Y EJECUTARLA
+    # ==========================================================
+    # IMPORTANTE: antes esta rama tenía un `return` temprano cuando NO se
+    # detectaba una llamada a herramienta. Eso hacía que la conversación
+    # normal (sin pedir abrir apps ni ver el estado del PC) NUNCA llegara
+    # al bloque de streaming+voz de más abajo -> la voz sonaba en las
+    # pruebas de voz.py sueltas, pero jamás en un chat normal por la GUI.
+    # Ahora esta rama solo prepara `mensajes`; el streaming+voz de abajo
+    # se ejecuta SIEMPRE, haya habido herramienta o no.
     if requiere_herramienta:
         instrucciones_finales = "Eres un generador de JSON estricto. NUNCA uses texto conversacional. "
         if quiere_abrir:
@@ -575,81 +605,136 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
                 'con corchetes, texto explicativo o markdown. Responde ÚNICAMENTE el JSON, nada más.'
             )
 
-    mensajes = [
-        {'role': 'system', 'content': instrucciones_finales},
-        {'role': 'user', 'content': contexto_historico}
-    ]
+        mensajes[0]['content'] = instrucciones_finales
 
-    try:
-        opciones_llamada = {'num_gpu': 31}
-        chat_kwargs = {
-            'model': MODELO_LOCAL,
-            'messages': mensajes,
-        }
+        try:
+            response = ollama.chat(
+                model=MODELO_LOCAL,
+                messages=mensajes,
+                format='json',
+                options={'num_gpu': 31, 'temperature': 0.1}
+            )
+            contenido_bruto = response['message']['content']
+            llamada_manual = _extraer_llamada_manual(contenido_bruto)
+        except Exception as e:
+            return f"❌ Error en el cerebro local: {e}"
 
-        if requiere_herramienta:
-            # Doble capa de robustez cuando esperamos JSON de herramienta:
-            # 1) Temperatura baja: reduce la variabilidad que lleva a gemma2
-            #    a "improvisar" formatos raros (corchetes, texto extra) en
-            #    vez del JSON pedido.
-            # 2) format='json': fuerza el formato a nivel de DECODIFICACIÓN
-            #    en Ollama -- restringe qué tokens puede generar el modelo
-            #    para que la salida sea JSON válido sí o sí, sin depender
-            #    de que el modelo "obedezca" la instrucción de texto.
-            opciones_llamada['temperature'] = 0.1
-            chat_kwargs['format'] = 'json'
-
-        chat_kwargs['options'] = opciones_llamada
-
-        response = ollama.chat(**chat_kwargs)
-        contenido_bruto = response['message']['content']
-        llamada_manual = _extraer_llamada_manual(contenido_bruto) if requiere_herramienta else None
+        # Restauramos el system prompt real para lo que sigue (ejecución
+        # de la herramienta y/o la respuesta final con personalidad).
+        mensajes[0]['content'] = instrucciones_sistema
 
         if not llamada_manual:
-            if requiere_herramienta:
-                # Log de diagnóstico: antes esto fallaba en silencio y
-                # devolvía el texto conversacional como si nada, dando la
-                # falsa impresión de que la herramienta se había ejecutado.
-                print(
-                    f"⚠️ [L-IA Local] Se esperaba JSON de herramienta pero no se pudo extraer. "
-                    f"Contenido crudo del modelo: {contenido_bruto[:300]!r}"
-                )
-            return contenido_bruto
-
-        mensajes[0]['content'] = instrucciones_sistema
-        accion = llamada_manual.get("accion")
-
-        kwargs_herramienta = {}
-        if accion == "abrir_aplicacion":
-            kwargs_herramienta = {"nombres_apps": llamada_manual.get("nombres_apps", "")}
-
-        if accion in ("abrir_aplicacion", "obtener_estado_sistema"):
-            print(f"\n⚙️ [L-IA Local solicitando ejecución de: {accion}]")
-            resultado = _ejecutar_herramienta_segura(
-                accion,
-                callback_ui_permiso=callback_ui,
-                **kwargs_herramienta
+            print(
+                f"⚠️ [L-IA Local] Se esperaba JSON de herramienta pero no se pudo extraer. "
+                f"Contenido crudo del modelo: {contenido_bruto[:300]!r}"
             )
-            print(f"✅ [Sistema: {resultado}]")
+            # No hubo forma de extraer la herramienta: seguimos igual hacia
+            # el streaming de abajo con los mensajes originales, para que
+            # al menos conteste algo en vez de cortar la conversación en seco.
+        else:
+            accion = llamada_manual.get("accion")
+            kwargs_herramienta = {}
+            if accion == "abrir_aplicacion":
+                kwargs_herramienta = {"nombres_apps": llamada_manual.get("nombres_apps", "")}
 
-            prompt_bozal = _generar_prompt_bozal(accion, resultado)
-            mensajes.extend([
-                {'role': 'assistant', 'content': contenido_bruto},
-                {'role': 'user', 'content': prompt_bozal}
-            ])
+            if accion in ("abrir_aplicacion", "obtener_estado_sistema"):
+                print(f"\n⚙️ [L-IA Local solicitando ejecución de: {accion}]")
+                resultado = _ejecutar_herramienta_segura(
+                    accion,
+                    callback_ui_permiso=callback_ui,
+                    **kwargs_herramienta
+                )
+                print(f"✅ [Sistema: {resultado}]")
 
-        # La respuesta final (con personalidad, comentando el resultado)
-        # SÍ debe ser texto libre, por eso este segundo chat NO lleva
-        # format='json' ni temperatura baja.
-        return ollama.chat(
+                prompt_bozal = _generar_prompt_bozal(accion, resultado)
+                mensajes.extend([
+                    {'role': 'assistant', 'content': contenido_bruto},
+                    {'role': 'user', 'content': prompt_bozal}
+                ])
+
+    # ==================================================================
+    # PASO 2: RESPUESTA FINAL CON STREAMING + VOZ EN PIPELINE (Fase 5)
+    # ==================================================================
+    # Este bloque ahora corre SIEMPRE (con o sin herramienta de por medio),
+    # que es justo lo que faltaba para que la voz sonara en charla normal.
+    #
+    # Dos hilos con dos colas (pipeline productor-consumidor):
+    #   - hilo_sintetizador: toma texto de cola_texto, genera el MP3
+    #     con voz.sintetizar_a_archivo() y deja la RUTA en cola_audio.
+    #   - hilo_reproductor: toma rutas de cola_audio y las reproduce
+    #     con voz.reproducir_archivo(), en orden.
+    try:
+        print("\n🤖 L-IA (Pensando y hablando en bloques)...")
+        respuesta_completa = ""
+        bloque_actual = ""
+
+        cola_texto = queue.Queue()   # frases listas para sintetizar
+        cola_audio = queue.Queue()   # rutas de mp3 ya sintetizados, listas para sonar
+
+        def hilo_sintetizador():
+            while True:
+                frase = cola_texto.get()
+                if frase is None:  # señal de apagado
+                    cola_audio.put(None)  # la propagamos al reproductor
+                    cola_texto.task_done()
+                    break
+                ruta = voz.sintetizar_a_archivo(frase)
+                if ruta:
+                    cola_audio.put(ruta)
+                cola_texto.task_done()
+
+        def hilo_reproductor():
+            while True:
+                ruta = cola_audio.get()
+                if ruta is None:  # señal de apagado
+                    cola_audio.task_done()
+                    break
+                voz.reproducir_archivo(ruta)
+                cola_audio.task_done()
+
+        t_sintetizador = threading.Thread(target=hilo_sintetizador, daemon=True)
+        t_reproductor = threading.Thread(target=hilo_reproductor, daemon=True)
+        t_sintetizador.start()
+        t_reproductor.start()
+
+        # Solo cortamos en finales de oración reales
+        PUNTUACION_CORTE = ['.', '?', '!', '\n']
+
+        response_stream = ollama.chat(
             model=MODELO_LOCAL,
             messages=mensajes,
-            options={'num_gpu': 31}
-        )['message']['content']
+            options={'num_gpu': 31},
+            stream=True
+        )
+
+        for chunk in response_stream:
+            token = chunk['message']['content']
+            respuesta_completa += token
+            bloque_actual += token
+
+            print(token, end="", flush=True)
+            if callback_stream:
+                callback_stream(token)
+
+            if any(puntuacion in token for puntuacion in PUNTUACION_CORTE):
+                fragmento = bloque_actual.strip()
+                if len(fragmento) > 15:
+                    cola_texto.put(fragmento)
+                    bloque_actual = ""
+
+        fragmento_final = bloque_actual.strip()
+        if len(fragmento_final) > 2:
+            cola_texto.put(fragmento_final)
+
+        cola_texto.put(None)
+        t_sintetizador.join()
+        t_reproductor.join()
+
+        print()
+        return respuesta_completa
 
     except Exception as e:
         return f"❌ Error en el cerebro local: {e}"
-
 
 # ==========================================
 # 4.5 RUTA C: CEREBRO LOCAL SIN CENSURA (Dolphin-Mistral)
@@ -981,7 +1066,8 @@ def _elegir_ruta(intenciones: dict, msg_lower: str, tokens_totales: int):
 # ==========================================
 # 7. ENRUTADOR PRINCIPAL
 # ==========================================
-def charlar_con_lia(mensaje_usuario, callback_ui=None):
+# CAMBIO 1 (marcado abajo con >>>): se agregó el parámetro callback_stream=None
+def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):  # >>> CAMBIO 1
     database.guardar_mensaje("user", mensaje_usuario)
 
     instrucciones_sistema = prompt_builder.obtener_instrucciones_sistema()
@@ -997,27 +1083,27 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None):
     # --- NUEVO: INTERCEPTOR DE ARCHIVOS AUTOMÁTICO (FASE 7.2) ---
     # Si pides resumir "esto", Python busca el archivo por su cuenta sin preguntarle a la IA
     frases_lectura = ["este archivo", "este documento", "este código", "resumen de este", "resumir este", "de este documento"]
-    
+
     if any(frase in msg_lower for frase in frases_lectura):
         ventana_actual = contexto.obtener_ventana_activa()
         print(f"\n🕵️ [Interceptor] Ventana activa capturada: '{ventana_actual}'")
-        
+
         nombre_archivo = None
-        
+
         match_archivo = re.search(r'([a-zA-Z0-9_\-\s]+\.(html|php|js|css|py|docx|pdf|txt|md))', ventana_actual, re.IGNORECASE)
-        
+
         if match_archivo:
             nombre_archivo = match_archivo.group(1).strip()
         elif " - Word" in ventana_actual:
             # Limpiamos asteriscos de "archivo no guardado" o espacios
             nombre_base = ventana_actual.split(" - Word")[0].replace("*", "").strip()
             nombre_archivo = f"{nombre_base}.docx"
-            
+
         # Si logramos deducir el nombre por cualquiera de las dos vías:
         if nombre_archivo:
             # 1. Ejecutamos la búsqueda automática
             resultado = tools.leer_archivo_local(nombre_archivo)
-            
+
             # --- NUEVO: PARCHE PARA MÚLTIPLES COINCIDENCIAS (DUPLICADOS) ---
             if isinstance(resultado, str) and "múltiples coincidencias" in resultado.lower():
                 # Extraemos la ruta exacta de la opción "1."
@@ -1026,7 +1112,7 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None):
                     ruta_absoluta = match_primera.group(1).strip()
                     # 2. Re-ejecutamos la lectura, pero esta vez con la ruta absoluta directa
                     resultado = tools.leer_archivo_local(ruta_absoluta)
-            
+
             # 3. Validamos que ahora sí tengamos el diccionario con el texto
             if isinstance(resultado, dict) and "contenido" in resultado:
                 # Inyectamos el texto real al CONTEXTO_HISTORICO
@@ -1035,7 +1121,7 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None):
                     f"Aquí está el contenido del archivo '{nombre_archivo}' que el usuario está viendo:\n"
                     f"<<<INICIO>>>\n{resultado['contenido'][:15000]}\n<<<FIN>>>\n"
                 )
-                
+
                 # Apagamos forzosamente la intención de abrir apps
                 intenciones["abrir_app"] = False
                 intenciones["codigo"] = False
@@ -1103,6 +1189,9 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None):
     ruta_elegida, modelo_nube_seleccionado = _elegir_ruta(intenciones, msg_lower, tokens_totales)
 
     if ruta_elegida == "Nube":
+        # callback_stream NO se pasa acá a propósito: la ruta de nube todavía
+        # no transmite por bloques. Si en el futuro se agrega streaming ahí
+        # también, se reenvía igual que en la rama local de abajo.
         texto_respuesta = responder_con_nube(
             instrucciones_sistema, contexto_historico,
             intenciones["vision"], intenciones["web"],
@@ -1115,7 +1204,8 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None):
         texto_respuesta = responder_con_local(
             instrucciones_sistema, contexto_historico,
             intenciones["abrir_app"], intenciones["estado_pc"],
-            callback_ui=callback_ui
+            callback_ui=callback_ui,
+            callback_stream=callback_stream  # >>> CAMBIO 2: se reenvía el callback de streaming
         )
 
     if texto_respuesta:
