@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 import sys
 import cerebro
 import database
-
+import voz
 # ==========================================
 # TEMA / PALETA DE COLORES (Catppuccin Mocha)
 # Centralizado acá para no repetir hex codes por todo el archivo.
@@ -99,6 +99,10 @@ class InterfazLIA:
         self.visible = False
         self._animando = False
 
+        # --- NUEVO: Hilo centinela para el Wake Word ---
+        self.hilo_wake_word_activo = True
+        threading.Thread(target=self._bucle_wake_word, daemon=True).start()
+
     # ==========================================
     # CONSTRUCCIÓN DE LA UI
     # ==========================================
@@ -177,6 +181,16 @@ class InterfazLIA:
             font=Tema.FUENTE_BOLD
         ).pack(side=tk.LEFT, padx=(12, 0))
 
+        # --- NUEVO: BOTÓN DE MICRÓFONO ---
+        self.btn_mic = tk.Label(
+            caja_input, text="🎤", bg=Tema.BG_INPUT, fg=Tema.TEXTO_SUAVE,
+            font=Tema.FUENTE_TITULO, cursor="hand2"
+        )
+        self.btn_mic.pack(side=tk.RIGHT, padx=(0, 12))
+        self.btn_mic.bind("<Button-1>", self.activar_microfono)
+        self.btn_mic.bind("<Enter>", lambda e: self.btn_mic.config(fg=Tema.ACCENT_LIA))
+        self.btn_mic.bind("<Leave>", lambda e: self.btn_mic.config(fg=Tema.TEXTO_SUAVE))
+
         self.input_field = tk.Entry(
             caja_input, bg=Tema.BG_INPUT, fg=Tema.TEXTO, font=Tema.FUENTE,
             insertbackground=Tema.ACCENT_LIA, bd=0, relief=tk.FLAT,
@@ -215,6 +229,53 @@ class InterfazLIA:
     def _restaurar_placeholder_si_vacio(self, event=None):
         if not self.input_field.get().strip():
             self._mostrar_placeholder()
+
+    def activar_microfono(self, event=None):
+        if self.input_field.cget("state") == tk.DISABLED:
+            return # Bloquea si L-IA ya está pensando o hablando
+        
+        self.input_field.delete(0, tk.END)
+        self.input_field.config(fg=Tema.ACCENT_LIA)
+        self.input_field.insert(0, "Escuchando (habla ahora)...")
+        self.input_field.config(state=tk.DISABLED)
+        self.btn_mic.config(fg=Tema.ACCENT_ERROR) # Rojo indicando grabación activa
+        
+        # Lanzar grabación en hilo para no congelar la UI
+        threading.Thread(target=self._hilo_escucha, daemon=True).start()
+
+    def _hilo_escucha(self):
+        texto_capturado = voz.escuchar(5) # Graba por 5 segundos
+        self.root.after(0, self._restaurar_ui_mic, texto_capturado)
+
+    def _bucle_wake_word(self):
+        """Corre en bucle infinito en segundo plano. Cuando detecta el 'Oye L-IA', activa el micro."""
+        while self.hilo_wake_word_activo:
+            # Esta función se queda pausada aquí hasta que digas "oye lia"
+            detectado = voz.esperar_palabra_clave()
+            
+            if detectado:
+                # Si el sistema ya está procesando algo, lo ignoramos para que no se pisen
+                if self.input_field.cget("state") == tk.NORMAL:
+                    # Traemos la ventana al frente por si estabas en otra app
+                    self.root.after(0, self.mostrar_ventana)
+                    # Simulamos un clic en el botón de grabar
+                    self.root.after(0, self.activar_microfono)
+                
+                # Le damos un respiro de 6 segundos para que termine de procesar el comando
+                # antes de volver a activar el centinela
+                time.sleep(6)
+        
+    def _restaurar_ui_mic(self, texto):
+        self.input_field.config(state=tk.NORMAL)
+        self.input_field.delete(0, tk.END)
+        self.input_field.config(fg=Tema.TEXTO)
+        self.btn_mic.config(fg=Tema.TEXTO_SUAVE)
+        
+        if texto:
+            self.input_field.insert(0, texto)
+            self.enviar_mensaje(None, por_voz=True) # Envía forzando la respuesta hablada
+        else:
+            self._restaurar_placeholder_si_vacio()
 
     def _configurar_tags_chat(self):
         """Tags de formato para las 'burbujas' de texto. Reemplaza el insert()
@@ -381,19 +442,21 @@ class InterfazLIA:
     # ==========================================
     # ENVÍO / PROCESAMIENTO DE MENSAJES
     # ==========================================
-    def enviar_mensaje(self, event):
-        if self._placeholder_activo:
+    def enviar_mensaje(self, event=None, por_voz=False):
+        if self._placeholder_activo and not por_voz:
             return
         mensaje = self.input_field.get().strip()
         if not mensaje:
             return
 
         self.input_field.delete(0, tk.END)
-        self.agregar_texto("TÚ", mensaje, tag_remitente="remitente_tu")
+        # Ponemos un iconito en tu mensaje si hablaste por micrófono
+        self.agregar_texto("TÚ" + (" 🎤" if por_voz else ""), mensaje, tag_remitente="remitente_tu")
 
-        threading.Thread(target=self.procesar_en_fondo, args=(mensaje,), daemon=True).start()
+        threading.Thread(target=self.procesar_en_fondo, args=(mensaje, por_voz), daemon=True).start()
+        
 
-    def procesar_en_fondo(self, mensaje):
+    def procesar_en_fondo(self, mensaje, por_voz=False):
         """
         Envía el mensaje al cerebro (cerebro.charlar_con_lia) y muestra la respuesta.
 
@@ -404,14 +467,20 @@ class InterfazLIA:
         Caso especial: si el buscador de archivos de tools.py encontró varias
         coincidencias, en vez de mostrar la lista como texto plano, se abre un
         popup con un botón por cada archivo encontrado (ver lanzar_popup_archivos).
-        """
+        """ 
         self.input_field.config(state=tk.DISABLED)
         self.status_dot.config(fg=Tema.ACCENT_WARN)
         self.agregar_texto("", "🤖 L-IA está pensando...", tag_remitente="cuerpo_suave", tag_id="placeholder")
 
-        # Estado compartido entre este hilo y los callbacks agendados con
-        # root.after (por eso es un dict, no variables sueltas: evita
-        # líos con 'nonlocal' anidado en dos funciones distintas).
+        # Configurar el estado de voz
+        cerebro.HABLAR_RESPUESTA = por_voz
+
+        # Disparar audio de relleno ("filler") cuando la respuesta es por voz
+        if cerebro.HABLAR_RESPUESTA:
+            voz.reproducir_efecto("pensando")
+
+        estado = {"tag_streaming": None, "buffer_inicial": "", "prefijo_revisado": False}
+
         estado = {"tag_streaming": None, "buffer_inicial": "", "prefijo_revisado": False}
 
         def _pintar_fragmento(fragmento):

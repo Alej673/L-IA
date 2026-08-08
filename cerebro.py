@@ -482,45 +482,53 @@ def _generar_prompt_bozal(nombre_herramienta: str, resultado: str) -> str:
 # encarga de: acumular la respuesta completa, avisarle a la GUI fragmento
 # a fragmento vía callback_stream, y mandar cada frase a sintetizar +
 # reproducir en pipeline, igual que antes.
+HABLAR_RESPUESTA = False  # Switch maestro: El Launcher lo enciende si le hablaste por micro
+
 def _generar_respuesta_con_voz(generador_texto, callback_stream=None):
     """
-    Recorre `generador_texto` (cualquier iterable de fragmentos de string)
-    y devuelve la respuesta completa acumulada, hablando y transmitiendo
-    en vivo en el camino. Reutilizada por las 3 rutas (Local, Nube, Dolphin).
+    Recorre el generador de texto, transmite a la GUI y, SI el switch
+    HABLAR_RESPUESTA está encendido, manda las oraciones a un pipeline
+    de dos hilos: uno sintetiza (Edge TTS -> mp3) y otro reproduce,
+    para que mientras suena la frase N, la N+1 ya se esté generando.
     """
     respuesta_completa = ""
     bloque_actual = ""
 
-    cola_texto = queue.Queue()   # frases listas para sintetizar
-    cola_audio = queue.Queue()   # rutas de mp3 ya sintetizados, listas para sonar
+    if HABLAR_RESPUESTA:
+        cola_texto = queue.Queue()   # frases pendientes de sintetizar
+        cola_audio = queue.Queue()   # archivos .mp3 ya listos, pendientes de sonar
 
-    def hilo_sintetizador():
-        while True:
-            frase = cola_texto.get()
-            if frase is None:  # señal de apagado
-                cola_audio.put(None)  # la propagamos al reproductor
+        def hilo_sintetizador():
+            """SOLO sintetiza. Nunca reproduce. Corre en paralelo al
+            reproductor, así el tiempo de red de Edge TTS de la frase N+1
+            queda escondido detrás del tiempo que tarda en sonar la N."""
+            while True:
+                frase = cola_texto.get()
+                if frase is None:
+                    cola_audio.put(None)  # avisa al reproductor: no viene nada más
+                    cola_texto.task_done()
+                    break
+                ruta = voz.sintetizar_a_archivo(frase)
+                if ruta:
+                    cola_audio.put(ruta)
                 cola_texto.task_done()
-                break
-            ruta = voz.sintetizar_a_archivo(frase)
-            if ruta:
-                cola_audio.put(ruta)
-            cola_texto.task_done()
 
-    def hilo_reproductor():
-        while True:
-            ruta = cola_audio.get()
-            if ruta is None:  # señal de apagado
+        def hilo_reproductor():
+            """SOLO reproduce archivos ya sintetizados, en orden, uno a la
+            vez. Nunca llama a Edge TTS ni bloquea la síntesis de nadie."""
+            while True:
+                ruta = cola_audio.get()
+                if ruta is None:
+                    cola_audio.task_done()
+                    break
+                voz.reproducir_archivo(ruta)
                 cola_audio.task_done()
-                break
-            voz.reproducir_archivo(ruta)
-            cola_audio.task_done()
 
-    t_sintetizador = threading.Thread(target=hilo_sintetizador, daemon=True)
-    t_reproductor = threading.Thread(target=hilo_reproductor, daemon=True)
-    t_sintetizador.start()
-    t_reproductor.start()
+        t_sintetizador = threading.Thread(target=hilo_sintetizador, daemon=True)
+        t_reproductor = threading.Thread(target=hilo_reproductor, daemon=True)
+        t_sintetizador.start()
+        t_reproductor.start()
 
-    # Solo cortamos en finales de oración reales
     PUNTUACION_CORTE = ['.', '?', '!', '\n']
 
     for fragmento_entrante in generador_texto:
@@ -534,26 +542,22 @@ def _generar_respuesta_con_voz(generador_texto, callback_stream=None):
         if callback_stream:
             callback_stream(fragmento_entrante)
 
-        # Cortamos solo si hay un signo final Y la oración tiene más de 15 caracteres
-        if any(puntuacion in fragmento_entrante for puntuacion in PUNTUACION_CORTE):
+        if HABLAR_RESPUESTA and any(puntuacion in fragmento_entrante for puntuacion in PUNTUACION_CORTE):
             fragmento = bloque_actual.strip()
             if len(fragmento) > 15:
                 cola_texto.put(fragmento)
                 bloque_actual = ""
 
-    # Procesar el último pedazo si no terminó en punto
-    fragmento_final = bloque_actual.strip()
-    if len(fragmento_final) > 2:
-        cola_texto.put(fragmento_final)
+    if HABLAR_RESPUESTA:
+        fragmento_final = bloque_actual.strip()
+        if len(fragmento_final) > 2:
+            cola_texto.put(fragmento_final)
+        cola_texto.put(None)          # cierra el sintetizador...
+        t_sintetizador.join()
+        t_reproductor.join()          # ...que en cadena cierra al reproductor
 
-    # Apagar el pipeline limpiamente
-    cola_texto.put(None)
-    t_sintetizador.join()
-    t_reproductor.join()
-
-    print()  # Salto de línea estético en consola
+    print()
     return respuesta_completa
-
 
 _PATRON_DIVISION_ORACIONES = re.compile(r'(?<=[\.\?\!\n])\s*')
 
