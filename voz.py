@@ -207,7 +207,7 @@ def detener_efecto_pensando():
 # de palabras clave, no para precisión de dictado. Ahora graba igual con
 # sounddevice, pero delega la transcripción a faster-whisper, que entiende
 # mucho mejor acentos, pausas y frases largas.
-def escuchar(duracion_segundos: int = 5) -> str:
+def escuchar(duracion_segundos: int = 9) -> str:
     """
     Graba el micrófono por N segundos y transcribe usando Whisper de alta precisión.
     Incluye efectos de sincronización para evitar comerse la primera sílaba.
@@ -281,8 +281,10 @@ def esperar_palabra_clave(palabra_clave="oye lía"):
             if rec.AcceptWaveform(data):
                 resultado = json.loads(rec.Result())
                 texto_detectado = resultado.get("text", "").strip().lower()
-
-                if "oye lia" in texto_detectado or "oye lía" in texto_detectado:
+                
+                # Ampliamos la red de captura para errores comunes de Vosk
+                variaciones = ["oye lia", "oye lía", "oyelia", "oye dia", "oye guía", "lia", "liaa", "lira",]
+                if any(variacion in texto_detectado for variacion in variaciones):
                     print("\n🔥 ¡Palabra clave detectada!")
                     return True
 

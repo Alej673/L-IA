@@ -117,6 +117,10 @@ _RAICES = {
         "ventana", "programa", "abierto ahora", "en la pantalla", "herramienta", "proyecto actual",
         "este documento", "este archivo", "este otro archivo", "este doc", "el otro archivo", "el otro documento"
     ],
+    "rutinas": [
+        "vamos a trabajar", "lleg[oó] pap[aá]", "empecemos", 
+        "modo hacker", "activa el protocolo", "prepara el entorno"
+    ],
 }
 
 _EXCLUSIONES = {
@@ -1221,6 +1225,15 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
     elif intenciones["git"]:
         intenciones["estado_pc"] = False
         contexto_historico = _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=callback_ui)
+
+    if intenciones.get("rutinas"):
+        # Por ahora asumes que si dice la frase, quiere la de trabajo
+        resultado = tools.ejecutar_rutina("trabajo_intenso")
+        
+        # Le devuelves una respuesta rápida sin pasar por el LLM si quieres que sea instantáneo
+        texto_respuesta = "Entendido. Abriendo Brave con YouTube Music, Gemini, tus notas y VS Code. A trabajar se ha dicho."
+        print(f"\n🤖 L-IA (Sistema): {texto_respuesta}\n")
+        return texto_respuesta, "Sistema"
 
     # --- INTERCEPCIÓN FASE 7 ---
     if intenciones.get("fijar_workspace") or intenciones.get("limpiar_workspace"):

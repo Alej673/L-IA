@@ -7,6 +7,8 @@ import psutil
 import pyperclip
 import sys
 import re  # Necesario para dividir textos complejos
+import webbrowser
+
 
 try:
     import winreg  # Solo existe en Windows; el resto del script sigue siendo Windows-only de todas formas
@@ -14,6 +16,54 @@ except ImportError:
     winreg = None
 
 
+# Diccionario mágico con tus rutinas personalizadas
+RUTAS_RUTINAS = {
+    "trabajo_intenso": {
+        "urls": [
+            "https://www.youtube.com/watch?v=pAgnJDJN4VA&list=RDpAgnJDJN4VA&start_radio=1", # Tu playlist favorita para codear
+            "https://gemini.google.com/",
+            "https://keep.google.com/"
+        ],
+        "apps": [
+            "code", # Abre VS Code
+        ],
+        "carpetas": [
+            r"C:\Users\ACER\Desktop\Documentos\Proyecto de IA\L-IA"
+        ]
+    },
+    "relax": {
+        "urls": [
+            "https://www.youtube.com/",
+            "https://www.twitch.tv/"
+        ],
+        "apps": [],
+        "carpetas": []
+    }
+}
+
+def ejecutar_rutina(nombre_rutina):
+    """Ejecuta una serie de acciones predefinidas de golpe."""
+    rutina = RUTAS_RUTINAS.get(nombre_rutina)
+    if not rutina:
+        return f"No tengo registrada ninguna rutina llamada {nombre_rutina}."
+    
+    # 1. Abrir URLs en pestañas de Brave
+    for url in rutina.get("urls", []):
+        webbrowser.open(url)
+        
+    # 2. Abrir Aplicaciones (asumiendo que están en el PATH de Windows)
+    for app in rutina.get("apps", []):
+        try:
+            subprocess.Popen(app, shell=True)
+        except Exception as e:
+            print(f"Error abriendo app {app}: {e}")
+            
+    # 3. Abrir Carpetas en el Explorador de Windows
+    for carpeta in rutina.get("carpetas", []):
+        if os.path.exists(carpeta):
+            os.startfile(carpeta)
+            
+    return f"Rutina '{nombre_rutina}' ejecutada con éxito. Entorno preparado."
 # ==========================================
 # CONFIGURACIÓN EXTERNA (config_apps.json)
 # ==========================================
