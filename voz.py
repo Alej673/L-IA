@@ -4,6 +4,7 @@ import time
 import threading
 import json
 import sys
+import queue
 import wave
 import edge_tts
 import pygame
@@ -12,8 +13,6 @@ import numpy as np
 import soundfile as sf
 from vosk import Model, KaldiRecognizer
 from faster_whisper import WhisperModel
-import queue
-import wave
 
 # --- CONFIGURACIÓN DE RUTAS ---
 VOSK_MODEL_PATH = "vosk-model-small-es-0.42"
@@ -32,18 +31,12 @@ os.makedirs(CARPETA_TEMP_AUDIO, exist_ok=True)
 pygame.mixer.init()
 
 # --- RUTAS DE EFECTOS DE SONIDO (UI) ---
-# Generador automático de .wav de respaldo: si no tienes tus propios audios
-# descargados en la carpeta 'sonidos', se crean tonos sintéticos la primera
-# vez que se importa el módulo, y luego se reutilizan (no se regeneran en
-# cada corrida). Así reproducir_efecto() siempre tiene un archivo real que
-# cargar y no necesita un fallback de tono en tiempo de reproducción.
-# --- RUTAS DE EFECTOS DE SONIDO (UI) ---
 CARPETA_SONIDOS = "sonidos"
 os.makedirs(CARPETA_SONIDOS, exist_ok=True)
 
 RUTAS_SONIDOS = {
     "activacion": os.path.join(CARPETA_SONIDOS, "ksjsbwuil-ui-beep-4-513914.mp3"),
-    "apagado": os.path.join(CARPETA_SONIDOS, "universfield-ui-interface-03-277552.mp3"), # Conservamos el viejo para el apagado por ahora
+    "apagado": os.path.join(CARPETA_SONIDOS, "universfield-ui-interface-03-277552.mp3"),
     "pensando": os.path.join(CARPETA_SONIDOS, "fnx_sound-digital-awakening_fnx-sound-287658.mp3"),
 }
 
@@ -59,9 +52,7 @@ except Exception as e:
     _vosk_model = None
 
 # Whisper entra SOLO cuando ya sabemos que el usuario quiere hablar (después
-# del wake word), para la transcripción real de la orden. Es más pesado
-# pero mucho más preciso que Vosk para comprensión, así que vale la pena
-# pagar ese costo solo en el momento puntual en que hace falta.
+# del wake word), para la transcripción real de la orden.
 print("🧠 Cargando modelo auditivo Whisper (puede tardar la primera vez)...")
 try:
     _whisper_model = WhisperModel("small", device="cpu", compute_type="int8")
@@ -71,16 +62,6 @@ except Exception as e:
 
 _contador_audio = 0
 _lock_contador = threading.Lock()
-
-def reproducir_efecto(nombre_efecto):
-    """Reproduce un efecto de sonido de la interfaz sin bloquear la ejecución."""
-    ruta = RUTAS_SONIDOS.get(nombre_efecto)
-    if ruta and os.path.exists(ruta):
-        try:
-            efecto = pygame.mixer.Sound(ruta)
-            efecto.play()
-        except Exception as e:
-            print(f"⚠️ Error reproduciendo efecto '{nombre_efecto}': {e}")
 
 
 def _siguiente_ruta_audio() -> str:
@@ -100,8 +81,7 @@ async def _sintetizar_async(texto: str, ruta: str):
 
 def _run_async(coro):
     """Ejecuta una corrutina de forma segura sin importar si ya hay un
-    event loop corriendo en el hilo actual (p. ej. si esto se llama desde
-    un hilo distinto al principal, que es justamente nuestro caso)."""
+    event loop corriendo en el hilo actual."""
     try:
         asyncio.run(coro)
     except RuntimeError:
@@ -112,11 +92,6 @@ def _run_async(coro):
             loop.close()
 
 
-# --- CAMBIO CLAVE #2 ---
-# Se separa "sintetizar" de "reproducir". Esto es lo que permite el
-# pipeline en cerebro.py: un hilo sintetiza la frase N+1 MIENTRAS otro
-# hilo reproduce la frase N. Sin esta separación, la latencia de red de
-# Edge TTS (que no es instantánea) se traduce en silencios entre bloques.
 def sintetizar_a_archivo(texto: str) -> str | None:
     """Convierte texto a un MP3 y devuelve la ruta del archivo generado.
     NO reproduce nada."""
@@ -132,13 +107,11 @@ def sintetizar_a_archivo(texto: str) -> str | None:
 
 
 def reproducir_archivo(ruta: str, borrar_despues: bool = True):
-    """Reproduce un MP3 ya generado. Bloquea hasta que termina de sonar..."""
+    """Reproduce un MP3 ya generado. Bloquea hasta que termina de sonar."""
     if not ruta or not os.path.exists(ruta):
         return
     try:
-        # --- NUEVO: Cortar el efecto de fondo justo antes de abrir la boca ---
-        detener_efecto_pensando() 
-        
+        detener_efecto_pensando()
         pygame.mixer.music.load(ruta)
         pygame.mixer.music.play()
         while pygame.mixer.music.get_busy():
@@ -155,10 +128,7 @@ def reproducir_archivo(ruta: str, borrar_despues: bool = True):
 
 
 def hablar(texto: str):
-    """Modo simple (sin pipeline): sintetiza y reproduce de una sola vez.
-    Útil para un mensaje suelto o para pruebas (ver __main__), pero para
-    streaming por bloques usa sintetizar_a_archivo() + reproducir_archivo()
-    en hilos separados, como hace cerebro.py."""
+    """Modo simple (sin pipeline): sintetiza y reproduce de una sola vez."""
     ruta = sintetizar_a_archivo(texto)
     if ruta:
         reproducir_archivo(ruta)
@@ -166,8 +136,7 @@ def hablar(texto: str):
 
 def _reproducir_tono(frecuencia, duracion):
     """Genera un bip sintético en vivo (sin archivo). Se mantiene disponible
-    para pruebas puntuales, pero reproducir_efecto() ya no depende de esto:
-    ahora siempre hay un .wav real en disco gracias a _crear_wav_sintetico()."""
+    para pruebas puntuales."""
     fs = 44100
     t = np.linspace(0, duracion, int(fs * duracion), False)
     nota = np.sin(2 * np.pi * frecuencia * t) * 0.3
@@ -177,6 +146,7 @@ def _reproducir_tono(frecuencia, duracion):
 
 _canal_pensando = None
 
+
 def reproducir_efecto(nombre_efecto):
     """Reproduce un efecto de sonido de la interfaz sin bloquear la ejecución."""
     global _canal_pensando
@@ -185,13 +155,14 @@ def reproducir_efecto(nombre_efecto):
         try:
             efecto = pygame.mixer.Sound(ruta)
             canal = efecto.play()
-            
+
             # Si es el sonido de "pensando", guardamos su canal para cortarlo después
             if nombre_efecto == "pensando" and canal:
                 _canal_pensando = canal
-                
+
         except Exception as e:
             print(f"⚠️ Error reproduciendo efecto '{nombre_efecto}': {e}")
+
 
 def detener_efecto_pensando():
     """Corta el sonido de 'pensando' instantáneamente si todavía está sonando."""
@@ -201,38 +172,75 @@ def detener_efecto_pensando():
         _canal_pensando = None
 
 
-# --- CAMBIO CLAVE #3: STT REAL CON WHISPER ---
-# Antes esta función usaba Vosk también para transcribir la orden
-# completa, pero Vosk es un motor liviano pensado para detección rápida
-# de palabras clave, no para precisión de dictado. Ahora graba igual con
-# sounddevice, pero delega la transcripción a faster-whisper, que entiende
-# mucho mejor acentos, pausas y frases largas.
-def escuchar(duracion_segundos: int = 9) -> str:
+def escuchar(
+    duracion_maxima: float = 20.0,
+    silencio_para_cortar: float = 1.2,
+    timeout_inicio: float = 6.0,
+    umbral_voz: float = 0.015,
+) -> str:
     """
-    Graba el micrófono por N segundos y transcribe usando Whisper de alta precisión.
-    Incluye efectos de sincronización para evitar comerse la primera sílaba.
+    Graba el micrófono con detección de silencio (VAD por energía RMS) en
+    vez de una duración fija: sigue escuchando mientras detecta voz, y
+    corta recién cuando hay 'silencio_para_cortar' segundos de silencio
+    DESPUÉS de que la persona ya empezó a hablar.
     """
     if not _whisper_model:
         print("❌ Modelo Whisper no disponible.")
         return ""
 
-    # 1. Sonido de "¡Habla ahora!"
     reproducir_efecto("activacion")
+    print("🎤 Escuchando (se corta sola al detectar silencio)...")
 
-    print(f"🎤 Grabando {duracion_segundos} segundos...")
-    grabacion = sd.rec(
-        int(duracion_segundos * SAMPLE_RATE_STT),
-        samplerate=SAMPLE_RATE_STT, channels=1, dtype='float32'
-    )
-    sd.wait()
+    bloques = []
+    estado = {
+        "hablando": False,
+        "ultimo_momento_con_voz": None,
+        "inicio": time.time(),
+    }
+    evento_corte = threading.Event()
 
-    # 2. Sonido de "Terminé de grabar"
+    def callback(indata, frames, time_info, status):
+        if status:
+            print(status, file=sys.stderr)
+
+        ahora = time.time()
+        bloques.append(indata.copy())
+
+        rms = float(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
+
+        if rms >= umbral_voz:
+            estado["hablando"] = True
+            estado["ultimo_momento_con_voz"] = ahora
+
+        if not estado["hablando"] and (ahora - estado["inicio"]) >= timeout_inicio:
+            evento_corte.set()
+            return
+
+        if estado["hablando"]:
+            silencio_actual = ahora - estado["ultimo_momento_con_voz"]
+            if silencio_actual >= silencio_para_cortar:
+                evento_corte.set()
+                return
+
+        if (ahora - estado["inicio"]) >= duracion_maxima:
+            evento_corte.set()
+
+    with sd.InputStream(
+        samplerate=SAMPLE_RATE_STT, channels=1, dtype='float32',
+        callback=callback, blocksize=int(SAMPLE_RATE_STT * 0.1)
+    ):
+        evento_corte.wait()
+
     reproducir_efecto("apagado")
 
+    if not estado["hablando"]:
+        print("🤫 No se detectó voz, cancelando.")
+        return ""
+
+    grabacion = np.concatenate(bloques, axis=0)
     sf.write(AUDIO_MIC_TEMP, grabacion, SAMPLE_RATE_STT)
 
     print("🧠 Whisper procesando el audio...")
-    # 3. Parámetros estrictos anti-alucinaciones
     segments, info = _whisper_model.transcribe(
         AUDIO_MIC_TEMP,
         language="es",
@@ -241,10 +249,8 @@ def escuchar(duracion_segundos: int = 9) -> str:
         initial_prompt="Comandos comunes: busca en internet, estado de la laptop, abre el proyecto, quién fue el campeón."
     )
 
-    # Los segmentos vienen como un generador; los unimos en un solo texto.
     texto_final = " ".join(segment.text for segment in segments).strip()
 
-    # Limpieza del archivo temporal para no ir acumulando .wav en el disco
     try:
         os.remove(AUDIO_MIC_TEMP)
     except OSError:
@@ -257,8 +263,6 @@ def esperar_palabra_clave(palabra_clave="oye lía"):
     """
     Abre un micrófono en segundo plano que escucha infinitamente gastando lo mínimo.
     Solo se detiene y devuelve True cuando escucha la palabra clave.
-    Sigue usando Vosk a propósito: es el motor correcto para esto porque
-    puede quedarse escuchando indefinidamente sin el costo de Whisper.
     """
     if not _vosk_model:
         return False
@@ -266,7 +270,6 @@ def esperar_palabra_clave(palabra_clave="oye lía"):
     q = queue.Queue()
 
     def callback(indata, frames, time, status):
-        """Mete los pedacitos de audio a la cola en tiempo real"""
         if status:
             print(status, file=sys.stderr)
         q.put(bytes(indata))
@@ -281,18 +284,29 @@ def esperar_palabra_clave(palabra_clave="oye lía"):
             if rec.AcceptWaveform(data):
                 resultado = json.loads(rec.Result())
                 texto_detectado = resultado.get("text", "").strip().lower()
-                
-                # Ampliamos la red de captura para errores comunes de Vosk
-                variaciones = ["oye lia", "oye lía", "oyelia", "oye dia", "oye guía", "lia", "liaa", "lira",]
+
+                variaciones = ["oye lia", "oye lía", "oyelia", "oye dia", "oye guía", "lia", "liaa", "lira"]
                 if any(variacion in texto_detectado for variacion in variaciones):
                     print("\n🔥 ¡Palabra clave detectada!")
                     return True
 
 
+def medir_rms(duracion=5):
+    """Utilidad de calibración: imprime el RMS por bloques de 100ms para
+    que puedas ver qué valores da tu ambiente en silencio vs. hablando, y
+    así ajustar 'umbral_voz' en escuchar(). Solo se ejecuta si la llamás
+    a propósito -- no corre sola al importar el módulo."""
+    grabacion = sd.rec(int(duracion * SAMPLE_RATE_STT), samplerate=SAMPLE_RATE_STT, channels=1, dtype='float32')
+    sd.wait()
+    for i in range(0, len(grabacion), 1600):
+        bloque = grabacion[i:i + 1600]
+        print(round(float(np.sqrt(np.mean(bloque ** 2))), 4))
+
+
 if __name__ == "__main__":
     print("🔊 Probando módulo voz.py: TTS por pipeline + STT con Whisper...")
     hablar("Módulo de voz actualizado. Ahora entiendo mejor lo que dices.")
-    texto_capturado = escuchar(5)
+    texto_capturado = escuchar()
     print(f"📝 Dijiste: '{texto_capturado}'")
     if texto_capturado:
         hablar(f"Entendí que dijiste: {texto_capturado}")

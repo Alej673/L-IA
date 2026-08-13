@@ -3,6 +3,7 @@ import tkinter as tk
 import threading
 import time
 import re
+import queue
 import pystray
 from PIL import Image, ImageDraw
 import sys
@@ -27,7 +28,7 @@ class Tema:
     ACCENT_ERROR = "#f38ba8"     # Rojo
     ACCENT_WARN = "#f9e2af"      # Amarillo
 
-    # --- NUEVO: diferenciación por origen del cerebro ---
+    # --- diferenciación por origen del cerebro ---
     ACCENT_LIA_LOCAL = "#a6e3a1"        # Verde -> Ollama local (gemma2)
     ACCENT_LIA_NUBE = "#89dceb"         # Celeste (Sapphire) -> Gemini / nube
     ACCENT_LIA_UNCENSORED = "#cba6f7"   # Lila (Mauve) -> modelo local sin filtro (dolphin-mistral)
@@ -105,9 +106,46 @@ class InterfazLIA:
         self.visible = False
         self._animando = False
 
-        # --- NUEVO: Hilo centinela para el Wake Word ---
+        # --- Cola de actualizaciones de UI ---
+        # Cualquier hilo de fondo (voz, wake word, procesar_en_fondo) mete
+        # acá lo que quiere hacerle a la UI. Un único consumidor, corriendo
+        # en el hilo de Tkinter, las va sacando en orden estricto. Esto
+        # reemplaza los root.after(0, ...) sueltos: con hilos distintos
+        # disparando actualizaciones casi al mismo tiempo (wake word +
+        # streaming de una respuesta, por ejemplo), root.after(0, ...) no
+        # garantiza el orden de ejecución entre ellos. La cola sí.
+        self.cola_ui = queue.Queue()
+        self.root.after(50, self._procesar_cola_ui)
+
+        # --- Hilo centinela para el Wake Word ---
         self.hilo_wake_word_activo = True
         threading.Thread(target=self._bucle_wake_word, daemon=True).start()
+
+    # ==========================================
+    # COLA DE ACTUALIZACIONES DE UI
+    # ==========================================
+    def _encolar_ui(self, func, *args, **kwargs):
+        """Agenda func(*args, **kwargs) para que se ejecute en el hilo
+        principal de Tkinter, respetando el orden de llegada. Usar esto
+        (en vez de root.after(0, ...)) desde cualquier hilo secundario que
+        necesite tocar un widget."""
+        self.cola_ui.put((func, args, kwargs))
+
+    def _procesar_cola_ui(self):
+        """Corre SIEMPRE en el hilo principal de Tkinter. Vacía la cola
+        en orden estricto (FIFO) antes de volver a programarse."""
+        try:
+            while True:
+                func, args, kwargs = self.cola_ui.get_nowait()
+                try:
+                    func(*args, **kwargs)
+                except Exception as e:
+                    print(f"[cola_ui] Error ejecutando {func}: {e}")
+                self.cola_ui.task_done()
+        except queue.Empty:
+            pass
+        finally:
+            self.root.after(50, self._procesar_cola_ui)
 
     # ==========================================
     # CONSTRUCCIÓN DE LA UI
@@ -192,7 +230,7 @@ class InterfazLIA:
             font=Tema.FUENTE_BOLD
         ).pack(side=tk.LEFT, padx=(12, 0))
 
-        # --- NUEVO: BOTÓN DE MICRÓFONO ---
+        # --- BOTÓN DE MICRÓFONO ---
         self.btn_mic = tk.Label(
             caja_input, text="🎤", bg=Tema.BG_INPUT, fg=Tema.TEXTO_SUAVE,
             font=Tema.FUENTE_TITULO, cursor="hand2"
@@ -243,20 +281,21 @@ class InterfazLIA:
 
     def activar_microfono(self, event=None):
         if self.input_field.cget("state") == tk.DISABLED:
-            return # Bloquea si L-IA ya está pensando o hablando
+            return  # Bloquea si L-IA ya está pensando o hablando
 
         self.input_field.delete(0, tk.END)
         self.input_field.config(fg=Tema.ACCENT_LIA_LOCAL)
-        self.input_field.insert(0, "Escuchando (habla ahora)...")
+        self.input_field.insert(0, "Escuchando...")
         self.input_field.config(state=tk.DISABLED)
-        self.btn_mic.config(fg=Tema.ACCENT_ERROR) # Rojo indicando grabación activa
+        self.btn_mic.config(fg=Tema.ACCENT_ERROR)  # Rojo indicando grabación activa
 
         # Lanzar grabación en hilo para no congelar la UI
         threading.Thread(target=self._hilo_escucha, daemon=True).start()
 
     def _hilo_escucha(self):
-        texto_capturado = voz.escuchar(5) # Graba por 5 segundos
-        self.root.after(0, self._restaurar_ui_mic, texto_capturado)
+        # voz.escuchar() ahora corta sola por silencio, no por duración fija.
+        texto_capturado = voz.escuchar()
+        self._encolar_ui(self._restaurar_ui_mic, texto_capturado)
 
     def _bucle_wake_word(self):
         """Corre en bucle infinito en segundo plano. Cuando detecta el 'Oye L-IA', activa el micro."""
@@ -268,9 +307,9 @@ class InterfazLIA:
                 # Si el sistema ya está procesando algo, lo ignoramos para que no se pisen
                 if self.input_field.cget("state") == tk.NORMAL:
                     # Traemos la ventana al frente por si estabas en otra app
-                    self.root.after(0, self.mostrar_ventana)
+                    self._encolar_ui(self.mostrar_ventana)
                     # Simulamos un clic en el botón de grabar
-                    self.root.after(0, self.activar_microfono)
+                    self._encolar_ui(self.activar_microfono)
 
                 # Le damos un respiro de 6 segundos para que termine de procesar el comando
                 # antes de volver a activar el centinela
@@ -284,19 +323,16 @@ class InterfazLIA:
 
         if texto:
             self.input_field.insert(0, texto)
-            self.enviar_mensaje(None, por_voz=True) # Envía forzando la respuesta hablada
+            self.enviar_mensaje(None, por_voz=True)  # Envía forzando la respuesta hablada
         else:
             self._restaurar_placeholder_si_vacio()
 
     def _configurar_tags_chat(self):
-        """Tags de formato para las 'burbujas' de texto. Reemplaza el insert()
-        plano de antes: ahora cada remitente tiene su propio color/negrita,
-        y además usamos tags con nombre único para poder borrar mensajes
-        puntuales (como el 'pensando...') sin depender de contar líneas.
-
-        NUEVO: en vez de un solo tag "remitente_lia", hay uno por cada
-        origen posible (local / nube / sin filtro / pendiente), para que
-        el color de la burbuja refleje qué cerebro contestó."""
+        """Tags de formato para las 'burbujas' de texto. Cada remitente tiene
+        su propio color/negrita. Los tags de identificación de bloque
+        (para poder borrar mensajes puntuales) son distintos de estos: se
+        generan con nombres únicos por mensaje (ver iniciar_burbuja_streaming
+        y procesar_en_fondo), no acá."""
         self.chat_area.tag_config("remitente_tu", foreground=Tema.ACCENT_USER, font=Tema.FUENTE_BOLD)
         self.chat_area.tag_config("remitente_lia", foreground=Tema.ACCENT_LIA_LOCAL, font=Tema.FUENTE_BOLD)
         self.chat_area.tag_config("remitente_lia_local", foreground=Tema.ACCENT_LIA_LOCAL, font=Tema.FUENTE_BOLD)
@@ -308,7 +344,7 @@ class InterfazLIA:
         self.chat_area.tag_config("cuerpo_suave", foreground=Tema.TEXTO_SUAVE, font=("Consolas", 10, "italic"))
 
     # ==========================================
-    # NUEVO: CLASIFICACIÓN DE ORIGEN (nube / local / sin filtro)
+    # CLASIFICACIÓN DE ORIGEN (nube / local / sin filtro)
     # ==========================================
     def _info_origen(self, origen: str) -> dict:
         """Traduce el string 'origen' que devuelve cerebro.charlar_con_lia
@@ -400,7 +436,8 @@ class InterfazLIA:
     def agregar_texto(self, remitente, texto, tag_remitente="cuerpo", tag_id=None):
         """Inserta un mensaje con formato de burbuja. Si se pasa tag_id, envuelve
         todo el bloque en un tag único para poder borrarlo después con precisión
-        (usado por el placeholder de 'pensando...')."""
+        (usado por ej. por el placeholder de 'pensando...', que ahora tiene un
+        nombre único por turno en vez del string fijo 'placeholder')."""
         self.chat_area.config(state=tk.NORMAL)
         inicio = self.chat_area.index(tk.END)
 
@@ -417,10 +454,11 @@ class InterfazLIA:
 
     def borrar_bloque(self, tag_id):
         """Borra un mensaje previamente marcado con agregar_texto(..., tag_id=...).
-        Reemplaza el viejo hack de índices de línea ('end-3l', 'end-1l'), que
-        se rompía si el mensaje tenía saltos de línea internos.
-        Usa rangos[0] y rangos[-1] (en vez de rangos[0]/rangos[1]) por si el
-        tag llegara a estar partido en más de un sub-rango."""
+        Usa rangos[0] y rangos[-1] (primer y último índice) en vez de
+        rangos[0]/rangos[1] por si el tag llegara a estar partido en más de
+        un sub-rango."""
+        if not tag_id:
+            return
         rangos = self.chat_area.tag_ranges(tag_id)
         if not rangos:
             return
@@ -429,15 +467,15 @@ class InterfazLIA:
         self.chat_area.config(state=tk.DISABLED)
 
     # ==========================================
-    # STREAMING EN VIVO DE LA RESPUESTA (Fase 5)
+    # STREAMING EN VIVO DE LA RESPUESTA
     # ==========================================
     # Estos métodos conectan cerebro.py con la burbuja de chat en tiempo
-    # real. IMPORTANTE: cerebro.py corre en un hilo de fondo (ver
-    # procesar_en_fondo), y Tkinter NO es thread-safe -- nunca se debe
-    # tocar self.chat_area directamente desde ese hilo. Por eso el callback
-    # que se le pasa a cerebro (ver más abajo) siempre reenvuelve la
-    # actualización real en self.root.after(0, ...), que la agenda para
-    # ejecutarse en el hilo principal de Tkinter.
+    # real. cerebro.py corre en un hilo de fondo (ver procesar_en_fondo),
+    # y Tkinter NO es thread-safe -- nunca se debe tocar self.chat_area
+    # directamente desde ese hilo. Por eso todo lo que cerebro.py dispara
+    # (vía callback_stream) se manda a self._encolar_ui(...), que lo
+    # agenda para ejecutarse en el hilo principal de Tkinter, en orden
+    # estricto respecto de cualquier otra actualización de UI pendiente.
     def iniciar_burbuja_streaming(self):
         """Crea una burbuja vacía para L-IA y devuelve un tag_id único para
         poder seguir escribiendo dentro de ella (o borrarla entera después,
@@ -464,7 +502,7 @@ class InterfazLIA:
         self.chat_area.config(state=tk.NORMAL)
         tags = ("cuerpo", tag_id) if tag_id else ("cuerpo",)
 
-        # EL FIX: Buscar el final de esta burbuja específica, no del documento general
+        # Buscar el final de esta burbuja específica, no del documento general
         if tag_id and self.chat_area.tag_ranges(tag_id):
             rangos = self.chat_area.tag_ranges(tag_id)
             # rangos[-1] es el límite final del tag. Restamos 2c para quedar antes del \n\n
@@ -472,7 +510,7 @@ class InterfazLIA:
             self.chat_area.insert(posicion_insercion, fragmento, tags)
             self.chat_area.see(posicion_insercion)
         else:
-            # Fallback original por seguridad
+            # Fallback por seguridad
             self.chat_area.insert("end-2c", fragmento, tags)
             self.chat_area.see(tk.END)
 
@@ -484,13 +522,7 @@ class InterfazLIA:
         1) limpiar el prefijo 'L-IA:' que a veces mete el modelo, y
         2) repintar el header/color una vez que ya se sabe el origen real
            (nube/local/sin filtro), cosa que al iniciar el streaming
-           todavía no se conocía.
-
-        Usa rangos[0] y rangos[-1] (primer y último índice) en vez de
-        rangos[0]/rangos[1] como cinturón de seguridad: con el fix de
-        agregar_token_streaming el tag ya no debería partirse nunca, pero
-        si por algún motivo volviera a pasar, esto sigue borrando el
-        bloque completo en vez de solo el primer sub-rango."""
+           todavía no se conocía."""
         rangos = self.chat_area.tag_ranges(tag_id)
         if not rangos:
             return
@@ -508,7 +540,7 @@ class InterfazLIA:
     # ENVÍO / PROCESAMIENTO DE MENSAJES
     # ==========================================
     def enviar_mensaje(self, event=None, por_voz=False):
-        # FIX: Evitar que presionar Enter envíe comandos si L-IA sigue procesando
+        # Evitar que presionar Enter envíe comandos si L-IA sigue procesando
         if self.input_field.cget("state") == tk.DISABLED:
             return
 
@@ -527,20 +559,27 @@ class InterfazLIA:
         """
         Envía el mensaje al cerebro (cerebro.charlar_con_lia) y muestra la respuesta.
 
-        La respuesta se va pintando EN VIVO en la burbuja conforme
-        cerebro.py va transmitiendo tokens (vía callback_stream), en vez de
-        esperar a que la función entera termine para mostrar todo de golpe.
+        Todas las actualizaciones de UI (deshabilitar input, mostrar el
+        placeholder de "pensando", pintar tokens en vivo, repintar la
+        burbuja final) pasan por self._encolar_ui(...) en vez de tocar
+        los widgets directamente desde este hilo -- así quedan
+        serializadas en orden con cualquier otra cosa que esté
+        actualizando la UI al mismo tiempo (wake word, otra respuesta,
+        etc.), y nunca se pisan entre sí.
 
-        Una vez que se conoce 'origen' (nube / local / local sin filtro),
-        la burbuja se repinta con el color/ícono correspondiente.
-
-        Caso especial: si el buscador de archivos de tools.py encontró varias
-        coincidencias, en vez de mostrar la lista como texto plano, se abre un
-        popup con un botón por cada archivo encontrado (ver lanzar_popup_archivos).
+        El placeholder de "pensando..." usa un tag_id único por turno
+        (no un string fijo "placeholder"), para que dos turnos que
+        lleguen a superponerse en el tiempo no terminen borrando o
+        mezclando el bloque equivocado.
         """
-        self.input_field.config(state=tk.DISABLED)
-        self.status_dot.config(fg=Tema.ACCENT_WARN)
-        self.agregar_texto("", "🤖 L-IA está pensando...", tag_remitente="cuerpo_suave", tag_id="placeholder")
+        self._encolar_ui(self.input_field.config, state=tk.DISABLED)
+        self._encolar_ui(self.status_dot.config, fg=Tema.ACCENT_WARN)
+
+        tag_placeholder = f"placeholder_{time.time_ns()}"
+        self._encolar_ui(
+            self.agregar_texto, "", "🤖 L-IA está pensando...",
+            tag_remitente="cuerpo_suave", tag_id=tag_placeholder
+        )
 
         # Configurar el estado de voz
         cerebro.HABLAR_RESPUESTA = por_voz
@@ -549,9 +588,12 @@ class InterfazLIA:
         if cerebro.HABLAR_RESPUESTA:
             voz.reproducir_efecto("pensando")
 
-        # FIX: antes este diccionario estaba declarado dos veces seguidas
-        # (código muerto, la segunda pisaba a la primera sin ningún efecto).
-        estado = {"tag_streaming": None, "buffer_inicial": "", "prefijo_revisado": False}
+        estado = {
+            "tag_streaming": None,
+            "tag_placeholder": tag_placeholder,
+            "buffer_inicial": "",
+            "prefijo_revisado": False,
+        }
 
         # Color con el que queda el status_dot al terminar. Por defecto
         # local (verde); se sobreescribe según el origen real, o queda en
@@ -559,10 +601,8 @@ class InterfazLIA:
         color_status_final = Tema.ACCENT_LIA_LOCAL
 
         def _pintar_fragmento(fragmento):
-            # Buffer chico al inicio para poder detectar y limpiar el
-            # prefijo "L-IA:" si el modelo lo mete, sin tener que
-            # reescribir la burbuja después. Una vez revisado, los
-            # tokens siguientes se pintan directo, sin demora perceptible.
+            # Esto corre DENTRO del consumidor de la cola (hilo de
+            # Tkinter), así que mutar 'estado' acá es seguro.
             if not estado["prefijo_revisado"]:
                 estado["buffer_inicial"] += fragmento
                 if len(estado["buffer_inicial"]) < 12 and ":" not in estado["buffer_inicial"]:
@@ -573,17 +613,14 @@ class InterfazLIA:
                     return
 
             if estado["tag_streaming"] is None:
-                self.borrar_bloque("placeholder")
+                self.borrar_bloque(estado["tag_placeholder"])
                 estado["tag_streaming"] = self.iniciar_burbuja_streaming()
-            # CORRECCIÓN: se pasa tag_id explícitamente para que el rango
-            # tageado se mantenga contiguo (ver agregar_token_streaming).
             self.agregar_token_streaming(fragmento, tag_id=estado["tag_streaming"])
 
         def _on_token(fragmento):
-            # Se llama desde el hilo de cerebro.py -- SIEMPRE reenviar a
-            # través de root.after para tocar el widget desde el hilo
-            # correcto (el de Tkinter).
-            self.root.after(0, lambda f=fragmento: _pintar_fragmento(f))
+            # Se llama desde el hilo de cerebro.py -- SIEMPRE encolar, nunca
+            # tocar self.chat_area directo desde acá.
+            self._encolar_ui(_pintar_fragmento, fragmento)
 
         try:
             respuesta, origen = cerebro.charlar_con_lia(
@@ -596,13 +633,6 @@ class InterfazLIA:
             color_status_final = info["color"]
             header = f"{info['icono']} L-IA ({info['etiqueta']})"
 
-            # Si por algún motivo esa ruta de cerebro.py nunca llamó a
-            # callback_stream (p. ej. una ruta vieja que todavía no lo
-            # propaga), no quedó ninguna burbuja dibujada -- nos aseguramos
-            # de no dejar embarrado el "pensando...".
-            if estado["tag_streaming"] is None:
-                self.borrar_bloque("placeholder")
-
             # --- INTERCEPTOR DE MÚLTIPLES ARCHIVOS ---
             # No confiamos en las PALABRAS de la IA (se rompía cuando reescribía
             # la frase con su personalidad sarcástica), confiamos en el FORMATO:
@@ -610,40 +640,61 @@ class InterfazLIA:
             # parte de la respuesta.
             rutas_encontradas = re.findall(r'\d+\.\s+([a-zA-Z]:\\[^\n]+)', respuesta)
 
-            if rutas_encontradas:
-                if estado["tag_streaming"] is not None:
-                    self.borrar_bloque(estado["tag_streaming"])
-                self.agregar_texto(
-                    header,
-                    "[Abriendo interfaz de selección de archivos...]",
-                    tag_remitente=info["tag"]
-                )
-                self.lanzar_popup_archivos(rutas_encontradas, mensaje)
-            else:
-                respuesta_limpia = _limpiar_respuesta_ia(respuesta)
-                if estado["tag_streaming"] is not None:
-                    # Ya se mostró en vivo con el header/color "pendiente".
-                    # Ahora que se conoce el origen real, siempre se repinta
-                    # el header (antes solo se retocaba si el texto no
-                    # coincidía, lo cual dejaba el color gris "pendiente"
-                    # pegado para siempre).
-                    self._reemplazar_texto_burbuja(
-                        estado["tag_streaming"], respuesta_limpia,
-                        tag_remitente=info["tag"], header=header
+            def _finalizar():
+                # Si por algún motivo cerebro.py nunca llamó a
+                # callback_stream, no quedó ninguna burbuja dibujada --
+                # nos aseguramos de no dejar embarrado el "pensando...".
+                if estado["tag_streaming"] is None:
+                    self.borrar_bloque(estado["tag_placeholder"])
+
+                if rutas_encontradas:
+                    if estado["tag_streaming"] is not None:
+                        self.borrar_bloque(estado["tag_streaming"])
+                    self.agregar_texto(
+                        header,
+                        "[Abriendo interfaz de selección de archivos...]",
+                        tag_remitente=info["tag"]
                     )
+                    self.lanzar_popup_archivos(rutas_encontradas, mensaje)
                 else:
-                    self.agregar_texto(header, respuesta_limpia, tag_remitente=info["tag"])
+                    respuesta_limpia = _limpiar_respuesta_ia(respuesta)
+                    if estado["tag_streaming"] is not None:
+                        # Ya se mostró en vivo con el header/color "pendiente".
+                        # Ahora que se conoce el origen real, se repinta
+                        # siempre el header (así nunca queda pegado el gris
+                        # "pendiente" si el texto final coincide con el
+                        # streameado).
+                        self._reemplazar_texto_burbuja(
+                            estado["tag_streaming"], respuesta_limpia,
+                            tag_remitente=info["tag"], header=header
+                        )
+                    else:
+                        self.agregar_texto(header, respuesta_limpia, tag_remitente=info["tag"])
+
+            # Todo el "cierre" de esta respuesta va como UN solo bloque
+            # encolado -- así no puede intercalarse con la finalización
+            # de otra respuesta que esté corriendo en paralelo.
+            self._encolar_ui(_finalizar)
 
         except Exception as e:
-            self.borrar_bloque("placeholder")
-            if estado["tag_streaming"] is not None:
-                self.borrar_bloque(estado["tag_streaming"])
-            self.agregar_texto("❌ Error en el sistema", str(e), tag_remitente="remitente_error")
+            # Capturamos el texto del error ACÁ, mientras 'e' todavía
+            # existe: Python borra la variable de un 'except X as e' al
+            # salir del bloque, y _mostrar_error se ejecuta después
+            # (diferido en la cola), no en el momento del except.
+            mensaje_error = str(e)
+
+            def _mostrar_error():
+                self.borrar_bloque(estado["tag_placeholder"])
+                if estado["tag_streaming"] is not None:
+                    self.borrar_bloque(estado["tag_streaming"])
+                self.agregar_texto("❌ Error en el sistema", mensaje_error, tag_remitente="remitente_error")
+
+            self._encolar_ui(_mostrar_error)
             color_status_final = Tema.ACCENT_ERROR
 
-        self.status_dot.config(fg=color_status_final)
-        self.input_field.config(state=tk.NORMAL)
-        self.input_field.focus_set()
+        self._encolar_ui(self.status_dot.config, fg=color_status_final)
+        self._encolar_ui(self.input_field.config, state=tk.NORMAL)
+        self._encolar_ui(self.input_field.focus_set)
 
     # ==========================================
     # HELPER COMÚN PARA POPUPS
@@ -745,8 +796,7 @@ class InterfazLIA:
                 font=Tema.FUENTE_TITULO, bd=0, padx=10, pady=5, cursor="hand2", command=bloquear
             ).pack(side=tk.LEFT, padx=10)
 
-            # Atajos de teclado reales para S / N (antes los botones lo
-            # sugerían en el texto pero no estaban conectados a nada)
+            # Atajos de teclado reales para S / N
             popup.bind("s", lambda e: permitir())
             popup.bind("S", lambda e: permitir())
             popup.bind("n", lambda e: bloquear())
@@ -760,7 +810,10 @@ class InterfazLIA:
             # el tamaño real que necesita el contenido.
             self._ajustar_popup_a_contenido(popup, ancho_min=550 if es_commit else 470)
 
-        self.root.after(0, _dibujar_popup_seguridad)
+        # Este popup nace desde el hilo de cerebro.py -- se encola igual
+        # que cualquier otra actualización de UI, para no saltarse el
+        # orden respecto de otros mensajes en curso.
+        self._encolar_ui(_dibujar_popup_seguridad)
         resultado_permiso.wait()
         return decision["autorizado"]
 
@@ -768,7 +821,10 @@ class InterfazLIA:
     # VENTANA EMERGENTE DE SELECCIÓN DE ARCHIVOS
     # ==========================================
     def lanzar_popup_archivos(self, rutas, mensaje_original):
-        self.root.after(0, self._dibujar_ventana_opciones, rutas, mensaje_original)
+        # Ya corre en el hilo de Tkinter (llamado desde _finalizar, que a
+        # su vez fue encolado), así que se dibuja directo sin encolar de
+        # nuevo.
+        self._dibujar_ventana_opciones(rutas, mensaje_original)
 
     def _dibujar_ventana_opciones(self, rutas, mensaje_original):
         popup = self._crear_popup_base("L-IA: Archivos Duplicados", ancho=550)

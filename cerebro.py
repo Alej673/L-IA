@@ -1262,8 +1262,8 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
         contexto_historico = _procesar_clima(mensaje_real, contexto_historico)
     if intenciones["calendario"]:
         contexto_historico = _procesar_calendario(contexto_historico)
-    if intenciones["git"]:
-        contexto_historico = _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=callback_ui)
+
+    # ✅ BLOQUE CORREGIDO (Sin el if redundante)
     if intenciones["guardar_git"]:
         texto_respuesta = _ejecutar_guardado_git(msg_lower, callback_ui=callback_ui)
         print(f"\n🤖 L-IA (Local/Git): {texto_respuesta}\n")
@@ -1274,6 +1274,7 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
 
     # --- RUTINAS DE ENTORNO ---
     if intenciones.get("rutinas"):
+
         # 1. Ejecutamos la apertura de ventanas de forma silenciosa
         resultado_rutina = tools.ejecutar_rutina("trabajo_intenso")
         
