@@ -23,9 +23,15 @@ class Tema:
     TEXTO_SUAVE = "#a6adc8"
 
     ACCENT_USER = "#89b4fa"      # Azul (tú)
-    ACCENT_LIA = "#a6e3a1"       # Verde (L-IA)
+    ACCENT_LIA = "#a6e3a1"       # Verde (alias legacy, ver ACCENT_LIA_LOCAL)
     ACCENT_ERROR = "#f38ba8"     # Rojo
     ACCENT_WARN = "#f9e2af"      # Amarillo
+
+    # --- NUEVO: diferenciación por origen del cerebro ---
+    ACCENT_LIA_LOCAL = "#a6e3a1"        # Verde -> Ollama local (gemma2)
+    ACCENT_LIA_NUBE = "#89dceb"         # Celeste (Sapphire) -> Gemini / nube
+    ACCENT_LIA_UNCENSORED = "#cba6f7"   # Lila (Mauve) -> modelo local sin filtro (dolphin-mistral)
+    ACCENT_LIA_PENDIENTE = "#6c7086"    # Gris -> streaming en curso, origen aún no confirmado
 
     FUENTE = ("Consolas", 11)
     FUENTE_BOLD = ("Consolas", 11, "bold")
@@ -113,8 +119,13 @@ class InterfazLIA:
         self.barra_titulo.pack(side=tk.TOP, fill=tk.X)
         self.barra_titulo.pack_propagate(False)
 
+        # El punto de estado ahora cumple doble función:
+        # - Mientras L-IA piensa: amarillo (ACCENT_WARN).
+        # - En reposo: color del ÚLTIMO cerebro que respondió (verde=local,
+        #   celeste=nube, lila=local sin filtro). Así, de un vistazo, sabes
+        #   quién contestó la última vez sin tener que leer la burbuja.
         self.status_dot = tk.Label(
-            self.barra_titulo, text="●", bg=Tema.BG_SURFACE, fg=Tema.ACCENT_LIA,
+            self.barra_titulo, text="●", bg=Tema.BG_SURFACE, fg=Tema.ACCENT_LIA_LOCAL,
             font=("Consolas", 12)
         )
         self.status_dot.pack(side=tk.LEFT, padx=(12, 4))
@@ -177,7 +188,7 @@ class InterfazLIA:
         caja_input.pack(fill=tk.X)
 
         tk.Label(
-            caja_input, text="›", bg=Tema.BG_INPUT, fg=Tema.ACCENT_LIA,
+            caja_input, text="›", bg=Tema.BG_INPUT, fg=Tema.ACCENT_LIA_LOCAL,
             font=Tema.FUENTE_BOLD
         ).pack(side=tk.LEFT, padx=(12, 0))
 
@@ -188,12 +199,12 @@ class InterfazLIA:
         )
         self.btn_mic.pack(side=tk.RIGHT, padx=(0, 12))
         self.btn_mic.bind("<Button-1>", self.activar_microfono)
-        self.btn_mic.bind("<Enter>", lambda e: self.btn_mic.config(fg=Tema.ACCENT_LIA))
+        self.btn_mic.bind("<Enter>", lambda e: self.btn_mic.config(fg=Tema.ACCENT_LIA_LOCAL))
         self.btn_mic.bind("<Leave>", lambda e: self.btn_mic.config(fg=Tema.TEXTO_SUAVE))
 
         self.input_field = tk.Entry(
             caja_input, bg=Tema.BG_INPUT, fg=Tema.TEXTO, font=Tema.FUENTE,
-            insertbackground=Tema.ACCENT_LIA, bd=0, relief=tk.FLAT,
+            insertbackground=Tema.ACCENT_LIA_LOCAL, bd=0, relief=tk.FLAT,
             # En Windows, si no fijamos esto a mano, Tk pinta el highlight de
             # foco/selección con el azul de sistema y tapa todo el campo.
             highlightthickness=0,
@@ -233,13 +244,13 @@ class InterfazLIA:
     def activar_microfono(self, event=None):
         if self.input_field.cget("state") == tk.DISABLED:
             return # Bloquea si L-IA ya está pensando o hablando
-        
+
         self.input_field.delete(0, tk.END)
-        self.input_field.config(fg=Tema.ACCENT_LIA)
+        self.input_field.config(fg=Tema.ACCENT_LIA_LOCAL)
         self.input_field.insert(0, "Escuchando (habla ahora)...")
         self.input_field.config(state=tk.DISABLED)
         self.btn_mic.config(fg=Tema.ACCENT_ERROR) # Rojo indicando grabación activa
-        
+
         # Lanzar grabación en hilo para no congelar la UI
         threading.Thread(target=self._hilo_escucha, daemon=True).start()
 
@@ -252,7 +263,7 @@ class InterfazLIA:
         while self.hilo_wake_word_activo:
             # Esta función se queda pausada aquí hasta que digas "oye lia"
             detectado = voz.esperar_palabra_clave()
-            
+
             if detectado:
                 # Si el sistema ya está procesando algo, lo ignoramos para que no se pisen
                 if self.input_field.cget("state") == tk.NORMAL:
@@ -260,17 +271,17 @@ class InterfazLIA:
                     self.root.after(0, self.mostrar_ventana)
                     # Simulamos un clic en el botón de grabar
                     self.root.after(0, self.activar_microfono)
-                
+
                 # Le damos un respiro de 6 segundos para que termine de procesar el comando
                 # antes de volver a activar el centinela
                 time.sleep(6)
-        
+
     def _restaurar_ui_mic(self, texto):
         self.input_field.config(state=tk.NORMAL)
         self.input_field.delete(0, tk.END)
         self.input_field.config(fg=Tema.TEXTO)
         self.btn_mic.config(fg=Tema.TEXTO_SUAVE)
-        
+
         if texto:
             self.input_field.insert(0, texto)
             self.enviar_mensaje(None, por_voz=True) # Envía forzando la respuesta hablada
@@ -281,12 +292,64 @@ class InterfazLIA:
         """Tags de formato para las 'burbujas' de texto. Reemplaza el insert()
         plano de antes: ahora cada remitente tiene su propio color/negrita,
         y además usamos tags con nombre único para poder borrar mensajes
-        puntuales (como el 'pensando...') sin depender de contar líneas."""
+        puntuales (como el 'pensando...') sin depender de contar líneas.
+
+        NUEVO: en vez de un solo tag "remitente_lia", hay uno por cada
+        origen posible (local / nube / sin filtro / pendiente), para que
+        el color de la burbuja refleje qué cerebro contestó."""
         self.chat_area.tag_config("remitente_tu", foreground=Tema.ACCENT_USER, font=Tema.FUENTE_BOLD)
-        self.chat_area.tag_config("remitente_lia", foreground=Tema.ACCENT_LIA, font=Tema.FUENTE_BOLD)
+        self.chat_area.tag_config("remitente_lia", foreground=Tema.ACCENT_LIA_LOCAL, font=Tema.FUENTE_BOLD)
+        self.chat_area.tag_config("remitente_lia_local", foreground=Tema.ACCENT_LIA_LOCAL, font=Tema.FUENTE_BOLD)
+        self.chat_area.tag_config("remitente_lia_nube", foreground=Tema.ACCENT_LIA_NUBE, font=Tema.FUENTE_BOLD)
+        self.chat_area.tag_config("remitente_lia_uncensored", foreground=Tema.ACCENT_LIA_UNCENSORED, font=Tema.FUENTE_BOLD)
+        self.chat_area.tag_config("remitente_lia_pendiente", foreground=Tema.ACCENT_LIA_PENDIENTE, font=Tema.FUENTE_BOLD)
         self.chat_area.tag_config("remitente_error", foreground=Tema.ACCENT_ERROR, font=Tema.FUENTE_BOLD)
         self.chat_area.tag_config("cuerpo", foreground=Tema.TEXTO)
         self.chat_area.tag_config("cuerpo_suave", foreground=Tema.TEXTO_SUAVE, font=("Consolas", 10, "italic"))
+
+    # ==========================================
+    # NUEVO: CLASIFICACIÓN DE ORIGEN (nube / local / sin filtro)
+    # ==========================================
+    def _info_origen(self, origen: str) -> dict:
+        """Traduce el string 'origen' que devuelve cerebro.charlar_con_lia
+        (p. ej. 'Gemini', 'Ollama (gemma2)', 'Dolphin-Mistral (sin filtro)')
+        a un tag de color + ícono + etiqueta corta para pintar la burbuja.
+
+        Si el string no calza con ningún patrón conocido, cae a un
+        default neutral en vez de reventar -- así si cerebro.py cambia
+        el formato del texto de origen, la UI no se rompe, solo pierde
+        el color específico."""
+        origen_normalizado = (origen or "").lower()
+
+        if any(clave in origen_normalizado for clave in ("gemini", "nube", "cloud")):
+            return {
+                "tag": "remitente_lia_nube",
+                "color": Tema.ACCENT_LIA_NUBE,
+                "icono": "☁️",
+                "etiqueta": origen or "Nube",
+            }
+        if any(clave in origen_normalizado for clave in ("dolphin", "uncensored", "sin filtro", "sin censura")):
+            return {
+                "tag": "remitente_lia_uncensored",
+                "color": Tema.ACCENT_LIA_UNCENSORED,
+                "icono": "🔓",
+                "etiqueta": origen or "Local · sin filtro",
+            }
+        if any(clave in origen_normalizado for clave in ("gemma", "ollama", "local")):
+            return {
+                "tag": "remitente_lia_local",
+                "color": Tema.ACCENT_LIA_LOCAL,
+                "icono": "💻",
+                "etiqueta": origen or "Local",
+            }
+
+        # Fallback: origen desconocido, no rompemos, solo no coloreamos distinto.
+        return {
+            "tag": "remitente_lia",
+            "color": Tema.ACCENT_LIA_LOCAL,
+            "icono": "🤖",
+            "etiqueta": origen or "L-IA",
+        }
 
     # ==========================================
     # POSICIÓN / VISIBILIDAD (con fade suave)
@@ -378,11 +441,16 @@ class InterfazLIA:
     def iniciar_burbuja_streaming(self):
         """Crea una burbuja vacía para L-IA y devuelve un tag_id único para
         poder seguir escribiendo dentro de ella (o borrarla entera después,
-        p. ej. si termina siendo el caso especial de archivos duplicados)."""
+        p. ej. si termina siendo el caso especial de archivos duplicados).
+
+        NOTA: en este punto todavía NO sabemos si la respuesta viene de la
+        nube o de un modelo local (eso solo se sabe cuando cerebro.py
+        termina y devuelve 'origen'). Por eso arranca con el tag/color
+        "pendiente" (gris) y se repinta al final en procesar_en_fondo."""
         tag_id = f"stream_{time.time_ns()}"
         self.chat_area.config(state=tk.NORMAL)
         inicio = self.chat_area.index(tk.END)
-        self.chat_area.insert(tk.END, "🤖 L-IA\n", "remitente_lia")
+        self.chat_area.insert(tk.END, "🤖 L-IA (pensando...)\n", "remitente_lia_pendiente")
         self.chat_area.insert(tk.END, "\n\n", "cuerpo")
         fin = self.chat_area.index(tk.END)
         self.chat_area.tag_add(tag_id, inicio, fin)
@@ -392,34 +460,31 @@ class InterfazLIA:
 
     def agregar_token_streaming(self, fragmento, tag_id=None):
         """Inserta un fragmento de texto SIEMPRE 2 caracteres antes del final
-        del widget -- justo antes del '\\n\\n' que cierra la burbuja recién
-        creada -- así el texto va creciendo dentro de la burbuja en vez de
-        aparecer después de ella.
-
-        CORRECCIÓN CLAVE: además del tag "cuerpo", ahora también se aplica
-        tag_id (si se pasa) a cada fragmento insertado. Antes solo el header
-        y el "\\n\\n" final llevaban tag_id, y como Tkinter NO extiende un
-        tag automáticamente sobre texto insertado en medio de un rango ya
-        tageado, cada token nuevo partía ese rango en dos sub-rangos
-        (header | hueco sin tag | cierre). Eso hacía que tag_ranges(tag_id)
-        devolviera múltiples pares de índices en vez de uno solo, rompiendo
-        tanto el borrado (borrar_bloque) como el reemplazo final
-        (_reemplazar_texto_burbuja), que asumían un único rango contiguo.
-
-        Solo es seguro llamarlo mientras la burbuja de streaming sea lo
-        último que hay en el chat_area, que es el caso mientras dura un
-        solo turno de conversación."""
+        de SU burbuja correspondiente, blindándolo contra mensajes asíncronos."""
         self.chat_area.config(state=tk.NORMAL)
         tags = ("cuerpo", tag_id) if tag_id else ("cuerpo",)
-        self.chat_area.insert("end-2c", fragmento, tags)
-        self.chat_area.see(tk.END)
+
+        # EL FIX: Buscar el final de esta burbuja específica, no del documento general
+        if tag_id and self.chat_area.tag_ranges(tag_id):
+            rangos = self.chat_area.tag_ranges(tag_id)
+            # rangos[-1] es el límite final del tag. Restamos 2c para quedar antes del \n\n
+            posicion_insercion = f"{rangos[-1]}-2c"
+            self.chat_area.insert(posicion_insercion, fragmento, tags)
+            self.chat_area.see(posicion_insercion)
+        else:
+            # Fallback original por seguridad
+            self.chat_area.insert("end-2c", fragmento, tags)
+            self.chat_area.see(tk.END)
+
         self.chat_area.config(state=tk.DISABLED)
 
-    def _reemplazar_texto_burbuja(self, tag_id, texto_nuevo):
+    def _reemplazar_texto_burbuja(self, tag_id, texto_nuevo, tag_remitente="remitente_lia", header="🤖 L-IA"):
         """Reemplaza TODO el contenido (header + cuerpo) de una burbuja de
-        streaming ya existente. Se usa solo para el caso puntual de limpiar
-        el prefijo 'L-IA:' que a veces mete el modelo, una vez que ya
-        sabemos el texto final completo.
+        streaming ya existente. Se usa para:
+        1) limpiar el prefijo 'L-IA:' que a veces mete el modelo, y
+        2) repintar el header/color una vez que ya se sabe el origen real
+           (nube/local/sin filtro), cosa que al iniciar el streaming
+           todavía no se conocía.
 
         Usa rangos[0] y rangos[-1] (primer y último índice) en vez de
         rangos[0]/rangos[1] como cinturón de seguridad: con el fix de
@@ -432,7 +497,7 @@ class InterfazLIA:
         self.chat_area.config(state=tk.NORMAL)
         self.chat_area.delete(rangos[0], rangos[-1])
         inicio = rangos[0]
-        self.chat_area.insert(inicio, "🤖 L-IA\n", "remitente_lia")
+        self.chat_area.insert(inicio, f"{header}\n", tag_remitente)
         self.chat_area.insert(tk.INSERT, f"{texto_nuevo}\n\n", "cuerpo")
         fin = self.chat_area.index(tk.INSERT)
         self.chat_area.tag_add(tag_id, inicio, fin)
@@ -443,6 +508,10 @@ class InterfazLIA:
     # ENVÍO / PROCESAMIENTO DE MENSAJES
     # ==========================================
     def enviar_mensaje(self, event=None, por_voz=False):
+        # FIX: Evitar que presionar Enter envíe comandos si L-IA sigue procesando
+        if self.input_field.cget("state") == tk.DISABLED:
+            return
+
         if self._placeholder_activo and not por_voz:
             return
         mensaje = self.input_field.get().strip()
@@ -450,11 +519,9 @@ class InterfazLIA:
             return
 
         self.input_field.delete(0, tk.END)
-        # Ponemos un iconito en tu mensaje si hablaste por micrófono
         self.agregar_texto("TÚ" + (" 🎤" if por_voz else ""), mensaje, tag_remitente="remitente_tu")
 
         threading.Thread(target=self.procesar_en_fondo, args=(mensaje, por_voz), daemon=True).start()
-        
 
     def procesar_en_fondo(self, mensaje, por_voz=False):
         """
@@ -464,10 +531,13 @@ class InterfazLIA:
         cerebro.py va transmitiendo tokens (vía callback_stream), en vez de
         esperar a que la función entera termine para mostrar todo de golpe.
 
+        Una vez que se conoce 'origen' (nube / local / local sin filtro),
+        la burbuja se repinta con el color/ícono correspondiente.
+
         Caso especial: si el buscador de archivos de tools.py encontró varias
         coincidencias, en vez de mostrar la lista como texto plano, se abre un
         popup con un botón por cada archivo encontrado (ver lanzar_popup_archivos).
-        """ 
+        """
         self.input_field.config(state=tk.DISABLED)
         self.status_dot.config(fg=Tema.ACCENT_WARN)
         self.agregar_texto("", "🤖 L-IA está pensando...", tag_remitente="cuerpo_suave", tag_id="placeholder")
@@ -479,9 +549,14 @@ class InterfazLIA:
         if cerebro.HABLAR_RESPUESTA:
             voz.reproducir_efecto("pensando")
 
+        # FIX: antes este diccionario estaba declarado dos veces seguidas
+        # (código muerto, la segunda pisaba a la primera sin ningún efecto).
         estado = {"tag_streaming": None, "buffer_inicial": "", "prefijo_revisado": False}
 
-        estado = {"tag_streaming": None, "buffer_inicial": "", "prefijo_revisado": False}
+        # Color con el que queda el status_dot al terminar. Por defecto
+        # local (verde); se sobreescribe según el origen real, o queda en
+        # rojo si la llamada revienta.
+        color_status_final = Tema.ACCENT_LIA_LOCAL
 
         def _pintar_fragmento(fragmento):
             # Buffer chico al inicio para poder detectar y limpiar el
@@ -517,6 +592,10 @@ class InterfazLIA:
                 callback_stream=_on_token
             )
 
+            info = self._info_origen(origen)
+            color_status_final = info["color"]
+            header = f"{info['icono']} L-IA ({info['etiqueta']})"
+
             # Si por algún motivo esa ruta de cerebro.py nunca llamó a
             # callback_stream (p. ej. una ruta vieja que todavía no lo
             # propaga), no quedó ninguna burbuja dibujada -- nos aseguramos
@@ -535,36 +614,34 @@ class InterfazLIA:
                 if estado["tag_streaming"] is not None:
                     self.borrar_bloque(estado["tag_streaming"])
                 self.agregar_texto(
-                    f"🤖 L-IA ({origen})",
+                    header,
                     "[Abriendo interfaz de selección de archivos...]",
-                    tag_remitente="remitente_lia"
+                    tag_remitente=info["tag"]
                 )
                 self.lanzar_popup_archivos(rutas_encontradas, mensaje)
             else:
                 respuesta_limpia = _limpiar_respuesta_ia(respuesta)
                 if estado["tag_streaming"] is not None:
-                    # Ya se mostró en vivo. Solo se retoca si el texto final
-                    # limpio no coincide con lo que ya está pintado (caso
-                    # raro: el prefijo se coló pese al buffer inicial).
-                    # CORRECCIÓN: usamos rangos[0]/rangos[-1] en vez de
-                    # desempaquetar *rangos directo en .get(), que rompía
-                    # si tag_ranges() devolvía más de un par de índices.
-                    rangos = self.chat_area.tag_ranges(estado["tag_streaming"])
-                    if rangos:
-                        contenido_actual = self.chat_area.get(rangos[0], rangos[-1]).strip()
-                        esperado = f"🤖 L-IA\n{respuesta_limpia}".strip()
-                        if contenido_actual != esperado:
-                            self._reemplazar_texto_burbuja(estado["tag_streaming"], respuesta_limpia)
+                    # Ya se mostró en vivo con el header/color "pendiente".
+                    # Ahora que se conoce el origen real, siempre se repinta
+                    # el header (antes solo se retocaba si el texto no
+                    # coincidía, lo cual dejaba el color gris "pendiente"
+                    # pegado para siempre).
+                    self._reemplazar_texto_burbuja(
+                        estado["tag_streaming"], respuesta_limpia,
+                        tag_remitente=info["tag"], header=header
+                    )
                 else:
-                    self.agregar_texto(f"🤖 L-IA ({origen})", respuesta_limpia, tag_remitente="remitente_lia")
+                    self.agregar_texto(header, respuesta_limpia, tag_remitente=info["tag"])
 
         except Exception as e:
             self.borrar_bloque("placeholder")
             if estado["tag_streaming"] is not None:
                 self.borrar_bloque(estado["tag_streaming"])
             self.agregar_texto("❌ Error en el sistema", str(e), tag_remitente="remitente_error")
+            color_status_final = Tema.ACCENT_ERROR
 
-        self.status_dot.config(fg=Tema.ACCENT_LIA)
+        self.status_dot.config(fg=color_status_final)
         self.input_field.config(state=tk.NORMAL)
         self.input_field.focus_set()
 
@@ -659,7 +736,7 @@ class InterfazLIA:
             frame_botones.pack(pady=15)
 
             tk.Button(
-                frame_botones, text="PERMITIR [S]", bg=Tema.ACCENT_LIA, fg=Tema.BG,
+                frame_botones, text="PERMITIR [S]", bg=Tema.ACCENT_LIA_LOCAL, fg=Tema.BG,
                 font=Tema.FUENTE_TITULO, bd=0, padx=10, pady=5, cursor="hand2", command=permitir
             ).pack(side=tk.LEFT, padx=10)
 
@@ -698,7 +775,7 @@ class InterfazLIA:
 
         tk.Label(
             popup, text="🕵️‍♀️ Encontré varios archivos. Haz clic en el correcto:",
-            bg=Tema.BG, fg=Tema.ACCENT_LIA, font=Tema.FUENTE_BOLD
+            bg=Tema.BG, fg=Tema.ACCENT_LIA_LOCAL, font=Tema.FUENTE_BOLD
         ).pack(pady=15)
 
         # Contenedor scrollable por si hay muchas coincidencias

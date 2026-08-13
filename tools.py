@@ -9,7 +9,6 @@ import sys
 import re  # Necesario para dividir textos complejos
 import webbrowser
 
-
 try:
     import winreg  # Solo existe en Windows; el resto del script sigue siendo Windows-only de todas formas
 except ImportError:
@@ -17,18 +16,26 @@ except ImportError:
 
 
 # Diccionario mágico con tus rutinas personalizadas
+# Diccionario mágico con tus rutinas personalizadas
+# Diccionario mágico con tus rutinas personalizadas
 RUTAS_RUTINAS = {
     "trabajo_intenso": {
         "urls": [
-            "https://www.youtube.com/watch?v=pAgnJDJN4VA&list=RDpAgnJDJN4VA&start_radio=1", # Tu playlist favorita para codear
+            "https://www.youtube.com/watch?v=pAgnJDJN4VA&list=RDpAgnJDJN4VA&start_radio=1",
             "https://gemini.google.com/",
-            "https://keep.google.com/"
+            "https://keep.google.com/",
+            "http://127.0.0.1:8000/",
         ],
         "apps": [
-            "code", # Abre VS Code
+            r'code "C:\laragon\www\sistema-bastones"',  # VS Code en el proyecto
+            r'C:\laragon\laragon.exe',                   # Abre Laragon
+        ],
+        "comandos_consola": [
+            # Abre una ventana de terminal, entra a la carpeta y ejecuta php artisan serve
+            r'start cmd /k "cd /d C:\laragon\www\sistema-bastones && php artisan serve"'
         ],
         "carpetas": [
-            r"C:\Users\ACER\Desktop\Documentos\Proyecto de IA\L-IA"
+            r"C:\Users\ACER\Desktop\Documentos\ProyectoComplexivo"
         ]
     },
     "relax": {
@@ -37,33 +44,40 @@ RUTAS_RUTINAS = {
             "https://www.twitch.tv/"
         ],
         "apps": [],
+        "comandos_consola": [],
         "carpetas": []
     }
 }
 
-def ejecutar_rutina(nombre_rutina):
-    """Ejecuta una serie de acciones predefinidas de golpe."""
+def ejecutar_rutina(nombre_rutina="trabajo_intenso"):
     rutina = RUTAS_RUTINAS.get(nombre_rutina)
     if not rutina:
-        return f"No tengo registrada ninguna rutina llamada {nombre_rutina}."
-    
-    # 1. Abrir URLs en pestañas de Brave
+        return "No encontré esa rutina."
+
+    # 1. Abrir pestañas en el navegador predeterminado (Brave)
     for url in rutina.get("urls", []):
         webbrowser.open(url)
-        
-    # 2. Abrir Aplicaciones (asumiendo que están en el PATH de Windows)
+
+    # 2. Abrir aplicaciones estándar
     for app in rutina.get("apps", []):
         try:
             subprocess.Popen(app, shell=True)
         except Exception as e:
-            print(f"Error abriendo app {app}: {e}")
-            
-    # 3. Abrir Carpetas en el Explorador de Windows
+            print(f"⚠️ Error abriendo {app}: {e}")
+
+    # 3. Ejecutar comandos de consola (como php artisan serve) en ventanas separadas
+    for cmd in rutina.get("comandos_consola", []):
+        try:
+            subprocess.Popen(cmd, shell=True)
+        except Exception as e:
+            print(f"⚠️ Error ejecutando comando '{cmd}': {e}")
+
+    # 4. Abrir carpetas en el explorador de archivos
     for carpeta in rutina.get("carpetas", []):
         if os.path.exists(carpeta):
             os.startfile(carpeta)
-            
-    return f"Rutina '{nombre_rutina}' ejecutada con éxito. Entorno preparado."
+
+    return "Entorno y servidor Laravel iniciados con éxito."
 # ==========================================
 # CONFIGURACIÓN EXTERNA (config_apps.json)
 # ==========================================
@@ -655,10 +669,19 @@ def hacer_commit_git(ruta_repo, titulo_commit, descripcion_commit=""):
         return f"Error: La ruta '{ruta_repo}' no existe."
 
     try:
-        # 1. Añadir al staging
+        # 1. Validar si existen cambios pendientes (¡El parche de seguridad!)
+        estado = subprocess.run(
+            ['git', 'status', '--porcelain'], 
+            cwd=ruta_repo, capture_output=True, text=True, check=True, encoding='utf-8'
+        )
+        
+        if not estado.stdout.strip():
+            return "⚠️ Todo está actualizado. No hay cambios pendientes para hacer commit."
+
+        # 2. Añadir al staging
         subprocess.run(['git', 'add', '.'], cwd=ruta_repo, check=True)
         
-        # 2. Crear el commit
+        # 3. Crear el commit
         comando = ['git', 'commit', '-m', titulo_commit]
         if descripcion_commit:
             comando.extend(['-m', descripcion_commit])
@@ -667,7 +690,7 @@ def hacer_commit_git(ruta_repo, titulo_commit, descripcion_commit=""):
             comando, cwd=ruta_repo, capture_output=True, text=True, check=True, encoding='utf-8'
         )
         
-        # 3. Subir al servidor remoto (Push)
+        # 4. Subir al servidor remoto (Push)
         push = subprocess.run(
             ['git', 'push'], cwd=ruta_repo, capture_output=True, text=True, check=True, encoding='utf-8'
         )
@@ -675,7 +698,8 @@ def hacer_commit_git(ruta_repo, titulo_commit, descripcion_commit=""):
         return f"✅ Cambios guardados y subidos exitosamente.\n\nDetalles del Commit:\n{commit.stdout}\n\nDetalles del Push:\n{push.stderr or push.stdout}"
         
     except subprocess.CalledProcessError as e:
-        return f"❌ Error en el proceso de Git:\n{e.stdout}\n{e.stderr}"
+        # Mejora en el mensaje de error para saber exactamente en qué paso falló
+        return f"❌ Error ejecutando Git ({' '.join(e.cmd)}):\nSalida: {e.stdout}\nError: {e.stderr}"
     except Exception as e:
         return f"❌ Error inesperado: {e}"
 

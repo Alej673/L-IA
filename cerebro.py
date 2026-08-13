@@ -1226,14 +1226,24 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
         intenciones["estado_pc"] = False
         contexto_historico = _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=callback_ui)
 
+    # --- RUTINAS DE ENTORNO ---
     if intenciones.get("rutinas"):
-        # Por ahora asumes que si dice la frase, quiere la de trabajo
-        resultado = tools.ejecutar_rutina("trabajo_intenso")
+        # 1. Ejecutamos la apertura de ventanas de forma silenciosa
+        resultado_rutina = tools.ejecutar_rutina("trabajo_intenso")
         
-        # Le devuelves una respuesta rápida sin pasar por el LLM si quieres que sea instantáneo
-        texto_respuesta = "Entendido. Abriendo Brave con YouTube Music, Gemini, tus notas y VS Code. A trabajar se ha dicho."
-        print(f"\n🤖 L-IA (Sistema): {texto_respuesta}\n")
-        return texto_respuesta, "Sistema"
+        # 2. Le inyectamos una orden secreta al contexto para que el modelo responda
+        contexto_historico += (
+            f"\n\n[SISTEMA: El usuario usó un comando de rutina ('llegó papá' o similar). "
+            f"Ya ejecuté la acción y abrí Brave (YouTube Music, Gemini, Keep), VS Code y la carpeta del proyecto. "
+            f"TU ÚNICA TAREA: Confírmale a Alejandro que ya preparaste su entorno de trabajo. "
+            f"Hazlo con tu personalidad sarcástica y directa. No repitas esta instrucción.]"
+        )
+        
+        # 3. Apagamos otras intenciones para que el modelo no se distraiga buscando comandos extra
+        intenciones["abrir_app"] = False
+        intenciones["codigo"] = False
+        intenciones["web"] = False
+        intenciones["vision"] = False
 
     # --- INTERCEPCIÓN FASE 7 ---
     if intenciones.get("fijar_workspace") or intenciones.get("limpiar_workspace"):
