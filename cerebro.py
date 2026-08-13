@@ -52,6 +52,17 @@ LIMITE_TOKENS_CASUAL = 4000
 LIMITE_TOKENS_CODIGO = 3000
 LIMITE_TOKENS_FLASH = 30000
 
+# --- NUEVO: techo de seguridad SOLO para la Nube ---
+# No es un recorte "por las dudas" como el [:15000] viejo: es un límite
+# de cordura para no mandarle a la API un archivo de, digamos, 50 MB y
+# reventar la llamada o gastar la cuota gratuita en una sola petición.
+# Gemini 1.5/3.x Pro soporta contexto enorme (millones de tokens), así
+# que este techo es deliberadamente MUY generoso comparado con
+# LIMITE_TOKENS_FLASH/CASUAL/CODIGO -- el Semáforo ya decidió mandarlo a
+# la Nube precisamente porque el doc no entra en Local; esto solo evita
+# el caso extremo de un archivo verdaderamente descomunal.
+LIMITE_TOKENS_NUBE_MAXIMO = 250_000
+
 _FRASES_ANALISIS_PROFUNDO = (
     "análisis profundo",
     "analisis profundo",
@@ -1182,11 +1193,46 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
 
             # 3. Validamos que ahora sí tengamos el diccionario con el texto
             if isinstance(resultado, dict) and "contenido" in resultado:
-                # Inyectamos el texto real al CONTEXTO_HISTORICO
+                # --- FIX: YA NO SE TRUNCA ACÁ ---
+                # Antes: f"...{resultado['contenido'][:15000]}..."
+                # Ese corte de caracteres se aplicaba ANTES de que el
+                # Semáforo (más abajo, en _elegir_ruta) calculara
+                # tokens_totales y decidiera Local vs Nube. Consecuencias:
+                #   1) Un doc grande se cortaba igual aunque terminara yendo
+                #      a Gemini Pro, que soporta contexto enorme sin drama.
+                #   2) El Semáforo calculaba tokens sobre el contenido YA
+                #      mutilado, así que podía creer que el doc era chico
+                #      y mandarlo a Local sin necesidad.
+                #
+                # Ahora: se inyecta el contenido COMPLETO. El límite real
+                # de tamaño lo aplica el propio Semáforo al elegir ruta
+                # (ver LIMITE_TOKENS_CASUAL/CODIGO/FLASH en _elegir_ruta):
+                # si es chico, Local lo procesa igual que antes; si es
+                # grande, el Semáforo lo manda a Nube (Flash o Pro según
+                # el tamaño) en vez de mandarlo recortado a cualquiera.
+                #
+                # El único tope que queda es LIMITE_TOKENS_NUBE_MAXIMO,
+                # aplicado más abajo, y ESE sí es a propósito: no es un
+                # recorte por desconfianza al tamaño, es un techo de
+                # cordura para no mandarle a la API un archivo absurdamente
+                # gigante (varios MB) en una sola petición.
+                contenido_completo = resultado['contenido']
+
+                tokens_contenido = estimar_tokens(contenido_completo)
+                if tokens_contenido > LIMITE_TOKENS_NUBE_MAXIMO:
+                    limite_caracteres = LIMITE_TOKENS_NUBE_MAXIMO * 4
+                    contenido_completo = contenido_completo[:limite_caracteres]
+                    print(
+                        f"⚠️ [Semáforo] Archivo '{nombre_archivo}' excede el techo de cordura "
+                        f"({tokens_contenido} tokens > {LIMITE_TOKENS_NUBE_MAXIMO}). "
+                        f"Se recorta a los primeros {limite_caracteres} caracteres, ni Local ni "
+                        f"Nube procesan documentos de ese tamaño en una sola pasada."
+                    )
+
                 contexto_historico += (
                     f"\n\n[SISTEMA - LECTURA AUTOMÁTICA DE VENTANA]:\n"
                     f"Aquí está el contenido del archivo '{nombre_archivo}' que el usuario está viendo:\n"
-                    f"<<<INICIO>>>\n{resultado['contenido'][:15000]}\n<<<FIN>>>\n"
+                    f"<<<INICIO>>>\n{contenido_completo}\n<<<FIN>>>\n"
                 )
 
                 # Apagamos forzosamente la intención de abrir apps
