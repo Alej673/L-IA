@@ -16,6 +16,8 @@ import difflib
 import contexto
 import voz
 import queue
+from memoria_rag import MemoriaRAG
+memoria_rag = MemoriaRAG()
 
 # ==========================================
 # 1. CONFIGURACIÓN INICIAL Y SEMÁFORO
@@ -33,7 +35,7 @@ client = genai.Client(api_key=api_key)
 # ------------------------------------------
 MODELO_LOCAL = 'gemma2'                # Cerebro cotidiano (rápido, censurado)
 MODELO_UNCENSORED = 'dolphin-mistral'  # Especialista sin filtros (solo bajo demanda explícita)
-MODELO_NUBE_FLASH = 'gemini-3.5-flash' # Analista rápido (visión, web, contexto medio)
+MODELO_NUBE_FLASH = 'gemini-3.7-flash' # Analista rápido (visión, web, contexto medio)
 MODELO_NUBE_PRO = 'gemini-3.1-pro'     # Artillería pesada (contexto enorme / análisis profundo)
 
 # Memoria de "en qué proyecto estamos parados" entre turnos de conversación.
@@ -56,7 +58,7 @@ LIMITE_TOKENS_FLASH = 30000
 # No es un recorte "por las dudas" como el [:15000] viejo: es un límite
 # de cordura para no mandarle a la API un archivo de, digamos, 50 MB y
 # reventar la llamada o gastar la cuota gratuita en una sola petición.
-# Gemini 1.5/3.x Pro soporta contexto enorme (millones de tokens), así
+# Gemini 3.7/3.x Pro soporta contexto enorme (millones de tokens), así
 # que este techo es deliberadamente MUY generoso comparado con
 # LIMITE_TOKENS_FLASH/CASUAL/CODIGO -- el Semáforo ya decidió mandarlo a
 # la Nube precisamente porque el doc no entra en Local; esto solo evita
@@ -131,6 +133,10 @@ _RAICES = {
     "rutinas": [
         "vamos a trabajar", "lleg[oó] pap[aá]", "empecemos", 
         "modo hacker", "activa el protocolo", "prepara el entorno"
+    ],
+    "memoria_tecnica": [
+        "recuerd", "bit[aá]cor", "documentaci[oó]n", "c[oó]mo resolv",
+        "incidente", "segundo cerebro", "apunte", "solucionam"
     ],
 }
 
@@ -263,6 +269,7 @@ _DESCRIPCIONES_CAPACIDADES = {
     "limpiar_workspace": "olvidar el workspace activo actual",
     "entorno_activo":    "saber qué ventana o programa tienes abierto en este momento sin tener que preguntarte",
     "uncensored":        "cambiar temporalmente a un modo sin filtros para conversación más directa, si se lo pides explícitamente",
+    "memoria_tecnica": "consultar tu memoria a largo plazo (segundo cerebro) sobre problemas técnicos pasados, bitácoras y documentación",
 }
 
 
@@ -1150,9 +1157,9 @@ def _elegir_ruta(intenciones: dict, msg_lower: str, tokens_totales: int):
 def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
     database.guardar_mensaje("user", mensaje_usuario)
 
-    instrucciones_sistema = prompt_builder.obtener_instrucciones_sistema()
+    # ❌ SE MOVIÓ HACIA ABAJO: instrucciones_sistema = prompt_builder...
+    
     contexto_historico = prompt_builder.armar_historial_usuario(mensaje_usuario)
-
     contexto_historico = _procesar_entorno_automatico(contexto_historico)
 
     mensaje_real = mensaje_usuario.split("[CONTEXTO DEL SISTEMA")[0].strip() if "[CONTEXTO" in mensaje_usuario else mensaje_usuario.strip()
@@ -1195,21 +1202,6 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
             if isinstance(resultado, dict) and "contenido" in resultado:
                 # --- FIX: YA NO SE TRUNCA ACÁ ---
                 # Antes: f"...{resultado['contenido'][:15000]}..."
-                # Ese corte de caracteres se aplicaba ANTES de que el
-                # Semáforo (más abajo, en _elegir_ruta) calculara
-                # tokens_totales y decidiera Local vs Nube. Consecuencias:
-                #   1) Un doc grande se cortaba igual aunque terminara yendo
-                #      a Gemini Pro, que soporta contexto enorme sin drama.
-                #   2) El Semáforo calculaba tokens sobre el contenido YA
-                #      mutilado, así que podía creer que el doc era chico
-                #      y mandarlo a Local sin necesidad.
-                #
-                # Ahora: se inyecta el contenido COMPLETO. El límite real
-                # de tamaño lo aplica el propio Semáforo al elegir ruta
-                # (ver LIMITE_TOKENS_CASUAL/CODIGO/FLASH en _elegir_ruta):
-                # si es chico, Local lo procesa igual que antes; si es
-                # grande, el Semáforo lo manda a Nube (Flash o Pro según
-                # el tamaño) en vez de mandarlo recortado a cualquiera.
                 #
                 # El único tope que queda es LIMITE_TOKENS_NUBE_MAXIMO,
                 # aplicado más abajo, y ESE sí es a propósito: no es un
@@ -1308,13 +1300,49 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
         intenciones["abrir_app"] = False
         intenciones["codigo"] = False
 
+    # --- INTERCEPTOR FASE 6 (SEGUNDO CEREBRO) ---
+    tipo_intencion_principal = "casual"
+    contexto_recuperado = None
+
+    if intenciones.get("memoria_tecnica"):
+        print("💡 [Semáforo] Consultando Segundo Cerebro (ChromaDB)...")
+        resultados_rag = memoria_rag.buscar_contexto(msg_lower, n_resultados=2)
+        
+        if resultados_rag and len(resultados_rag['documents'][0]) > 0:
+            contexto_recuperado = []
+            for i in range(len(resultados_rag['documents'][0])):
+                distancia = resultados_rag['distances'][0][i]
+                if distancia < 1.15: # Filtro de ruido
+                    contexto_recuperado.append({
+                        "origen": resultados_rag['metadatas'][0][i]['origen'],
+                        "texto": resultados_rag['documents'][0][i]
+                    })
+            
+            if contexto_recuperado:
+                tipo_intencion_principal = "rag_tecnico"
+                # Apagamos búsquedas externas si ya encontramos la respuesta en memoria local
+                intenciones["web"] = False
+                intenciones["codigo"] = False
+
     # --- FASE 8 — GUÍA DE CAPACIDADES ---
-    # Pregunta meta sobre L-IA misma: apaga acciones reales de este turno
-    # para que no intente ejecutar nada, solo explicarse a sí misma.
     if intenciones.get("guia_capacidades"):
-        for clave in ("abrir_app", "estado_pc", "git", "guardar_git", "codigo", "web", "vision", "clima", "calendario"):
+        for clave in ("abrir_app", "estado_pc", "git", "guardar_git", "codigo", "web", "vision", "clima", "calendario", "memoria_tecnica"):
             intenciones[clave] = False
         contexto_historico += _generar_nota_guia_capacidades()
+
+    # --- DETECCIÓN DE TONO PARA EL PROMPT BUILDER ---
+    # Si no activamos el modo RAG, verificamos si es código o diagnóstico
+    if tipo_intencion_principal != "rag_tecnico":
+        if intenciones.get("codigo") or intenciones.get("git") or intenciones.get("guardar_git"):
+            tipo_intencion_principal = "codigo"
+        elif intenciones.get("estado_pc"):
+            tipo_intencion_principal = "estado_pc"
+
+    # ✅ AHORA SÍ: Construimos el System Prompt pasándole qué detectamos
+    instrucciones_sistema = prompt_builder.obtener_instrucciones_sistema(
+        intencion_detectada=tipo_intencion_principal,
+        contexto_rag=contexto_recuperado
+    )
 
     tokens_totales = estimar_tokens(contexto_historico)
     print(f"🚦 [SEMÁFORO v3] Tokens estimados del contexto total: {tokens_totales}")
