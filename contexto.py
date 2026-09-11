@@ -13,9 +13,6 @@ SUFIJOS_EXTENSION = {
     " - Excel": ".xlsx",
     " - PowerPoint": ".pptx",
     " - Bloc de notas": ".txt",
-    # Estos no implican una extensión única y confiable (VS Code, Chrome,
-    # etc. ya suelen mostrar el nombre real del archivo/pestaña en el
-    # título, con su propia extensión si corresponde) -> no se infiere nada.
     " - Visual Studio Code": None,
     " - Notepad++": None,
     " - Google Chrome": None,

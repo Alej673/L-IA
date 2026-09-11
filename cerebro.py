@@ -199,15 +199,18 @@ PATRONES_CLAVE["guardar_git"] = re.compile(
     re.IGNORECASE
 )
 
-# Fase 8 — Guía de capacidades. Frases fijas (no raíz) para no chocar
-# con pedidos normales como "ayúdame a refactorizar X".
-PATRONES_CLAVE["guia_capacidades"] = re.compile(
-    r'(qu[eé]\s+puedes\s+hacer|qu[eé]\s+sabes\s+hacer|c[oó]mo\s+te\s+uso|'
-    r'c[oó]mo\s+se\s+te\s+usa|c[oó]mo\s+funcionas|qu[eé]\s+comandos\s+tienes|'
-    r'lista\s+de\s+comandos|estoy\s+perdid[oa]|no\s+s[eé]\s+qu[eé]\s+pedirte|'
-    r'no\s+s[eé]\s+c[oó]mo\s+usarte|qu[eé]\s+funciones\s+tienes|'
-    r'dame\s+un\s+resumen\s+de\s+tus\s+funciones|qu[eé]\s+m[aá]s\s+puedes\s+hacer|'
-    r'cu[aá]les\s+son\s+tus\s+funciones)', # <-- NUEVA FRASE AQUÍ
+# ------------------------------------------
+# NUEVO — Ingesta al Segundo Cerebro (RAG)
+# ------------------------------------------
+# Se define como un patrón propio (no una raíz más en _RAICES) porque las
+# palabras clave ("memoriza", "aprende", "asimila") son deliberadamente
+# distintas de las de "memoria_tecnica" (que sirve para CONSULTAR lo ya
+# guardado). Este patrón es para GUARDAR contenido nuevo. Exigimos que
+# venga acompañado de "este/esta/el <archivo|documento|...>" para no
+# disparar con frases sueltas como "memoriza esto que te digo" (que no
+# apunta a un archivo de la ventana activa).
+PATRONES_CLAVE["memorizar_documento"] = re.compile(
+    r'\b(memoriza|aprende|asimila|guarda\s+en\s+tu\s+memoria|ingesta)\s+(este|esta|el)\s+(archivo|documento|texto|pdf|docx|c[oó]digo|manual)\b',
     re.IGNORECASE
 )
 
@@ -270,6 +273,7 @@ _DESCRIPCIONES_CAPACIDADES = {
     "entorno_activo":    "saber qué ventana o programa tienes abierto en este momento sin tener que preguntarte",
     "uncensored":        "cambiar temporalmente a un modo sin filtros para conversación más directa, si se lo pides explícitamente",
     "memoria_tecnica": "consultar tu memoria a largo plazo (segundo cerebro) sobre problemas técnicos pasados, bitácoras y documentación",
+    "memorizar_documento": "leer el archivo o documento que tienes abierto en pantalla y vectorizarlo en su memoria a largo plazo, para poder consultarlo técnicamente después",
 }
 
 
@@ -1127,6 +1131,73 @@ def _procesar_archivo(ruta_o_nombre, contexto_historico):
 
 
 # ==========================================
+# 6.5 INTERCEPTOR — INGESTA AL SEGUNDO CEREBRO (NUEVO)
+# ==========================================
+# A diferencia de _procesar_archivo (que sólo mete el contenido en el
+# contexto de ESTE turno para que el modelo lo lea una vez), esta función
+# manda el texto a memoria_rag para que quede vectorizado PARA SIEMPRE
+# en ChromaDB. Vive en su propia sección porque es un flujo de "escritura"
+# permanente, no de "lectura" efímera, aunque ambas reusan
+# contexto.obtener_ventana_activa() y tools.leer_archivo_local() para no
+# duplicar la detección del archivo activo.
+#
+# IMPORTANTE: revisa que el nombre del método de abajo
+# (memoria_rag.procesar_y_guardar) coincida EXACTO con el método real que
+# tengas implementado en memoria_rag.py. Si tu clase MemoriaRAG usa otro
+# nombre (ej. "agregar_documento", "ingestar", etc.), cambia sólo esa
+# línea; el resto del interceptor no depende de cómo se llame.
+def _procesar_ingesta_documento(callback_ui=None):
+    ventana_actual = contexto.obtener_ventana_activa()
+    print(f"\n🧠 [Aprendizaje] Escaneando ventana para ingesta: '{ventana_actual}'")
+
+    match_archivo = re.search(
+        r'([a-zA-Z0-9_\-\s]+\.(html|php|js|css|py|docx|pdf|txt|md|pptx|xlsx))',
+        ventana_actual, re.IGNORECASE
+    )
+    nombre_archivo = match_archivo.group(1).strip() if match_archivo else None
+
+    if not nombre_archivo:
+        return (
+            "Me pides que memorice un archivo, pero no detecto ninguna extensión válida "
+            "(.docx, .pdf, .py) en tu ventana activa. Ábrelo y repite la orden."
+        )
+
+    # Leemos el archivo físicamente (misma herramienta que usa el resto del cerebro)
+    resultado = tools.leer_archivo_local(nombre_archivo)
+
+    # Mismo parche que en el interceptor de lectura automática: si
+    # leer_archivo_local devuelve una lista de coincidencias en vez del
+    # contenido, tomamos la primera ruta absoluta y reintentamos con ella.
+    if isinstance(resultado, str) and "múltiples coincidencias" in resultado.lower():
+        match_primera = re.search(r'1\.\s+([a-zA-Z]:\\[^\n]+)', resultado)
+        if match_primera:
+            ruta_absoluta = match_primera.group(1).strip()
+            resultado = tools.leer_archivo_local(ruta_absoluta)
+
+    if not (isinstance(resultado, dict) and "contenido" in resultado):
+        return "Pude ver el archivo, pero hubo un error al extraer su contenido. Revisa los permisos."
+
+    texto_a_vectorizar = resultado["contenido"]
+
+    # Nombre real confirmado en memoria_rag.py: indexar_documento(texto_completo, nombre_origen).
+    # Internamente fragmenta el texto en chunks de ~600 caracteres (con
+    # solapamiento de 100) y los guarda en la colección "documentos_tecnicos"
+    # de ChromaDB, cada uno con el nombre de archivo como metadato "origen"
+    # -- el mismo campo que luego lee _procesar memoria_tecnica al armar el
+    # bloque de contexto RAG para las consultas.
+    cantidad_fragmentos = memoria_rag.indexar_documento(
+        texto_completo=texto_a_vectorizar,
+        nombre_origen=nombre_archivo
+    )
+
+    return (
+        f"Asimilación completa. Procesé '{nombre_archivo}' y lo dividí en {cantidad_fragmentos} "
+        f"fragmentos que ya quedaron vectorizados en mi memoria a largo plazo. "
+        f"Ya puedes hacerme consultas técnicas sobre él."
+    )
+
+
+# ==========================================
 # 7. SEMÁFORO v3 — DECISIÓN DE RUTA
 # ==========================================
 def _elegir_ruta(intenciones: dict, msg_lower: str, tokens_totales: int):
@@ -1156,8 +1227,6 @@ def _elegir_ruta(intenciones: dict, msg_lower: str, tokens_totales: int):
 # ==========================================
 def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
     database.guardar_mensaje("user", mensaje_usuario)
-
-    # ❌ SE MOVIÓ HACIA ABAJO: instrucciones_sistema = prompt_builder...
     
     contexto_historico = prompt_builder.armar_historial_usuario(mensaje_usuario)
     contexto_historico = _procesar_entorno_automatico(contexto_historico)
@@ -1167,9 +1236,29 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
 
     intenciones = _detectar_intenciones(msg_lower)
 
+    # --- INTERCEPTOR DE APRENDIZAJE AUTOMÁTICO (NUEVO) ---
+    # Se evalúa PRIMERO y con return inmediato, antes que cualquier otro
+    # interceptor (incluido el de lectura implícita de más abajo), porque
+    # es una orden de escritura permanente en el Segundo Cerebro: no debe
+    # mezclarse con el resto del pipeline de contexto/streaming, que está
+    # pensado para lecturas de un solo turno. Al cortar acá con `return`,
+    # el resto de la función (RAG de consulta, rutinas, workspace, Nube,
+    # Local, etc.) directamente no se ejecuta para este mensaje.
+    if intenciones.get("memorizar_documento"):
+        texto_respuesta = _procesar_ingesta_documento(callback_ui=callback_ui)
+        database.guardar_mensaje("model", texto_respuesta)
+        print(f"\n🤖 L-IA (Sistema/Ingesta): {texto_respuesta}\n")
+        return texto_respuesta, "Local"
+
+    # --- NUEVA PROTECCIÓN PARA EL RAG ---
+    # Evaluamos si el regex atrapó algo, pero le quitamos prioridad si es una consulta técnica
+    intentando_leer_ventana = bool(PATRON_LECTURA_IMPLICITA.search(msg_lower))
+    if intenciones.get("memoria_tecnica"):
+        intentando_leer_ventana = False
+
     # --- INTERCEPTOR DE ARCHIVOS AUTOMÁTICO (FASE 7.2) ---
     # Si pides resumir "esto", Python busca el archivo por su cuenta sin preguntarle a la IA
-    if PATRON_LECTURA_IMPLICITA.search(msg_lower):
+    if intentando_leer_ventana:
         ventana_actual = contexto.obtener_ventana_activa()
         print(f"\n🕵️ [Interceptor] Ventana activa capturada: '{ventana_actual}'")
 
@@ -1300,33 +1389,50 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
         intenciones["abrir_app"] = False
         intenciones["codigo"] = False
 
-    # --- INTERCEPTOR FASE 6 (SEGUNDO CEREBRO) ---
+    # --- INTERCEPTOR (SEGUNDO CEREBRO) ---
     tipo_intencion_principal = "casual"
     contexto_recuperado = None
 
     if intenciones.get("memoria_tecnica"):
         print("💡 [Semáforo] Consultando Segundo Cerebro (ChromaDB)...")
-        resultados_rag = memoria_rag.buscar_contexto(msg_lower, n_resultados=2)
+        
+        # 1. Limpieza de muletillas
+        query_limpia = re.sub(
+            r'\b(en\s+tus\s+apuntes|de\s+la\s+bit[aá]cora|en\s+la\s+bit[aá]cora|bit[aá]cora\s+t[eé]cnica|documentaci[oó]n|recuerdas?|segundo\s+cerebro|apuntes?)\b',
+            '',
+            msg_lower,
+            flags=re.IGNORECASE
+        ).strip()
+        
+        consulta = query_limpia if len(query_limpia) > 5 else msg_lower
+        resultados_rag = memoria_rag.buscar_contexto(consulta, n_resultados=5)
         
         if resultados_rag and len(resultados_rag['documents'][0]) > 0:
             contexto_recuperado = []
-            for i in range(len(resultados_rag['documents'][0])):
-                distancia = resultados_rag['distances'][0][i]
-                if distancia < 1.15: # Filtro de ruido
-                    contexto_recuperado.append({
-                        "origen": resultados_rag['metadatas'][0][i]['origen'],
-                        "texto": resultados_rag['documents'][0][i]
-                    })
+            bloque_rag = "\n\n[MEMORIA TÉCNICA DOCUMENTAL - SEGUNDO CEREBRO]\n"
+            bloque_rag += "INSTRUCCIONES ESTRICTAS:\n"
+            bloque_rag += "1. Responde ÚNICAMENTE con los hechos técnicos explícitos de los fragmentos de abajo.\n"
+            bloque_rag += "2. Si se menciona una solución técnica, nombra las herramientas, tablas, funciones o métodos concretos que aparecen en el texto.\n"
+            bloque_rag += "3. PROHIBIDO deducir o inventar soluciones no descritas.\n"
             
-            if contexto_recuperado:
-                tipo_intencion_principal = "rag_tecnico"
-                # Apagamos búsquedas externas si ya encontramos la respuesta en memoria local
-                intenciones["web"] = False
-                intenciones["codigo"] = False
+            for i in range(len(resultados_rag['documents'][0])):
+                origen = resultados_rag['metadatas'][0][i]['origen']
+                texto = resultados_rag['documents'][0][i]
+                contexto_recuperado.append({"origen": origen, "texto": texto})
+                bloque_rag += f"\n--- FRAGMENTO {i+1} ({origen}) ---\n{texto}\n"
+            
+            tipo_intencion_principal = "rag_tecnico"
+            
+            # 2. Inyección forzada en el historial
+            contexto_historico += bloque_rag
+            print(f"✅ RAG inyectado exitosamente ({len(contexto_recuperado)} fragmentos).")
+            
+            intenciones["web"] = False
+            intenciones["codigo"] = False
 
     # --- FASE 8 — GUÍA DE CAPACIDADES ---
     if intenciones.get("guia_capacidades"):
-        for clave in ("abrir_app", "estado_pc", "git", "guardar_git", "codigo", "web", "vision", "clima", "calendario", "memoria_tecnica"):
+        for clave in ("abrir_app", "estado_pc", "git", "guardar_git", "codigo", "web", "vision", "clima", "calendario", "memoria_tecnica", "memorizar_documento"):
             intenciones[clave] = False
         contexto_historico += _generar_nota_guia_capacidades()
 
