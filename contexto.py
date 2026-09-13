@@ -31,7 +31,13 @@ def obtener_ventana_activa(titulo_excluir="L-IA Asistente"):
             "NVIDIA ShadowPlay Helper", "Windows Default Lock Screen",
             "Taskbar", "Configuración", "Settings",
             "Experiencia de entrada de Windows", "Windows Input Experience",
-            "Zoom", "Zoom Workplace"
+            "Zoom", "Zoom Workplace",
+            # --- CAPTURA DE PANTALLA WINDOWS ---
+            "Barra de herramientas de grabación",
+            "Grabación de pantalla",
+            "Herramienta Recortes",
+            "Herramienta de Recortes",
+            "Snipping Tool"
         ]
 
         for v in ventanas:

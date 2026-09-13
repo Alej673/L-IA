@@ -547,50 +547,64 @@ def leer_archivo_local(ruta_archivo: str, busqueda_automatica=False):
 def obtener_estado_sistema() -> str:
     """
     Lee los sensores de hardware de la laptop usando psutil.
-    Retorna un string con el uso de CPU, RAM, Batería y el Top 3 de procesos.
+    Cada sección se evalúa de forma independiente: si una falla,
+    las demás igual se reportan (antes, un solo error tumbaba
+    todo el reporte).
     """
-    try:
-        # 1. Lectura de CPU
-        cpu_percent = psutil.cpu_percent(interval=1)
+    partes = []
 
-        # 2. Lectura de RAM
+    # 1. CPU
+    try:
+        cpu_percent = psutil.cpu_percent(interval=1)
+        partes.append(f"CPU Uso: {cpu_percent}%")
+    except Exception as e:
+        partes.append(f"CPU Uso: Error ({e})")
+
+    # 2. RAM
+    try:
         ram = psutil.virtual_memory()
         ram_total = round(ram.total / (1024**3), 2)
         ram_usada = round(ram.used / (1024**3), 2)
-        ram_percent = ram.percent
+        partes.append(f"RAM Uso: {ram_usada}GB de {ram_total}GB ({ram.percent}%)")
+    except Exception as e:
+        partes.append(f"RAM Uso: Error ({e})")
 
-        # 3. Lectura de Batería
+    # 3. Batería
+    try:
         bateria_info = "No detectada"
         if hasattr(psutil, "sensors_battery"):
             bateria = psutil.sensors_battery()
             if bateria:
                 estado_enchufe = "Conectada a la corriente" if bateria.power_plugged else "Usando batería"
                 bateria_info = f"{bateria.percent}% ({estado_enchufe})"
+        partes.append(f"Batería: {bateria_info}")
+    except Exception as e:
+        partes.append(f"Batería: Error ({e})")
 
-        # 4. Top 3 Procesos que más RAM consumen
+    # 4. Top 3 procesos que más RAM consumen
+    try:
         procesos = []
         for proc in psutil.process_iter(['name', 'memory_percent']):
             try:
-                if proc.info['memory_percent'] is not None:
-                    procesos.append(proc.info)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
+                info = proc.info
+                if info.get('memory_percent'):
+                    procesos.append(info)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+            except Exception:
+                # Cualquier otro proceso "raro" del sistema se ignora,
+                # en vez de tumbar todo el reporte.
+                continue
 
-        # Ordenamos de mayor a menor y sacamos los primeros 3
         procesos = sorted(procesos, key=lambda p: p['memory_percent'], reverse=True)[:3]
-        top_apps = ", ".join([f"{p['name']} ({round(p['memory_percent'], 1)}%)" for p in procesos])
-
-        # 5. Estructurar el reporte
-        reporte = (
-            f"CPU Uso: {cpu_percent}% | "
-            f"RAM Uso: {ram_usada}GB de {ram_total}GB ({ram_percent}%) | "
-            f"Batería: {bateria_info} | "
-            f"Top Apps consumiendo RAM: {top_apps}"
-        )
-        return reporte
-
+        top_apps = ", ".join(
+            f"{p['name']} ({round(p['memory_percent'], 1)}%)" for p in procesos
+        ) or "No disponible"
+        partes.append(f"Top Apps consumiendo RAM: {top_apps}")
     except Exception as e:
-        return f"Error crítico al leer los sensores de hardware: {str(e)}"
+        partes.append(f"Top Apps consumiendo RAM: Error ({e})")
+
+    return " | ".join(partes)
 
 
 def leer_portapapeles():

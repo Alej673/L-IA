@@ -199,6 +199,12 @@ PATRONES_CLAVE["guardar_git"] = re.compile(
     re.IGNORECASE
 )
 
+# Gatillo para despertar la autoconciencia de L-IA
+PATRONES_CLAVE["guia_capacidades"] = re.compile(
+    r'\b(qu[eé]\s+puedes\s+hacer|qu[eé]\s+sabes\s+hacer|c[oó]mo\s+me\s+puedes\s+ayudar|tus\s+capacidades|tus\s+funciones|c[oó]mo\s+funcionas|qu[eé]\s+le\s+puedo\s+pedir|qu[eé]\s+te\s+puedo\s+pedir|ay[uú]dame\s+a\s+usarte|gu[ií]ame|manual\s+de\s+usuario|qu[eé]\s+opciones\s+tengo)\b',
+    re.IGNORECASE
+)
+
 # ------------------------------------------
 # NUEVO — Ingesta al Segundo Cerebro (RAG)
 # ------------------------------------------
@@ -276,18 +282,20 @@ _DESCRIPCIONES_CAPACIDADES = {
     "memorizar_documento": "leer el archivo o documento que tienes abierto en pantalla y vectorizarlo en su memoria a largo plazo, para poder consultarlo técnicamente después",
 }
 
-
 def _generar_nota_guia_capacidades():
     lineas = "\n".join(f"- {desc}." for desc in _DESCRIPCIONES_CAPACIDADES.values())
     return (
-        "\n\n[SISTEMA — EL USUARIO PIDIÓ UNA GUÍA DE TUS CAPACIDADES]\n"
-        f"Estas son tus funciones reales, en bruto:\n{lineas}\n\n"
-        "[INSTRUCCIÓN CRÍTICA]: NO copies esta lista textual ni la enumeres como manual técnico. "
-        "Explícasela a Alejandro con tu personalidad de siempre, en 1-2 párrafos naturales, agrupando "
-        "capacidades parecidas y dando 1 o 2 ejemplos concretos de frases que podría usar contigo. "
-        "Ciérralo invitándolo a probar algo, sin sonar corporativa ni como lista de features de una app."
+        "\n\n[SISTEMA — EL USUARIO SOLICITÓ AYUDA SOBRE TUS CAPACIDADES O CÓMO INTERACTUAR CONTIGO]\n"
+        f"Toma conciencia de tu entorno. Estas son todas las herramientas a las que tienes acceso en el PC de Alejandro:\n{lineas}\n\n"
+        "[INSTRUCCIÓN CRÍTICA PARA L-IA]: Eres completamente consciente de lo que puedes hacer. Asume el rol de guía. "
+        "Explícale a Alejandro todo lo que puedes hacer por él, agrupándolo en áreas (ej. Visión de pantalla, "
+        "Gestión de Código/Git, Control del PC, y Memoria a largo plazo).\n"
+        "REGLA DE ORO: NO leas la lista textualmente ni suenes como un manual. "
+        "Dile EXACTAMENTE qué frases puede usar para pedirte las cosas. Por ejemplo: "
+        "'Si quieres que revise tu código, solo dime: revisa este archivo', o 'Si quieres que guarde algo "
+        "en mi memoria, dime: memoriza este documento'.\n"
+        "Haz que sienta que tienes el control total de tu entorno y estás lista para asistir."
     )
-
 
 # ==========================================
 # 2. HERRAMIENTAS DE VISIÓN Y EXTRACCIÓN
