@@ -83,23 +83,61 @@ Capacidad de descargar un modelo y montar otro bajo demanda usando `keep_alive=0
 
 ---
 
-## Instalación local
-
+## 🚀 Instalación Local
+ 
+Debido a su naturaleza híbrida, L-IA requiere configuración tanto para los modelos locales como para los servicios en la nube.
+ 
+### 1. Requisitos Previos (Modelos Locales)
+ 
+Para la ejecución offline y privada, L-IA utiliza **Ollama** como motor de inferencia local.
+ 
+1. Descarga e instala [Ollama](https://ollama.com/).
+2. Abre una terminal y descarga el modelo principal (Gemma 2) ejecutando:
+ 
+   ```bash
+   ollama pull gemma2
+   ```
+ 
+   > Nota: Puedes descargar otros modelos soportados como `dolphin-mistral` dependiendo de los recursos de tu hardware.
+ 
+### 2. Entorno Python y Dependencias
+ 
+Clona el repositorio y configura el entorno virtual para aislar las dependencias (ChromaDB, Whisper, Vosk, etc.):
+ 
 ```bash
-# 1. Clonar el repositorio
 git clone https://github.com/Alej673/L-IA.git
 cd L-IA
-
-# 2. Configurar entorno virtual y dependencias
+ 
+# Crear y activar entorno virtual
 python -m venv venv
-source venv/Scripts/activate  # Windows: venv\Scripts\activate
+# En Windows:
+venv\Scripts\activate
+# En Linux/Mac:
+source venv/bin/activate
+ 
+# Instalar dependencias del proyecto
 pip install -r requirements.txt
-
-# 3. Configurar variables de entorno (API Keys para servicios en la nube)
+```
+ 
+### 3. Configuración de API Keys (Servicios en la Nube)
+ 
+Para habilitar las capacidades avanzadas de búsqueda y el LLM de respaldo, configura tus variables de entorno:
+ 
+```bash
 cp .env.example .env
-# editar .env con las claves de Gemini u otros servicios
-
-# 4. Iniciar la interfaz gráfica
+```
+ 
+Abre el archivo `.env` y añade tu clave generada en Google AI Studio:
+ 
+```
+GEMINI_API_KEY=tu_clave_aqui
+```
+ 
+### 4. Ejecución del Asistente
+ 
+Una vez configurado Ollama en segundo plano y las dependencias instaladas, inicia la interfaz gráfica:
+ 
+```bash
 python launcher.py
 ```
 
