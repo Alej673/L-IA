@@ -1,5 +1,5 @@
 import json
-import database
+import core.database as database
 
 # =============================================================================
 # BLOQUES ESTÁTICOS

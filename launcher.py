@@ -7,9 +7,9 @@ import queue
 import pystray
 from PIL import Image, ImageDraw
 import sys
-import cerebro
-import database
-import voz
+import core.cerebro as cerebro
+import core.database as database
+import core.voz as voz
 # ==========================================
 # TEMA / PALETA DE COLORES (Catppuccin Mocha)
 # Centralizado acá para no repetir hex codes por todo el archivo.

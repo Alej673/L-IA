@@ -43,11 +43,11 @@ def _bd_temporal():
         if mod in sys.modules:
             del sys.modules[mod]
 
-    import database
+    import core.database as database
     database.DB_NAME = tmp_db
     database.inicializar_base_datos()
 
-    import prompt_builder as prompt_builder
+    import core.prompt_builder as prompt_builder
     return database, prompt_builder
 
 
@@ -191,7 +191,7 @@ def test_prompt_real():
         print(f"⚠️  [Casos de ruta 'Nube' se omitirán] {motivo_gemini}")
 
     database, prompt_builder = _bd_temporal()
-    import cerebro
+    import core.cerebro as cerebro
 
     # Casos representativos: cada uno debe enrutar a una ruta esperada
     # y la respuesta debe cumplir el formato exigido por el prompt.

@@ -8,7 +8,7 @@ Uso:
 """
 
 import re
-import tools
+import core.tools as tools
 
 def simular_interceptor(titulo_ventana_simulado):
     print(f"\n{'='*60}")

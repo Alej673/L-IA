@@ -4,8 +4,8 @@ import os
 # 1. Agregar la raíz del proyecto al path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from memoria_rag import MemoriaRAG
-from tools import leer_archivo_local
+from core.memoria_rag import MemoriaRAG
+from core.tools import leer_archivo_local
 
 ruta_archivo = r"C:\Users\ACER\Desktop\Documentos\Proyecto de IA\documentos\LIA_Documentacion_Unificada.docx"
 nombre_doc = "LIA_Documentacion_Unificada.docx"

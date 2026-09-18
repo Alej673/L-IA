@@ -7,16 +7,16 @@ from dotenv import load_dotenv
 from google import genai
 from mss import MSS
 from PIL import Image
-import prompt_builder
-import database
-import tools
-import apis
+import core.prompt_builder as prompt_builder
+import core.database as database
+import core.tools as tools
+import core.apis as apis
 import ollama
 import difflib
-import contexto
-import voz
+import core.contexto as contexto
+import core.voz as voz
 import queue
-from memoria_rag import MemoriaRAG
+from core.memoria_rag import MemoriaRAG
 memoria_rag = MemoriaRAG()
 
 # ==========================================
