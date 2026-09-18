@@ -1,0 +1,11 @@
+body {
+  background-color: #050a14;
+  color: #00ffff;
+  margin: 0;
+  font-family: 'Consolas', 'Courier New', monospace;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  overflow: hidden;
+}
