@@ -1,10 +1,18 @@
 import sqlite3
 import json
+import os
 from datetime import datetime
 
-# Nombre del archivo de base de datos local
-DB_NAME = "lia_memory.db"
+# 1. Calculamos la ruta absoluta de la carpeta raíz del proyecto (L-IA)
+# Como este archivo está en L-IA/core/database.py, subimos un nivel para llegar a la raíz
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 2. Obligamos a que la base de datos viva SIEMPRE dentro de la carpeta "data"
+DATA_DIR = os.path.join(BASE_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True) # Crea la carpeta data si no existe
+
+# 3. Ruta absoluta e inamovible de la base de datos
+DB_NAME = os.path.join(DATA_DIR, "lia_memory.db")
 
 def obtener_conexion():
     """Establece una conexión con la base de datos SQLite."""

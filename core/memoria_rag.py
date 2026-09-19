@@ -1,10 +1,17 @@
 import os
 import chromadb
 
+# Calculamos la raíz del proyecto y apuntamos a la carpeta data
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+
 class MemoriaRAG:
     def __init__(self, db_path="lia_chroma_db"):
-        # Crea la base de datos persistente en la carpeta del proyecto
-        ruta_absoluta = os.path.join(os.getcwd(), db_path)
+        # 1. Asegurar que la carpeta data exista
+        os.makedirs(DATA_DIR, exist_ok=True)
+        
+        # 2. Forzar a ChromaDB a crearse DENTRO de data/
+        ruta_absoluta = os.path.join(DATA_DIR, db_path)
         self.cliente = chromadb.PersistentClient(path=ruta_absoluta)
         
         # Colección principal para tu documentación técnica
