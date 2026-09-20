@@ -1037,11 +1037,24 @@ def _ejecutar_guardado_git(msg_lower, callback_ui=None):
         descripcion_commit=descripcion
     )
 
-    return (
-        f"Intenté guardar los cambios en {ruta}.\n"
-        f"Le propuse este título: '{titulo}'.\n"
-        f"El resultado de la operación fue:\n{resultado}"
-    )
+    # Damos formato Markdown dependiendo de si el usuario autorizó o bloqueó
+    if "🚫" in resultado or "Error" in resultado or "falló" in resultado.lower():
+        return (
+            f"🛑 **Operación Git Interrumpida**\n\n"
+            f"**Directorio:** `{ruta}`\n\n"
+            f"**Reporte del Sistema:**\n> {resultado}"
+        )
+    else:
+        # Limpiamos un poco el resultado para que encaje perfecto en el bloque de código
+        resultado_limpio = resultado.replace("✅ Cambios guardados y subidos exitosamente.", "").strip()
+        
+        return (
+            f"✅ **Operación Git Completada**\n\n"
+            f"**Directorio sincronizado:**\n`{ruta}`\n\n"
+            f"**Mensaje de Commit:**\n*{titulo}*\n\n"
+            f"**📝 Detalles del Sistema:**\n"
+            f"```text\n{resultado_limpio}\n```"
+        )
 
 
 def _procesar_workspace_fase_7(mensaje_real, msg_lower, fijar: bool):

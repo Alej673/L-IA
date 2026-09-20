@@ -153,7 +153,27 @@ function App() {
         <div className="chat-terminal">
           {mensajes.map((msg, idx) => (
             <div key={idx} className={`burbuja-mensaje ${msg.rol}`}>
-              <div className="remitente">{msg.rol === 'ia' ? '> L-IA:' : msg.rol === 'sistema' ? '> SYS:' : '> TÚ:'}</div>
+
+              {/* --- NUEVA CABECERA CON ETIQUETAS --- */}
+              <div className="remitente" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                <span>{msg.rol === 'ia' ? '> L-IA:' : msg.rol === 'sistema' ? '> SYS:' : '> TÚ:'}</span>
+
+                {/* ETIQUETA DE MODELO (Local, Nube, Dolphin) */}
+                {msg.rol === 'ia' && msg.origen && (
+                  <span className={`badge-origen ${msg.origen.toLowerCase()}`}>
+                    {msg.origen.toUpperCase()}
+                  </span>
+                )}
+
+                {/* ETIQUETA DE DOCUMENTO ACTIVO */}
+                {msg.rol === 'ia' && msg.documento && (
+                  <span className="badge-doc">
+                    📄 {msg.documento}
+                  </span>
+                )}
+              </div>
+              {/* ---------------------------------- */}
+
               <div className="contenido-markdown">
                 {msg.rol === 'ia' ? (
                   <ReactMarkdown>{msg.texto}</ReactMarkdown>

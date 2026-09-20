@@ -327,3 +327,48 @@
   box-shadow: 0 0 20px rgba(0, 255, 255, 0.6);
   transform: translateY(-2px);
 }
+
+/* ==============================
+   ETIQUETAS HOLOGRÁFICAS (HUD)
+   ============================== */
+.badge-origen, .badge-doc {
+  font-size: 9px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-family: 'Consolas', monospace;
+  font-weight: bold;
+  letter-spacing: 1px;
+  white-space: nowrap;
+  box-shadow: 0 0 10px rgba(0,0,0,0.5);
+}
+
+/* 1. Cerebro Local (Gemma 2) -> Cyan */
+.badge-origen.local {
+  background: rgba(0, 255, 255, 0.1);
+  color: #00ffff;
+  border: 1px solid #00ffff;
+}
+
+/* 2. Cerebro Nube (Gemini) -> Morado */
+.badge-origen.nube {
+  background: rgba(170, 0, 255, 0.1);
+  color: #c44dff;
+  border: 1px solid #c44dff;
+}
+
+/* 3. Cerebro Sin Censura (Dolphin) -> Rojo Táctico */
+.badge-origen.dolphin {
+  background: rgba(255, 0, 85, 0.1);
+  color: #ff0055;
+  border: 1px solid #ff0055;
+}
+
+/* 4. Etiqueta del Documento Activo -> Naranja/Dorado */
+.badge-doc {
+  background: rgba(255, 170, 0, 0.1);
+  color: #ffaa00;
+  border: 1px solid rgba(255, 170, 0, 0.6);
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

@@ -25,14 +25,21 @@ def obtener_ventana_activa(titulo_excluir="L-IA Asistente"):
     try:
         ventanas = gw.getAllWindows()
 
-        ventanas_basura = [
+        # Lista 1: Coincidencia EXACTA (Si se llama exactamente así, se ignora)
+        ventanas_basura_exactas = [
+            "L-IA",  # <-- Ahora solo ignorará el HUD de Tauri
             titulo_excluir,
-            "QA OSD", "Program Manager", "NVIDIA GeForce Overlay",
+            "Program Manager",
+            "Taskbar"
+        ]
+
+        # Lista 2: Coincidencia PARCIAL (Si contiene este texto, se ignora)
+        ventanas_basura_parciales = [
+            "QA OSD", "NVIDIA GeForce Overlay",
             "NVIDIA ShadowPlay Helper", "Windows Default Lock Screen",
-            "Taskbar", "Configuración", "Settings",
+            "Configuración", "Settings",
             "Experiencia de entrada de Windows", "Windows Input Experience",
             "Zoom", "Zoom Workplace",
-            # --- CAPTURA DE PANTALLA WINDOWS ---
             "Barra de herramientas de grabación",
             "Grabación de pantalla",
             "Herramienta Recortes",
@@ -43,8 +50,17 @@ def obtener_ventana_activa(titulo_excluir="L-IA Asistente"):
         for v in ventanas:
             titulo = v.title.strip()
 
-            if titulo and v.visible and not v.isMinimized and not any(basura in titulo for basura in ventanas_basura):
+            if titulo and v.visible and not v.isMinimized:
+                
+                # 1. Filtro Exacto
+                if titulo in ventanas_basura_exactas:
+                    continue
+                
+                # 2. Filtro Parcial
+                if any(basura in titulo for basura in ventanas_basura_parciales):
+                    continue
 
+                # Si pasó ambos filtros, es la ventana válida (Ej: VS Code)
                 titulo_limpio = titulo
                 extension_inferida = None
 
@@ -52,14 +68,12 @@ def obtener_ventana_activa(titulo_excluir="L-IA Asistente"):
                     if sufijo in titulo_limpio:
                         titulo_limpio = titulo_limpio.replace(sufijo, "")
                         extension_inferida = ext
-                        break  # un solo sufijo de app por título, no hace falta seguir
+                        break  # un solo sufijo de app por título
 
                 titulo_limpio = titulo_limpio.replace(" [Modo de compatibilidad]", "")
                 titulo_limpio = titulo_limpio.strip()
 
-                # Si detectamos una extensión real y el título no la tiene
-                # ya puesta (evita duplicar si el usuario nombró el archivo
-                # "informe.docx" y Word lo muestra tal cual), se la pegamos.
+                # Agregar extensión si no la tiene
                 if extension_inferida and not titulo_limpio.lower().endswith(extension_inferida):
                     titulo_limpio = f"{titulo_limpio}{extension_inferida}"
 
