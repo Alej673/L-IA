@@ -781,8 +781,7 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
         except Exception as e:
             return f"❌ Error en el cerebro local: {e}"
 
-        # Restauramos el system prompt real para lo que sigue (ejecución
-        # de la herramienta y/o la respuesta final con personalidad).
+        # Restauramos obligatoriamente el System Prompt original con personalidad y reglas
         mensajes[0]['content'] = instrucciones_sistema
 
         if not llamada_manual:
@@ -790,9 +789,11 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
                 f"⚠️ [L-IA Local] Se esperaba JSON de herramienta pero no se pudo extraer. "
                 f"Contenido crudo del modelo: {contenido_bruto[:300]!r}"
             )
-            # No hubo forma de extraer la herramienta: seguimos igual hacia
-            # el streaming de abajo con los mensajes originales, para que
-            # al menos conteste algo en vez de cortar la conversación en seco.
+            # Limpiamos el historial temporal de este intento fallido para que el streaming hable limpio
+            mensajes = [
+                {'role': 'system', 'content': instrucciones_sistema},
+                {'role': 'user', 'content': contexto_historico}
+            ]
         else:
             accion = llamada_manual.get("accion")
             kwargs_herramienta = {}
@@ -809,10 +810,13 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
                 print(f"✅ [Sistema: {resultado}]")
 
                 prompt_bozal = _generar_prompt_bozal(accion, resultado)
-                mensajes.extend([
+                # Reconstruimos limpio con system original + historial + respuesta assistant + bozal
+                mensajes = [
+                    {'role': 'system', 'content': instrucciones_sistema},
+                    {'role': 'user', 'content': contexto_historico},
                     {'role': 'assistant', 'content': contenido_bruto},
                     {'role': 'user', 'content': prompt_bozal}
-                ])
+                ]
 
     # ==================================================================
     # PASO 2: RESPUESTA FINAL CON STREAMING + VOZ (pipeline compartido)

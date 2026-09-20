@@ -13,13 +13,11 @@
     "windows": [
       {
         "title": "L-IA",
-        "width": 800,
-        "height": 600,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
+        "width": 450,
+        "height": 700,
         "resizable": false,
-        "visible": false
+        "decorations": false,
+        "transparent": true
       }
     ],
     "security": {

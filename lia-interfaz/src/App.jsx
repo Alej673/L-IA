@@ -1,23 +1,62 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Mic, Paperclip, Terminal, Cpu, Database, Upload } from 'lucide-react'
+import { Mic, Paperclip, Terminal, Cpu, Database, Upload, AlertTriangle } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
 import './App.css'
-import { useEffect } from 'react'
-import { getCurrentWindow } from '@tauri-apps/api/window'
-import { register, isRegistered } from '@tauri-apps/plugin-global-shortcut'
 
 function App() {
   const [estadoLIA, setEstadoLIA] = useState('reposo') 
   const [input, setInput] = useState('')
   const [isDragging, setIsDragging] = useState(false)
+  const [escuchando, setEscuchando] = useState(false)
   const [mensajes, setMensajes] = useState([
     { rol: 'ia', texto: 'L-IA v3.2.0 inicializada. Esperando directivas...' }
   ])
 
-  // Ajuste de colores: cyan (reposo), naranja (procesando texto), magenta (procesando RAG)
+  const finalDelChatRef = useRef(null)
+  const archivoInputRef = useRef(null)
+
+  // NUEVO ESTADO DEL SEMÁFORO
+  const [semaforo, setSemaforo] = useState({ activa: false, herramienta: '', argumentos: '' })
+
+  useEffect(() => {
+    finalDelChatRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [mensajes])
+
   const colorNucleo = estadoLIA === 'reposo' ? '#00ffff' : estadoLIA === 'procesando' ? '#ffaa00' : estadoLIA === 'procesando_rag' ? '#ff00ff' : '#ff3300'
 
-  // --- 1. COMUNICACIÓN DE TEXTO CON FASTAPI ---
+  // NUEVO: Vigía del Semáforo
+  useEffect(() => {
+    let intervalo;
+    // Solo vigila si L-IA está pensando (procesando)
+    if (estadoLIA === 'procesando') {
+      intervalo = setInterval(async () => {
+        try {
+          const res = await fetch("http://127.0.0.1:8000/semaforo")
+          const data = await res.json()
+          if (data.activa && !semaforo.activa) {
+            setSemaforo(data)
+          }
+        } catch (e) { console.error("Error de semáforo", e) }
+      }, 1000) // Pregunta cada 1 segundo
+    }
+    return () => clearInterval(intervalo)
+  }, [estadoLIA, semaforo.activa])
+
+  // NUEVA: Función para responder al semáforo
+  const responderSemaforo = async (autorizado) => {
+    try {
+      await fetch("http://127.0.0.1:8000/semaforo/responder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autorizado })
+      })
+      setSemaforo({ activa: false, herramienta: '', argumentos: '' })
+    } catch (e) {
+      console.error("Fallo al enviar decisión al núcleo")
+    }
+  }
+
   const manejarEnvio = async (e) => {
     e.preventDefault()
     if (!input.trim()) return
@@ -25,7 +64,7 @@ function App() {
     const textoUsuario = input
     setMensajes(prev => [...prev, { rol: 'usuario', texto: textoUsuario }])
     setInput('')
-    setEstadoLIA('procesando') // El núcleo cambia a naranja y gira rápido
+    setEstadoLIA('procesando')
 
     try {
       const respuesta = await fetch("http://127.0.0.1:8000/chat", {
@@ -36,147 +75,107 @@ function App() {
       const data = await respuesta.json()
       setMensajes(prev => [...prev, data])
     } catch (error) {
-      setMensajes(prev => [...prev, { rol: 'sistema', texto: '[ERROR] No se pudo establecer enlace con el núcleo local.' }])
+      setMensajes(prev => [...prev, { rol: 'sistema', texto: '[ERROR] Fallo de enlace con núcleo.' }])
     } finally {
       setEstadoLIA('reposo')
     }
   }
 
-  // --- 2. COMUNICACIÓN DE ARCHIVOS (RAG) CON FASTAPI ---
-  const manejarDragOver = (e) => {
-    e.preventDefault()
-    if (!isDragging) setIsDragging(true)
-  }
-
-  const manejarDragLeave = (e) => {
-    e.preventDefault()
-    setIsDragging(false)
-  }
-
-  const manejarDrop = async (e) => {
-    e.preventDefault()
-    setIsDragging(false)
-    
-    const archivos = e.dataTransfer.files
-    if (archivos.length > 0) {
-      const archivo = archivos[0]
-      setEstadoLIA('procesando_rag') // El núcleo cambia a magenta
-      setMensajes(prev => [...prev, { rol: 'sistema', texto: `[SISTEMA] Transfiriendo ${archivo.name} al motor vectorial...` }])
-
-      // Usamos FormData para enviar archivos binarios a la API
-      const formData = new FormData()
-      formData.append("archivo", archivo)
-
-      try {
-        const respuesta = await fetch("http://127.0.0.1:8000/ingestar", {
-          method: "POST",
-          body: formData
-        })
-        const data = await respuesta.json()
-        setMensajes(prev => [...prev, { rol: 'ia', texto: data.mensaje }])
-      } catch (error) {
-        setMensajes(prev => [...prev, { rol: 'sistema', texto: '[ERROR] Fallo en la transferencia de datos al módulo RAG.' }])
-      } finally {
-        setEstadoLIA('reposo')
-      }
+  const procesarArchivoRAG = async (archivo) => {
+    setEstadoLIA('procesando_rag')
+    setMensajes(prev => [...prev, { rol: 'sistema', texto: `[SISTEMA] Ingestando ${archivo.name}...` }])
+    const formData = new FormData()
+    formData.append("archivo", archivo)
+    try {
+      const respuesta = await fetch("http://127.0.0.1:8000/ingestar", { method: "POST", body: formData })
+      const data = await respuesta.json()
+      setMensajes(prev => [...prev, { rol: 'ia', texto: data.mensaje }])
+    } catch (error) {
+      setMensajes(prev => [...prev, { rol: 'sistema', texto: '[ERROR] Fallo en RAG.' }])
+    } finally {
+      setEstadoLIA('reposo')
     }
   }
 
+  const manejarDragOver = (e) => { e.preventDefault(); if (!isDragging) setIsDragging(true) }
+  const manejarDragLeave = (e) => { e.preventDefault(); setIsDragging(false) }
+  const manejarDrop = (e) => { e.preventDefault(); setIsDragging(false); if (e.dataTransfer.files.length > 0) procesarArchivoRAG(e.dataTransfer.files[0]) }
+  const manejarClickArchivo = () => archivoInputRef.current?.click()
+  const manejarSeleccionArchivo = (e) => { if (e.target.files.length > 0) procesarArchivoRAG(e.target.files[0]); e.target.value = null }
+
+  // MICRÓFONO SILENCIOSO: Solo cambia estado visual y (a futuro) llama a la API, no ensucia el chat
+  const manejarMicrofono = () => {
+    setEscuchando(!escuchando)
+    // fetch("http://127.0.0.1:8000/microfono", { method: "POST", body: JSON.stringify({ estado: !escuchando }) })
+  }
+
   return (
-    <div 
-      className="hud-container"
-      onDragOver={manejarDragOver}
-      onDragLeave={manejarDragLeave}
-      onDrop={manejarDrop}
-    >
-      {/* CAPA HOLOGRÁFICA DE ARRASTRE */}
+    <div className="hud-container" onDragOver={manejarDragOver} onDragLeave={manejarDragLeave} onDrop={manejarDrop}>
+      
+      {/* EL NUEVO MODAL DEL SEMÁFORO */}
       <AnimatePresence>
-        {isDragging && (
+        {semaforo.activa && (
           <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            style={{
-              position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-              background: 'rgba(255, 0, 255, 0.1)',
-              backdropFilter: 'blur(8px)',
-              border: '2px dashed #ff00ff',
-              zIndex: 50, display: 'flex', flexDirection: 'column',
-              justifyContent: 'center', alignItems: 'center', color: '#ff00ff'
-            }}
+            className="modal-overlay"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
           >
-            <Upload size={64} style={{ marginBottom: '20px' }} />
-            <h2>SUELTA EL ARCHIVO PARA INGESTAR EN EL SEGUNDO CEREBRO</h2>
+            <motion.div 
+              className="modal-semaforo"
+              initial={{ scale: 0.8, y: 50 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.8, opacity: 0 }}
+              transition={{ type: "spring", bounce: 0.5 }}
+            >
+              <AlertTriangle color="#ff0055" size={50} style={{ marginBottom: '10px' }} />
+              <h3 style={{ color: '#ff0055', margin: '0 0 15px 0', letterSpacing: '2px' }}>ALERTA NIVEL 2</h3>
+              <p style={{ color: '#fff', fontSize: '14px', marginBottom: '10px' }}>L-IA requiere autorización crítica para ejecutar:</p>
+              
+              <div className="codigo-alerta">{semaforo.herramienta}</div>
+              <p style={{ color: '#fff', fontSize: '14px', margin: '15px 0 10px 0' }}>Argumentos detectados:</p>
+              <div className="codigo-alerta">{semaforo.argumentos}</div>
+
+              <div className="botones-alerta">
+                <button className="btn-denegar" onClick={() => responderSemaforo(false)}>ABORTAR</button>
+                <button className="btn-autorizar" onClick={() => responderSemaforo(true)}>AUTORIZAR</button>
+              </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      <div className="panel lateral">
-        <h4 className="hud-title">SYSTEM_METRICS</h4>
-        <div className="modulo-stat">
-          <Cpu size={16} color="#00ffff" />
-          <span>CPU USAGE</span>
-          <div className="barra-progreso"><div className="fill" style={{width: '45%'}}></div></div>
-        </div>
-        <div className="modulo-stat">
-          <Database size={16} color="#00ffff" />
-          <span>VRAM ALLOC</span>
-          <div className="barra-progreso"><div className="fill" style={{width: '80%', background: '#ff00ff'}}></div></div>
-        </div>
-      </div>
-
       <div className="panel central">
+        {/* NÚCLEO ESTÁTICO (NO HACE SCROLL) */}
         <div className="nucleo-wrapper">
-          <motion.div 
-            className="anillo-exterior"
-            style={{ borderColor: colorNucleo }}
-            animate={{ rotate: 360 }}
-            transition={{ repeat: Infinity, duration: estadoLIA === 'reposo' ? 10 : 1.5, ease: "linear" }}
-          />
-          <motion.div 
-            className="anillo-interior"
-            style={{ borderColor: colorNucleo }}
-            animate={{ scale: [1, 1.1, 1] }}
-            transition={{ repeat: Infinity, duration: estadoLIA === 'reposo' ? 2 : 0.5 }}
-          />
+          <motion.div className="anillo-exterior" style={{ borderColor: colorNucleo }} animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: estadoLIA === 'reposo' ? 10 : 1.5, ease: "linear" }} />
+          <motion.div className="anillo-interior" style={{ borderColor: colorNucleo }} animate={{ scale: [1, 1.1, 1] }} transition={{ repeat: Infinity, duration: estadoLIA === 'reposo' ? 2 : 0.5 }} />
           <div className="centro-nucleo" style={{ background: colorNucleo, boxShadow: `0 0 20px ${colorNucleo}` }} />
         </div>
 
-        <div className="chat-terminal" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        {/* ZONA EXCLUSIVA DE SCROLL */}
+        <div className="chat-terminal">
           {mensajes.map((msg, idx) => (
-            <div key={idx} style={{ 
-              color: msg.rol === 'sistema' ? '#ff00ff' : msg.rol === 'usuario' ? '#fff' : '#00ffff',
-              opacity: msg.rol === 'sistema' ? 0.8 : 1,
-              alignSelf: msg.rol === 'usuario' ? 'flex-end' : 'flex-start',
-              background: msg.rol === 'usuario' ? 'rgba(0, 255, 255, 0.1)' : 'transparent',
-              padding: msg.rol === 'usuario' ? '5px 10px' : '0',
-              borderRadius: '5px'
-            }}>
-              {msg.rol === 'ia' ? '> L-IA: ' : msg.rol === 'usuario' ? '' : '> '}{msg.texto}
+            <div key={idx} className={`burbuja-mensaje ${msg.rol}`}>
+              <div className="remitente">{msg.rol === 'ia' ? '> L-IA:' : msg.rol === 'sistema' ? '> SYS:' : '> TÚ:'}</div>
+              <div className="contenido-markdown">
+                {msg.rol === 'ia' ? (
+                  <ReactMarkdown>{msg.texto}</ReactMarkdown>
+                ) : (
+                  msg.texto
+                )}
+              </div>
             </div>
           ))}
+          <div ref={finalDelChatRef} />
         </div>
 
+        {/* CONTROLES ESTÁTICOS (NO HACEN SCROLL) */}
         <form onSubmit={manejarEnvio} className="controles-input">
-          <button type="button" className="hud-btn"><Paperclip size={18} /></button>
-          <input 
-            type="text" 
-            className="hud-input" 
-            placeholder="Ingresa comando..."
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-          />
+          <input type="file" ref={archivoInputRef} style={{ display: 'none' }} onChange={manejarSeleccionArchivo} />
+          <button type="button" className="hud-btn" onClick={manejarClickArchivo}><Paperclip size={18} /></button>
+          <button type="button" className="hud-btn" onClick={manejarMicrofono} style={{ color: escuchando ? '#ff0055' : '#00ffff', boxShadow: escuchando ? 'inset 0 0 10px rgba(255,0,85,0.5)' : '' }}>
+            <Mic size={18} />
+          </button>
+          <input type="text" className="hud-input" placeholder="Ingresa comando..." value={input} onChange={(e) => setInput(e.target.value)} />
           <button type="submit" className="hud-btn animado"><Terminal size={18} /></button>
         </form>
-      </div>
-
-      <div className="panel lateral">
-        <h4 className="hud-title">ACTIVE_MODULES</h4>
-        <div className="lista-modulos">
-          <div className="etiqueta-modulo on" style={{ color: estadoLIA === 'procesando_rag' ? '#ff00ff' : '#00ffff' }}>CHROMA_DB</div>
-          <div className="etiqueta-modulo on">OLLAMA_SERVER</div>
-          <div className="etiqueta-modulo off">EDGE_TTS</div>
-        </div>
       </div>
     </div>
   )

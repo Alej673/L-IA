@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import shutil
 import os
+import threading
 
 # Importaciones del núcleo
 from core.cerebro import charlar_con_lia
@@ -22,26 +23,59 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- VARIABLES GLOBALES DEL SEMÁFORO ---
+esperando_autorizacion = threading.Event()
+autorizacion_concedida = False
+alerta_actual = None
+
 class MensajeUsuario(BaseModel):
     texto: str
 
+class RespuestaSemaforo(BaseModel):
+    autorizado: bool
+
+# --- ENDPOINTS DEL SEMÁFORO PARA REACT ---
+@app.get("/semaforo")
+async def verificar_semaforo():
+    """React llama aquí cada segundo para ver si L-IA está pausada esperando permiso"""
+    if alerta_actual:
+        return {"activa": True, "herramienta": alerta_actual["herramienta"], "argumentos": alerta_actual["argumentos"]}
+    return {"activa": False}
+
+@app.post("/semaforo/responder")
+async def responder_semaforo(respuesta: RespuestaSemaforo):
+    """React llama aquí cuando el usuario hace clic en Autorizar o Denegar"""
+    global autorizacion_concedida
+    autorizacion_concedida = respuesta.autorizado
+    esperando_autorizacion.set() # 🔓 Baja la barrera y deja que Python continúe
+    return {"status": "ok"}
+
 @app.post("/chat")
-async def recibir_chat(mensaje: MensajeUsuario):
+def recibir_chat(mensaje: MensajeUsuario): # <-- ELIMINAMOS 'async' DE ESTA LÍNEA
     entrada = mensaje.texto
     print(f"\n[Usuario] -> {entrada}")
     
     def stream_consola(fragmento):
         print(fragmento, end="", flush=True)
 
-    def permiso_consola(herramienta, argumentos):
-        print(f"\n[ALERTA DE SEGURIDAD] L-IA intenta ejecutar Nivel 2: {herramienta}")
-        print(f"Argumentos: {argumentos}")
-        return False
+    def permiso_interfaz(herramienta, argumentos):
+        global alerta_actual, autorizacion_concedida
+        alerta_actual = {"herramienta": herramienta, "argumentos": str(argumentos)}
+        esperando_autorizacion.clear()
+        
+        print(f"\n[SEMÁFORO] Esperando autorización del usuario para: {herramienta}...")
+        
+        # Al ser una función 'def' (no async), este wait() pausa un hilo secundario
+        # y deja al servidor principal libre para responderle al frontend.
+        esperando_autorizacion.wait() 
+        
+        alerta_actual = None
+        return autorizacion_concedida
 
     try:
         respuesta, origen = charlar_con_lia(
             entrada,
-            callback_ui=permiso_consola,
+            callback_ui=permiso_interfaz,
             callback_stream=stream_consola
         )
         return {"rol": "ia", "texto": respuesta, "origen": origen}
