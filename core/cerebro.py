@@ -1,23 +1,73 @@
-import os
-import time
+"""
+core/cerebro.py — Enrutador principal de L-IA.
+
+Flujo de cada mensaje (ver `charlar_con_lia`):
+    1. Interceptores de contexto: leen archivos, portapapeles, Git, clima,
+       calendario, hora, ventana activa y memoria técnica (RAG), e inyectan
+       lo que encuentren en el contexto del turno.
+    2. Semáforo (`_elegir_ruta`): según intención y tamaño del contexto,
+       decide entre Local (Gemma 2), Dolphin (sin filtros) o la Nube
+       (Gemini Flash / Pro).
+    3. La ruta elegida genera la respuesta en streaming; el pipeline de voz
+       (`_generar_respuesta_con_voz`) la transmite a la GUI y, si está
+       activado, la lee en voz alta.
+
+Módulos pesados (`core.voz`, `core.memoria_rag`) NO se importan aquí arriba:
+se cargan bajo demanda (ver sección 0.5) para que el arranque sea instantáneo.
+"""
+# --- Librería estándar ---
+import difflib
 import json
+import os
+import queue
 import re
+import subprocess
 import threading
+import time
+
+# --- Terceros ---
+import ollama
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
 from mss import MSS
 from PIL import Image
+
+# --- Módulos propios (ligeros) ---
 import core.prompt_builder as prompt_builder
 import core.database as database
 import core.tools as tools
 import core.apis as apis
-import ollama
-import difflib
 import core.contexto as contexto
-import core.voz as voz
-import queue
-from core.memoria_rag import MemoriaRAG
-memoria_rag = MemoriaRAG()
+
+# ==========================================
+# 0.5 CARGA PEREZOSA (LAZY LOADING) DE MÓDULOS PESADOS
+# ==========================================
+# `core.memoria_rag` (ChromaDB + embeddings) y `core.voz` (Edge TTS / Whisper)
+# reservan RAM/VRAM en el instante de importarse. Si se importaran en la
+# cabecera, ese costo se pagaría en CADA arranque, aunque el usuario solo
+# chatee por texto. Por eso se cargan bajo demanda, la primera vez que una
+# ruta los necesita:
+#   - RAG: mediante `_obtener_rag()`, que crea una instancia única.
+#   - Voz: mediante un import local dentro de `_generar_respuesta_con_voz`.
+_memoria_rag_instancia = None
+_rag_lock = threading.Lock()
+
+
+def _obtener_rag():
+    """Devuelve la instancia única de MemoriaRAG, creándola en el primer uso.
+
+    El lock con doble chequeo evita que dos hilos inicialicen ChromaDB a la vez.
+    """
+    global _memoria_rag_instancia
+    if _memoria_rag_instancia is None:
+        with _rag_lock:
+            if _memoria_rag_instancia is None:
+                print("🧠 [Despertando Segundo Cerebro (ChromaDB) por primera vez...]")
+                from core.memoria_rag import MemoriaRAG
+                _memoria_rag_instancia = MemoriaRAG()
+    return _memoria_rag_instancia
+
 
 # ==========================================
 # 1. CONFIGURACIÓN INICIAL Y SEMÁFORO
@@ -38,7 +88,9 @@ MODELO_UNCENSORED = 'dolphin-mistral'  # Especialista sin filtros (solo bajo dem
 MODELO_NUBE_FLASH = 'gemini-3.7-flash' # Analista rápido (visión, web, contexto medio)
 MODELO_NUBE_PRO = 'gemini-3.1-pro'     # Artillería pesada (contexto enorme / análisis profundo)
 
-# Memoria de "en qué proyecto estamos parados" entre turnos de conversación.
+# Ruta del proyecto/repositorio sobre el que se está trabajando. Persiste entre
+# turnos para que un "¿qué cambió?" sin ruta explícita reutilice el último
+# proyecto mencionado (lo actualizan _procesar_git y _ejecutar_guardado_git).
 PROYECTO_ACTIVO_ACTUAL = None
 
 # ==========================================
@@ -50,21 +102,21 @@ def estimar_tokens(texto: str) -> int:
         return 0
     return len(texto) // 4
 
-LIMITE_TOKENS_CASUAL = 4000
-LIMITE_TOKENS_CODIGO = 3000
-LIMITE_TOKENS_FLASH = 30000
+# Umbrales del Semáforo (en tokens estimados del contexto total). Local corre
+# en una GPU de 6 GB, así que cuanto más contexto, más lento y más VRAM usa.
+LIMITE_TOKENS_CASUAL = 4000    # Conversación normal: por encima, se pasa a la Nube (Flash).
+LIMITE_TOKENS_CODIGO = 3000    # El código consume más contexto útil: umbral más estricto.
+LIMITE_TOKENS_FLASH = 30000    # Por encima de esto, Flash se queda corto: entra Pro.
 
-# --- NUEVO: techo de seguridad SOLO para la Nube ---
-# No es un recorte "por las dudas" como el [:15000] viejo: es un límite
-# de cordura para no mandarle a la API un archivo de, digamos, 50 MB y
-# reventar la llamada o gastar la cuota gratuita en una sola petición.
-# Gemini 3.7/3.x Pro soporta contexto enorme (millones de tokens), así
-# que este techo es deliberadamente MUY generoso comparado con
-# LIMITE_TOKENS_FLASH/CASUAL/CODIGO -- el Semáforo ya decidió mandarlo a
-# la Nube precisamente porque el doc no entra en Local; esto solo evita
-# el caso extremo de un archivo verdaderamente descomunal.
+# Techo de seguridad SOLO para la Nube. No recorta "por desconfianza": evita
+# que un archivo descomunal (decenas de MB) reviente la petición o gaste la
+# cuota gratuita de golpe. Es deliberadamente muy superior a los límites de
+# Local/Flash, porque el Semáforo ya manda a la Nube justo lo que no cabe en
+# Local; Gemini Pro admite contextos de millones de tokens.
 LIMITE_TOKENS_NUBE_MAXIMO = 250_000
 
+# Frases que fuerzan el modelo Pro, sin importar el tamaño del contexto.
+# Se comparan como subcadena sobre el mensaje en minúsculas.
 _FRASES_ANALISIS_PROFUNDO = (
     "análisis profundo",
     "analisis profundo",
@@ -77,12 +129,15 @@ _FRASES_ANALISIS_PROFUNDO = (
 )
 
 # ------------------------------------------
-# "Semáforo" de intenciones — v3 (raíz + exclusiones, más conjugaciones)
+# Detección de intenciones — Semáforo v3
 # ------------------------------------------
+# Cada intención se define por RAÍCES de verbos/sustantivos (para cubrir todas
+# sus conjugaciones) y, si hace falta, una lista de EXCLUSIONES: palabras
+# completas que empiezan igual pero significan otra cosa ("abril" vs "abr-ir").
 def _construir_patron(raices, excluir=None):
-    """
-    Arma un regex que atrapa cualquier conjugación de una lista de raíces
-    excluyendo palabras COMPLETAS que se parecen pero no son la acción.
+    """Compila un regex que reconoce cualquier conjugación de las `raices`
+    (ej. "abr" -> abre, abrir, abriendo), descartando las palabras COMPLETAS
+    de `excluir` que se parecen pero no expresan la acción (ej. "abril").
     """
     alternativas = "|".join(raices)
     if not excluir:
@@ -156,89 +211,83 @@ _EXCLUSIONES = {
         "procesión", "procesiones",
     ],
     "codigo": [
-        "mejoramiento", "mejoramientos", "rendimiento" # <-- Agrega rendimiento
+        "mejoramiento", "mejoramientos", "rendimiento"  # hablan del sistema o de mejoras genéricas, no de código
     ],
     "clima": [
         "temperamento", "temperamentos", "temperamental",
     ],
 }
 
+# Regex compilado por intención (raíces + exclusiones). Más abajo se le
+# suman patrones de frase completa que no encajan en el esquema de raíces.
 PATRONES_CLAVE = {
     clave: _construir_patron(raices, _EXCLUSIONES.get(clave))
     for clave, raices in _RAICES.items()
 }
 
+# estado_pc: además de las raíces, acepta frases como "estado de mi pc" y
+# términos sueltos inequívocos (cpu, ram, llama-server).
 PATRONES_CLAVE["estado_pc"] = re.compile(
     PATRONES_CLAVE["estado_pc"].pattern + 
     r'|\b(estado|rendimiento|consumo|diagn[oó]stico)\s+(del?\s+|de\s+la\s+|mi\s+|de\s+mi\s+)?(pc|sistema|compu|cpu|ram|memoria|máquina|laptop)\b|\b(cpu|ram|bater[ií]a|llama-server)\b',
     re.IGNORECASE
 )
+# web: suma frases naturales como "quién ganó" o "busca en internet".
 PATRONES_CLAVE["web"] = re.compile(
     PATRONES_CLAVE["web"].pattern
     + r'|(qui[eé]n\s+gan[oó]|acerca\s+de|busc\w*\s+en\s+(internet|la\s+web|google))',
     re.IGNORECASE
 )
 
+# hora: pregunta directa por hora/fecha; se resuelve con la API local, sin LLM externo.
 PATRONES_CLAVE["hora"] = re.compile(
     r'\b(qu[eé]\s+hora|hora\s+es|hor[ai]\s+actual|fecha\s+de\s+hoy|qu[eé]\s+d[ií]a\s+es)\b',
     re.IGNORECASE
 )
 
+# uncensored: solo se activa con orden explícita del usuario (nunca por defecto).
 PATRONES_CLAVE["uncensored"] = re.compile(
     r'\bdolphin\b|sin\s+censura|sin\s+filtros|modo\s+rebelde|asume\s+el\s+control',
     re.IGNORECASE
 )
 
+# git: consulta de solo lectura (status + últimos commits).
 PATRONES_CLAVE["git"] = re.compile(
     r'\b(git|repositorio|repo|commits?|cambios en git)\b',
     re.IGNORECASE
 )
 
+# guardar_git: orden de ESCRIBIR (add + commit + push). Pide permiso en la GUI.
 PATRONES_CLAVE["guardar_git"] = re.compile(
     r'\b(guard\w*|sub[ei]\w*|hacer|haz|crea\w*|comite\w*|registr\w*)\b.*?\b(commit|cambio\w*|repo|c[oó]digo)\b',
     re.IGNORECASE
 )
 
-# Gatillo para despertar la autoconciencia de L-IA
+# guia_capacidades: preguntas sobre qué puede hacer L-IA; activa la nota de
+# autoconocimiento generada en la sección 1.6.
 PATRONES_CLAVE["guia_capacidades"] = re.compile(
     r'\b(qu[eé]\s+puedes\s+hacer|qu[eé]\s+sabes\s+hacer|c[oó]mo\s+me\s+puedes\s+ayudar|tus\s+capacidades|tus\s+funciones|c[oó]mo\s+funcionas|qu[eé]\s+le\s+puedo\s+pedir|qu[eé]\s+te\s+puedo\s+pedir|ay[uú]dame\s+a\s+usarte|gu[ií]ame|manual\s+de\s+usuario|qu[eé]\s+opciones\s+tengo)\b',
     re.IGNORECASE
 )
 
 # ------------------------------------------
-# NUEVO — Ingesta al Segundo Cerebro (RAG)
+# Ingesta al Segundo Cerebro (RAG)
 # ------------------------------------------
-# Se define como un patrón propio (no una raíz más en _RAICES) porque las
-# palabras clave ("memoriza", "aprende", "asimila") son deliberadamente
-# distintas de las de "memoria_tecnica" (que sirve para CONSULTAR lo ya
-# guardado). Este patrón es para GUARDAR contenido nuevo. Exigimos que
-# venga acompañado de "este/esta/el <archivo|documento|...>" para no
-# disparar con frases sueltas como "memoriza esto que te digo" (que no
-# apunta a un archivo de la ventana activa).
+# Patrón propio (no una raíz de _RAICES): sus verbos ("memoriza", "aprende",
+# "asimila") sirven para GUARDAR contenido, a diferencia de "memoria_tecnica",
+# que sirve para CONSULTAR lo ya guardado. Exige "este/esta/el <archivo|
+# documento|...>" para no dispararse con frases sueltas como "memoriza esto
+# que te digo", que no apuntan a un archivo de la ventana activa.
 PATRONES_CLAVE["memorizar_documento"] = re.compile(
     r'\b(memoriza|aprende|asimila|guarda\s+en\s+tu\s+memoria|ingesta)\s+(este|esta|el)\s+(archivo|documento|texto|pdf|docx|c[oó]digo|manual)\b',
     re.IGNORECASE
 )
 
-def _detectar_intenciones(mensaje_lower: str) -> dict:
-    intenciones = {
-        clave: bool(patron.search(mensaje_lower))
-        for clave, patron in PATRONES_CLAVE.items()
-    }
-    
-    # Señales de código por SINTAXIS
-    if not intenciones.get("codigo") and re.search(r'\$\w+|\bfunction\s|[{};]', mensaje_lower):
-        intenciones["codigo"] = True
-
-    # --- NUEVO FILTRO ANTI-COLISIÓN ---
-    # Si detectamos que el usuario quiere ver el hardware explícitamente,
-    # apagamos 'codigo' para que verbos como "revisa" o "analiza" no estorben.
-    if intenciones.get("estado_pc"):
-        intenciones["codigo"] = False
-
-    return intenciones
-
-# Fase 7: Comando manual para el Workspace Activo
+# ------------------------------------------
+# Workspace activo y lectura implícita (Fase 7)
+# ------------------------------------------
+# fijar_workspace / limpiar_workspace: comandos manuales para anclar (o soltar)
+# el archivo o proyecto sobre el que se trabaja, y recordarlo entre turnos.
 PATRONES_CLAVE["fijar_workspace"] = re.compile(
     r'\b(estoy\s+trabajando\s+en|fija\s+el\s+contexto\s+en|abre\s+el\s+proyecto|mira\s+el\s+archivo|resume\s+este\s+otro\s+archivo|cambia\s+a\s+este\s+archivo)\b',
     re.IGNORECASE
@@ -249,6 +298,10 @@ PATRONES_CLAVE["limpiar_workspace"] = re.compile(
     re.IGNORECASE
 )
 
+# Referencias a "este archivo / este documento / resume esto": el usuario se
+# refiere a lo que tiene abierto en pantalla, no a una ruta escrita. No es una
+# intención del semáforo (por eso no vive en PATRONES_CLAVE): la usa
+# `charlar_con_lia` para activar la lectura automática de la ventana activa.
 PATRON_LECTURA_IMPLICITA = re.compile(
     r'\b(este|esta)\s+(archivo|documento|c[oó]digo|texto)\b'
     r'|\b(del|de\s+la|el|la)\s+(archivo|documento|c[oó]digo|texto)\s+que\s+(estoy|tengo)\s+\w+'
@@ -256,6 +309,27 @@ PATRON_LECTURA_IMPLICITA = re.compile(
     r'|\bres[uú]m\w*\s+esto\b',
     re.IGNORECASE
 )
+
+def _detectar_intenciones(mensaje_lower: str) -> dict:
+    """Devuelve {intención: bool} evaluando todos los patrones sobre el mensaje
+    en minúsculas, y aplica dos correcciones cruzadas (sintaxis de código y
+    colisión con hardware)."""
+    intenciones = {
+        clave: bool(patron.search(mensaje_lower))
+        for clave, patron in PATRONES_CLAVE.items()
+    }
+    
+    # Un mensaje con sintaxis de código ($variable, function, llaves o ;) cuenta
+    # como intención de código aunque no use ninguna palabra clave.
+    if not intenciones.get("codigo") and re.search(r'\$\w+|\bfunction\s|[{};]', mensaje_lower):
+        intenciones["codigo"] = True
+
+    # Anti-colisión: "revisa la batería" contiene un verbo de código ("revis"),
+    # pero si además pide hardware explícito, gana estado_pc.
+    if intenciones.get("estado_pc"):
+        intenciones["codigo"] = False
+
+    return intenciones
 
 # ==========================================
 # 1.6 GUÍA DE CAPACIDADES (Fase 8)
@@ -268,6 +342,8 @@ _DESCRIPCIONES_CAPACIDADES = {
     "abrir_app":         "abrir aplicaciones, carpetas o proyectos por nombre o alias que le enseñes",
     "estado_pc":         "revisar el estado de tu hardware: CPU, RAM, batería y qué procesos consumen más",
     "portapapeles":      "leer y analizar lo que tengas copiado en el portapapeles",
+    "hora":              "decirte la hora y la fecha actual al instante, sin tener que abrir nada",
+    "rutinas":           "activar una rutina de entorno completa con una sola frase (ej. 'vamos a trabajar'), abriendo de golpe las apps que sueles usar juntas",
     "codigo":            "analizar, depurar, revisar o refactorizar código que le compartas",
     "web":               "buscar información actual en internet cuando su conocimiento no alcanza",
     "clima":             "consultar el clima de cualquier ciudad",
@@ -392,7 +468,13 @@ def _cargar_rutas_personalizadas() -> dict:
         return {}
 
 def _encontrar_ruta_inteligente(mensaje_lower, rutas_conocidas):
-    # Agregamos "archivo" y "documento" a las palabras ignoradas
+    """Intenta deducir a qué ruta conocida se refiere el mensaje.
+
+    Devuelve (alias_o_nombre, ruta) o (None, None). Prueba, en orden, de la
+    más a la menos estricta: alias exacto -> nombre de archivo -> coincidencia
+    aproximada (difflib) -> archivo en la carpeta actual sin extensión.
+    """
+    # Se quitan palabras de relleno para que no interfieran al comparar con alias.
     mensaje_limpio = re.sub(r'\b(mi|el|la|de|carpeta|proyecto|repositorio|repo|archivo|documento|doc)\b', '', mensaje_lower).strip()
 
     # 1. Búsqueda exacta por alias (ej. "taller" -> "C:\Proyectos\ERP_Taller")
@@ -402,10 +484,9 @@ def _encontrar_ruta_inteligente(mensaje_lower, rutas_conocidas):
 
     palabras = mensaje_limpio.split()
     
-    # 2. Búsqueda Inversa Inteligente (Basename match)
-    # Busca si el usuario nombró directamente el archivo de una ruta conocida
+    # 2. Búsqueda inversa por nombre de archivo (basename): el usuario nombró
+    #    el archivo (con o sin extensión) en vez del alias registrado.
     for ruta in rutas_conocidas.values():
-        import os
         nombre_archivo = os.path.basename(ruta).lower()
         nombre_sin_ext = os.path.splitext(nombre_archivo)[0]
         
@@ -413,7 +494,7 @@ def _encontrar_ruta_inteligente(mensaje_lower, rutas_conocidas):
             if len(palabra) > 2 and (palabra == nombre_sin_ext or palabra == nombre_archivo):
                 return nombre_archivo, ruta
 
-    # 3. Fuzzy Matching Original
+    # 3. Coincidencia aproximada (difflib) contra los alias: tolera errores de tipeo
     for palabra in palabras:
         if len(palabra) < 3:
             continue
@@ -422,9 +503,8 @@ def _encontrar_ruta_inteligente(mensaje_lower, rutas_conocidas):
             alias_encontrado = coincidencias[0]
             return alias_encontrado, rutas_conocidas[alias_encontrado]
             
-    # 4. Escáner de Extensiones Huérfanas (Fuzzy Extensions)
-    # Si detecta el nombre, pero le falta la extensión (.docx, .php, .cpp, etc.)
-    import os
+    # 4. Extensiones huérfanas: el usuario dio el nombre sin extensión, así que
+    #    se prueban las extensiones comunes en la carpeta de ejecución actual.
     extensiones_comunes = ['.docx', '.php', '.cpp', '.h', '.js', '.css', '.html', '.pdf', '.txt']
     
     for palabra in palabras:
@@ -504,58 +584,74 @@ def _generar_prompt_bozal(nombre_herramienta: str, resultado: str) -> str:
 # ==========================================
 # 3. PIPELINE DE VOZ + STREAMING COMPARTIDO
 # ==========================================
-# Antes esta lógica (dos hilos productor-consumidor: uno sintetiza con
-# Edge TTS, otro reproduce con pygame) vivía SOLO dentro de
-# responder_con_local (Gemma2). Por eso Gemini (Nube) y Dolphin (sin
-# censura) nunca hablaban ni transmitían en vivo a la GUI: devolvían el
-# texto completo de una sola vez, sin pasar por ningún pipeline.
-#
-# Ahora esta función es la ÚNICA fuente de verdad para "hablar mientras
-# se transmite texto". Recibe un generador de fragmentos de texto (no
-# importa si son tokens reales de streaming o frases ya completas) y se
-# encarga de: acumular la respuesta completa, avisarle a la GUI fragmento
-# a fragmento vía callback_stream, y mandar cada frase a sintetizar +
-# reproducir en pipeline, igual que antes.
-HABLAR_RESPUESTA = False  # Switch maestro: El Launcher lo enciende si le hablaste por micro
+# `_generar_respuesta_con_voz` es la ÚNICA fuente de verdad para "transmitir
+# texto y, opcionalmente, hablarlo". Las tres rutas (Local, Dolphin y Nube) la
+# usan, así que todas se comportan igual: acumula la respuesta completa,
+# avisa a la GUI fragmento a fragmento (callback_stream) y, si la voz está
+# activa, manda cada oración a un pipeline de síntesis + reproducción.
+HABLAR_RESPUESTA = False  # Switch maestro: el launcher lo enciende si le hablaste por micrófono.
+
 
 def _generar_respuesta_con_voz(generador_texto, callback_stream=None):
-    """
-    Recorre el generador de texto, transmite a la GUI y, SI el switch
-    HABLAR_RESPUESTA está encendido, manda las oraciones a un pipeline
-    de dos hilos: uno sintetiza (Edge TTS -> mp3) y otro reproduce,
-    para que mientras suena la frase N, la N+1 ya se esté generando.
+    """Consume un generador de texto, lo transmite a la GUI y, si la voz está
+    activa, lo lee en voz alta frase por frase.
+
+    El generador puede producir tokens sueltos (streaming real) o frases ya
+    completas (ver `_dividir_en_fragmentos_hablables`); da igual.
+
+    Con la voz activa hay dos hilos en cadena:
+        sintetizador (Edge TTS -> .mp3)  ->  reproductor (pygame)
+    Mientras suena la frase N, la N+1 ya se está sintetizando, así que la
+    latencia de red del TTS queda oculta detrás del audio.
     """
     respuesta_completa = ""
     bloque_actual = ""
+    hablar = HABLAR_RESPUESTA
 
-    if HABLAR_RESPUESTA:
+    if hablar:
+        try:
+            # Carga perezosa: `voz` solo entra en memoria si realmente se habla.
+            # Se importa aquí (hilo principal) y no dentro de los hilos: si
+            # fallara, un error dentro de un hilo daemon pasaría en silencio
+            # y `join()` se quedaría esperando para siempre.
+            import core.voz as voz
+        except Exception as e:
+            print(f"⚠️ [Voz no disponible, continúo solo con texto: {e}]")
+            hablar = False
+
+    if hablar:
         cola_texto = queue.Queue()   # frases pendientes de sintetizar
-        cola_audio = queue.Queue()   # archivos .mp3 ya listos, pendientes de sonar
+        cola_audio = queue.Queue()   # .mp3 listos, pendientes de reproducir
 
         def hilo_sintetizador():
-            """SOLO sintetiza. Nunca reproduce. Corre en paralelo al
-            reproductor, así el tiempo de red de Edge TTS de la frase N+1
-            queda escondido detrás del tiempo que tarda en sonar la N."""
+            """Solo sintetiza. `None` es la señal de cierre y se propaga al reproductor."""
             while True:
                 frase = cola_texto.get()
                 if frase is None:
-                    cola_audio.put(None)  # avisa al reproductor: no viene nada más
+                    cola_audio.put(None)
                     cola_texto.task_done()
                     break
-                ruta = voz.sintetizar_a_archivo(frase)
+                try:
+                    ruta = voz.sintetizar_a_archivo(frase)
+                except Exception as e:
+                    # Una frase fallida no debe romper la cadena: se omite y se sigue.
+                    print(f"⚠️ [TTS falló en una frase: {e}]")
+                    ruta = None
                 if ruta:
                     cola_audio.put(ruta)
                 cola_texto.task_done()
 
         def hilo_reproductor():
-            """SOLO reproduce archivos ya sintetizados, en orden, uno a la
-            vez. Nunca llama a Edge TTS ni bloquea la síntesis de nadie."""
+            """Solo reproduce, en orden y de a un archivo. Nunca toca Edge TTS."""
             while True:
                 ruta = cola_audio.get()
                 if ruta is None:
                     cola_audio.task_done()
                     break
-                voz.reproducir_archivo(ruta)
+                try:
+                    voz.reproducir_archivo(ruta)
+                except Exception as e:
+                    print(f"⚠️ [Reproducción falló: {e}]")
                 cola_audio.task_done()
 
         t_sintetizador = threading.Thread(target=hilo_sintetizador, daemon=True)
@@ -576,34 +672,36 @@ def _generar_respuesta_con_voz(generador_texto, callback_stream=None):
         if callback_stream:
             callback_stream(fragmento_entrante)
 
-        if HABLAR_RESPUESTA and any(puntuacion in fragmento_entrante for puntuacion in PUNTUACION_CORTE):
+        # Se manda a sintetizar al cerrar una oración; los bloques de <=15
+        # caracteres se siguen acumulando para no producir audios entrecortados.
+        if hablar and any(p in fragmento_entrante for p in PUNTUACION_CORTE):
             fragmento = bloque_actual.strip()
             if len(fragmento) > 15:
                 cola_texto.put(fragmento)
                 bloque_actual = ""
 
-    if HABLAR_RESPUESTA:
-        fragmento_final = bloque_actual.strip()
-        if len(fragmento_final) > 2:
-            cola_texto.put(fragmento_final)
-        cola_texto.put(None)          # cierra el sintetizador...
+    if hablar:
+        resto = bloque_actual.strip()
+        if len(resto) > 2:
+            cola_texto.put(resto)
+        cola_texto.put(None)      # cierra el sintetizador, que a su vez cierra al reproductor
         t_sintetizador.join()
-        t_reproductor.join()          # ...que en cadena cierra al reproductor
+        t_reproductor.join()
 
     print()
     return respuesta_completa
 
+
+# Corta tras . ? ! o salto de línea (usa un lookbehind, así que la puntuación se conserva).
 _PATRON_DIVISION_ORACIONES = re.compile(r'(?<=[\.\?\!\n])\s*')
 
 
 def _dividir_en_fragmentos_hablables(texto):
-    """
-    Convierte un texto YA COMPLETO (que llegó de una sola vez, como las
-    respuestas no-streaming de Gemini) en un generador de oraciones, para
-    poder reutilizar _generar_respuesta_con_voz también en esos casos.
-    Sin esto, todo el texto se trataría como un solo fragmento gigante y
-    la voz intentaría sintetizarlo de un tirón en vez de hablar frase por
-    frase como en las rutas que sí transmiten en vivo.
+    """Convierte un texto YA COMPLETO (como las respuestas sin streaming de
+    Gemini) en un generador de oraciones, para reutilizar
+    `_generar_respuesta_con_voz` también en ese caso. Sin esto, todo el texto
+    sería un único fragmento gigante y la voz lo sintetizaría de un tirón en
+    vez de hablar frase por frase.
     """
     if not texto:
         return
@@ -620,7 +718,30 @@ def leer_repositorio_git(ruta_repo: str) -> str:
     """
     Obtiene el estado de Git (git status) y los últimos commits de una carpeta local.
     """
-    pass  # Solo está aquí para que Gemini lea el nombre y el parámetro. El Cerebro interceptará la llamada.
+    # Stub: existe solo para que el SDK exponga su nombre, docstring y
+    # parámetros a Gemini como herramienta. Nunca se ejecuta de verdad: el
+    # Cerebro intercepta la llamada y la despacha con _ejecutar_herramienta_segura.
+    pass
+
+
+def _manejar_error_nube(e: Exception, intento: int, max_reintentos: int, espera: int):
+    """
+    Interpreta una excepción de la API de Gemini y decide qué hacer:
+      - Devuelve un str: ese es el mensaje final, hay que cortar y devolverlo.
+      - Devuelve None: es un error transitorio (503/UNAVAILABLE) y todavía
+        quedan reintentos, así que ya se durmió `espera` segundos y el
+        llamador debe seguir con el siguiente intento del for.
+    Se comparte entre las dos rutas de responder_con_nube (búsqueda web y
+    herramientas locales) para no duplicar la misma lógica de reintentos.
+    """
+    if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+        return "🛑 [L-IA Nube]: Límite de la API gratuita alcanzado. Espera 1 minuto."
+    if "503" in str(e) or "UNAVAILABLE" in str(e):
+        if intento < max_reintentos - 1:
+            time.sleep(espera)
+            return None
+        return "🛑 [L-IA Nube]: Imposible conectar. Servidores de Google saturados."
+    return f"❌ Error crítico en la Nube: {e}"
 
 
 def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, buscar_web=False,
@@ -640,25 +761,63 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
         imagen_en_ram = tomar_captura_en_memoria()
         contenidos_api.insert(0, imagen_en_ram)
 
-    if buscar_web:
-        print("🌐 [Activando módulo de búsqueda en internet de Google...]")
-        herramientas_activas = [{"google_search": {}}]
-    else:
-        herramientas_activas = [tools.abrir_aplicacion, leer_repositorio_git]
-
     max_reintentos = 3
     espera = 4
 
+    # ------------------------------------------------------------
+    # CASO 1: búsqueda web (google_search)
+    # ------------------------------------------------------------
+    # `google_search` es una herramienta de "grounding" que Google resuelve
+    # por completo de su lado: el modelo nunca devuelve un function_call que
+    # nosotros deban ejecutar o autorizar por el semáforo. Por eso aquí se
+    # puede transmitir en streaming real desde el primer token, sin el paso
+    # previo de detección que necesitan las herramientas locales (CASO 2).
+    if buscar_web:
+        print("🌐 [Activando módulo de búsqueda en internet de Google...]")
+        for intento in range(max_reintentos):
+            try:
+                print("\n🤖 L-IA (Nube, streaming real desde el primer token)...")
+                stream = client.models.generate_content_stream(
+                    model=modelo_nube,
+                    contents=contenidos_api,
+                    config={"tools": [{"google_search": {}}]}
+                )
+                generador = (chunk.text for chunk in stream if chunk.text)
+                return _generar_respuesta_con_voz(generador, callback_stream=callback_stream)
+            except Exception as e:
+                resultado = _manejar_error_nube(e, intento, max_reintentos, espera)
+                if resultado is not None:
+                    return resultado
+                espera *= 2
+        return "🛑 [L-IA Nube]: No se pudo completar la búsqueda web."
+
+    # ------------------------------------------------------------
+    # CASO 2: posibles herramientas locales (abrir apps, leer Git)
+    # ------------------------------------------------------------
+    # Estas herramientas SÍ pueden requerir autorización del usuario (semáforo),
+    # así que hay que ver la llamada ANTES de que se ejecute.
+    #
+    # Se desactiva el Automatic Function Calling (AFC) del SDK. Con AFC activo,
+    # el SDK ejecuta él mismo la función Python apenas el modelo la pide y se
+    # salta el semáforo de permisos (`callback_ui` / `gestor_permisos`).
+    # Desactivado, `response.function_calls` siempre llega intacto y decidimos
+    # nosotros si se ejecuta.
+    herramientas_activas = [tools.abrir_aplicacion, leer_repositorio_git]
+    config_deteccion = types.GenerateContentConfig(
+        tools=herramientas_activas,
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+    )
+
     for intento in range(max_reintentos):
         try:
-            # PASO 1: llamada normal (sin streaming) SOLO para poder
-            # detectar de forma confiable si Gemini quiere ejecutar una
-            # herramienta. Los tool-calls no llegan bien fragmentados en
-            # modo streaming, así que la detección se queda como estaba.
+            # PASO 1: llamada SIN streaming, solo para detectar de forma fiable si
+            # Gemini quiere ejecutar una herramienta (los tool-calls no llegan
+            # bien fragmentados en modo streaming). Aplica igual a Flash y a
+            # Pro: solo cambia el nombre del modelo.
             response = client.models.generate_content(
                 model=modelo_nube,
                 contents=contenidos_api,
-                config={"tools": herramientas_activas}
+                config=config_deteccion,
             )
 
             if response.function_calls:
@@ -675,9 +834,9 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
                 prompt_bozal = _generar_prompt_bozal(llamada.name, resultado_sistema)
                 contenidos_api.append(prompt_bozal)
 
-                # PASO 2: la respuesta final en lenguaje natural (después de
-                # ejecutar la herramienta) SÍ va con streaming real, para
-                # que la voz y la GUI se comporten igual que en Local.
+                # PASO 2: con la herramienta ya ejecutada, la respuesta final en
+                # lenguaje natural SÍ va con streaming real, para que voz y GUI
+                # se comporten igual que en Local.
                 print("\n🤖 L-IA (Nube, hablando en bloques)...")
                 stream = client.models.generate_content_stream(
                     model=modelo_nube,
@@ -686,25 +845,21 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
                 generador = (chunk.text for chunk in stream if chunk.text)
                 return _generar_respuesta_con_voz(generador, callback_stream=callback_stream)
 
-            # Sin tool-call: la respuesta ya es la final. Como se pidió sin
-            # streaming (para poder chequear function_calls primero), la
-            # troceamos en oraciones y la pasamos igual por el pipeline de
-            # voz, para que hable en bloques en vez de todo de un tirón.
+            # Sin tool-call: la llamada del PASO 1 ya trajo la respuesta completa.
+            # Se reutiliza ese texto (troceado en oraciones para hablar en
+            # bloques) en vez de pedir una segunda respuesta en streaming, lo
+            # que duplicaría costo y latencia en cada mensaje casual.
             print("\n🤖 L-IA (Nube, hablando en bloques)...")
             generador = _dividir_en_fragmentos_hablables(response.text)
             return _generar_respuesta_con_voz(generador, callback_stream=callback_stream)
 
         except Exception as e:
-            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                return "🛑 [L-IA Nube]: Límite de la API gratuita alcanzado. Espera 1 minuto."
-            elif "503" in str(e) or "UNAVAILABLE" in str(e):
-                if intento < max_reintentos - 1:
-                    time.sleep(espera)
-                    espera *= 2
-                else:
-                    return "🛑 [L-IA Nube]: Imposible conectar. Servidores de Google saturados."
-            else:
-                return f"❌ Error crítico en la Nube: {e}"
+            resultado = _manejar_error_nube(e, intento, max_reintentos, espera)
+            if resultado is not None:
+                return resultado
+            espera *= 2
+
+    return "🛑 [L-IA Nube]: No se pudo completar la respuesta."
 
 
 # ==========================================
@@ -730,14 +885,8 @@ def _extraer_llamada_manual(texto):
 
     return None
 
-
 def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir, quiere_estado,
                          callback_ui=None, callback_stream=None):
-    # callback_stream(fragmento: str): se llama por cada trozo de texto que
-    # se va generando, ANTES de que la función termine. Es lo que le
-    # permite a interfaz_lia.py pintar la respuesta en vivo en la burbuja,
-    # en vez de esperar el `return` final. Si es None (ej. llamado desde
-    # consola sin GUI), simplemente no se usa y todo sigue igual.
     print(f"\n[🏠 Enrutando al Cerebro Local ({MODELO_LOCAL})...]")
 
     requiere_herramienta = quiere_abrir or quiere_estado
@@ -747,49 +896,49 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
         {'role': 'user', 'content': contexto_historico}
     ]
 
+    # Configuración de inferencia optimizada para GPU de 6 GB
+    opciones_ollama = {
+        'temperature': 0.7,
+        'top_p': 0.9,
+    }
+
     # ==========================================================
     # PASO 1: SI HACE FALTA HERRAMIENTA, DETECTARLA Y EJECUTARLA
     # ==========================================================
-    # IMPORTANTE: esta rama solo prepara `mensajes`; el streaming+voz de
-    # abajo se ejecuta SIEMPRE, haya habido herramienta o no.
     if requiere_herramienta:
         instrucciones_finales = "Eres un generador de JSON estricto. NUNCA uses texto conversacional. "
         if quiere_abrir:
             instrucciones_finales += (
                 'Formato EXACTO: {"accion": "abrir_aplicacion", "nombres_apps": "<nombres>"}. '
-                'INCORRECTO (nunca hagas esto): [abrir_aplicacion "<nombres>"] ni ningún otro formato '
-                'con corchetes, texto explicativo o markdown. Responde ÚNICAMENTE el JSON, nada más.'
+                'Responde ÚNICAMENTE el JSON, nada más.'
             )
         if quiere_estado:
             instrucciones_finales += (
                 'Formato EXACTO: {"accion": "obtener_estado_sistema"}. '
-                'INCORRECTO (nunca hagas esto): [obtener_estado_sistema] ni ningún otro formato '
-                'con corchetes, texto explicativo o markdown. Responde ÚNICAMENTE el JSON, nada más.'
+                'Responde ÚNICAMENTE el JSON, nada más.'
             )
 
         mensajes[0]['content'] = instrucciones_finales
 
         try:
+            t_inicio_tool = time.perf_counter()
             response = ollama.chat(
                 model=MODELO_LOCAL,
                 messages=mensajes,
                 format='json',
-                options={'num_gpu': 31, 'temperature': 0.1}
+                options={'temperature': 0.1}
             )
+            t_fin_tool = time.perf_counter()
+            print(f"⏱️ [Tool Check JSON]: {t_fin_tool - t_inicio_tool:.2f}s")
+            
             contenido_bruto = response['message']['content']
             llamada_manual = _extraer_llamada_manual(contenido_bruto)
         except Exception as e:
             return f"❌ Error en el cerebro local: {e}"
 
-        # Restauramos obligatoriamente el System Prompt original con personalidad y reglas
         mensajes[0]['content'] = instrucciones_sistema
 
         if not llamada_manual:
-            print(
-                f"⚠️ [L-IA Local] Se esperaba JSON de herramienta pero no se pudo extraer. "
-                f"Contenido crudo del modelo: {contenido_bruto[:300]!r}"
-            )
-            # Limpiamos el historial temporal de este intento fallido para que el streaming hable limpio
             mensajes = [
                 {'role': 'system', 'content': instrucciones_sistema},
                 {'role': 'user', 'content': contexto_historico}
@@ -810,7 +959,6 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
                 print(f"✅ [Sistema: {resultado}]")
 
                 prompt_bozal = _generar_prompt_bozal(accion, resultado)
-                # Reconstruimos limpio con system original + historial + respuesta assistant + bozal
                 mensajes = [
                     {'role': 'system', 'content': instrucciones_sistema},
                     {'role': 'user', 'content': contexto_historico},
@@ -819,18 +967,44 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
                 ]
 
     # ==================================================================
-    # PASO 2: RESPUESTA FINAL CON STREAMING + VOZ (pipeline compartido)
+    # PASO 2: RESPUESTA FINAL CON STREAMING + TELEMETRÍA EXACTA
     # ==================================================================
     try:
-        print("\n🤖 L-IA (Pensando y hablando en bloques)...")
+        print("\n🤖 L-IA (Pensando y transmitiendo en tiempo real)...")
+        t_inicio = time.perf_counter()
+        primer_token = True
+        conteo_tokens = [0]
+        t_primer_token = [0.0]
+
         response_stream = ollama.chat(
             model=MODELO_LOCAL,
             messages=mensajes,
-            options={'num_gpu': 31},
+            options=opciones_ollama,
             stream=True
         )
-        generador = (chunk['message']['content'] for chunk in response_stream)
-        return _generar_respuesta_con_voz(generador, callback_stream=callback_stream)
+
+        def generador_con_telemetria():
+            nonlocal primer_token
+            for chunk in response_stream:
+                token = chunk['message']['content']
+                if token:
+                    if primer_token:
+                        t_primer_token[0] = time.perf_counter() - t_inicio
+                        primer_token = False
+                    conteo_tokens[0] += 1
+                    yield token
+
+        resultado = _generar_respuesta_con_voz(generador_con_telemetria(), callback_stream=callback_stream)
+
+        t_total = time.perf_counter() - t_inicio
+        t_generacion_pura = t_total - t_primer_token[0]
+        velocidad = (conteo_tokens[0] / t_generacion_pura) if t_generacion_pura > 0 else 0
+
+        print(f"\n📊 [Telemetría Local]: Primer Token: {t_primer_token[0]:.2f}s | "
+              f"Tokens: {conteo_tokens[0]} | Tiempo Total: {t_total:.2f}s | "
+              f"Velocidad: {velocidad:.1f} t/s")
+
+        return resultado
 
     except Exception as e:
         return f"❌ Error en el cerebro local: {e}"
@@ -996,7 +1170,6 @@ def _ejecutar_guardado_git(msg_lower, callback_ui=None):
     ruta = PROYECTO_ACTIVO_ACTUAL
     print(f"\n🧠 [L-IA analizando código en '{ruta}' para crear el commit...]")
 
-    import subprocess
     try:
         status = subprocess.run(['git', 'status', '--short'], cwd=ruta, capture_output=True, text=True, encoding='utf-8').stdout
 
@@ -1156,22 +1329,16 @@ def _procesar_archivo(ruta_o_nombre, contexto_historico):
 
 
 # ==========================================
-# 6.5 INTERCEPTOR — INGESTA AL SEGUNDO CEREBRO (NUEVO)
+# 6.5 INTERCEPTOR — INGESTA AL SEGUNDO CEREBRO
 # ==========================================
-# A diferencia de _procesar_archivo (que sólo mete el contenido en el
-# contexto de ESTE turno para que el modelo lo lea una vez), esta función
-# manda el texto a memoria_rag para que quede vectorizado PARA SIEMPRE
-# en ChromaDB. Vive en su propia sección porque es un flujo de "escritura"
-# permanente, no de "lectura" efímera, aunque ambas reusan
-# contexto.obtener_ventana_activa() y tools.leer_archivo_local() para no
-# duplicar la detección del archivo activo.
-#
-# IMPORTANTE: revisa que el nombre del método de abajo
-# (memoria_rag.procesar_y_guardar) coincida EXACTO con el método real que
-# tengas implementado en memoria_rag.py. Si tu clase MemoriaRAG usa otro
-# nombre (ej. "agregar_documento", "ingestar", etc.), cambia sólo esa
-# línea; el resto del interceptor no depende de cómo se llame.
+# A diferencia de `_procesar_archivo` (que solo mete el contenido en el
+# contexto de ESTE turno), aquí el texto se guarda PARA SIEMPRE en ChromaDB:
+# es una escritura permanente, no una lectura efímera. Por eso vive aparte,
+# aunque reutiliza `contexto.obtener_ventana_activa()` y
+# `tools.leer_archivo_local()` para no duplicar la detección del archivo.
 def _procesar_ingesta_documento(callback_ui=None):
+    """Vectoriza en el Segundo Cerebro el archivo de la ventana activa y
+    devuelve el mensaje de confirmación (o de error) para el usuario."""
     ventana_actual = contexto.obtener_ventana_activa()
     print(f"\n🧠 [Aprendizaje] Escaneando ventana para ingesta: '{ventana_actual}'")
 
@@ -1204,16 +1371,23 @@ def _procesar_ingesta_documento(callback_ui=None):
 
     texto_a_vectorizar = resultado["contenido"]
 
-    # Nombre real confirmado en memoria_rag.py: indexar_documento(texto_completo, nombre_origen).
-    # Internamente fragmenta el texto en chunks de ~600 caracteres (con
+    # `indexar_documento` fragmenta el texto en chunks de ~600 caracteres (con
     # solapamiento de 100) y los guarda en la colección "documentos_tecnicos"
-    # de ChromaDB, cada uno con el nombre de archivo como metadato "origen"
-    # -- el mismo campo que luego lee _procesar memoria_tecnica al armar el
-    # bloque de contexto RAG para las consultas.
-    cantidad_fragmentos = memoria_rag.indexar_documento(
-        texto_completo=texto_a_vectorizar,
-        nombre_origen=nombre_archivo
-    )
+    # de ChromaDB, cada uno con el nombre del archivo como metadato "origen"
+    # (el mismo campo que lee el bloque de memoria_tecnica al armar el RAG).
+    # `_obtener_rag()` puede tardar la primera vez (carga ChromaDB) y podría
+    # fallar, así que se protege para responder con un mensaje claro.
+    try:
+        cantidad_fragmentos = _obtener_rag().indexar_documento(
+            texto_completo=texto_a_vectorizar,
+            nombre_origen=nombre_archivo
+        )
+    except Exception as e:
+        print(f"❌ [Ingesta] Falló la vectorización de '{nombre_archivo}': {e}")
+        return (
+            f"No pude memorizar '{nombre_archivo}': el Segundo Cerebro (ChromaDB) "
+            f"no respondió. Revisa la consola para ver el detalle."
+        )
 
     return (
         f"Asimilación completa. Procesé '{nombre_archivo}' y lo dividí en {cantidad_fragmentos} "
@@ -1226,6 +1400,15 @@ def _procesar_ingesta_documento(callback_ui=None):
 # 7. SEMÁFORO v3 — DECISIÓN DE RUTA
 # ==========================================
 def _elegir_ruta(intenciones: dict, msg_lower: str, tokens_totales: int):
+    """Decide dónde se responde. Devuelve (ruta, modelo_nube_o_None).
+
+    Orden de prioridad (el primero que aplique gana):
+      1. Contexto enorme o petición de análisis profundo -> Nube / Pro.
+      2. Visión o búsqueda web (solo la Nube puede)      -> Nube / Flash.
+      3. Orden explícita de modo sin filtros             -> Dolphin (si cabe en Local).
+      4. Contexto mayor al umbral local                  -> Nube / Flash.
+      5. Todo lo demás                                   -> Local (Gemma 2).
+    """
     es_analisis_profundo = any(frase in msg_lower for frase in _FRASES_ANALISIS_PROFUNDO)
 
     if tokens_totales > LIMITE_TOKENS_FLASH or es_analisis_profundo:
@@ -1251,6 +1434,11 @@ def _elegir_ruta(intenciones: dict, msg_lower: str, tokens_totales: int):
 # 8. ENRUTADOR PRINCIPAL
 # ==========================================
 def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
+    """Punto de entrada de cada mensaje. Devuelve (texto_respuesta, ruta_usada).
+
+    `callback_ui` pide permiso al usuario para herramientas sensibles;
+    `callback_stream` recibe el texto a medida que se genera.
+    """
     database.guardar_mensaje("user", mensaje_usuario)
     
     contexto_historico = prompt_builder.armar_historial_usuario(mensaje_usuario)
@@ -1261,22 +1449,18 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
 
     intenciones = _detectar_intenciones(msg_lower)
 
-    # --- INTERCEPTOR DE APRENDIZAJE AUTOMÁTICO (NUEVO) ---
-    # Se evalúa PRIMERO y con return inmediato, antes que cualquier otro
-    # interceptor (incluido el de lectura implícita de más abajo), porque
-    # es una orden de escritura permanente en el Segundo Cerebro: no debe
-    # mezclarse con el resto del pipeline de contexto/streaming, que está
-    # pensado para lecturas de un solo turno. Al cortar acá con `return`,
-    # el resto de la función (RAG de consulta, rutinas, workspace, Nube,
-    # Local, etc.) directamente no se ejecuta para este mensaje.
+    # --- INTERCEPTOR DE APRENDIZAJE (INGESTA AL SEGUNDO CEREBRO) ---
+    # Es una orden de ESCRITURA permanente, así que se evalúa PRIMERO y corta
+    # con `return`: no debe mezclarse con el pipeline de contexto/streaming,
+    # pensado para lecturas de un solo turno.
     if intenciones.get("memorizar_documento"):
         texto_respuesta = _procesar_ingesta_documento(callback_ui=callback_ui)
         database.guardar_mensaje("model", texto_respuesta)
         print(f"\n🤖 L-IA (Sistema/Ingesta): {texto_respuesta}\n")
         return texto_respuesta, "Local"
 
-    # --- NUEVA PROTECCIÓN PARA EL RAG ---
-    # Evaluamos si el regex atrapó algo, pero le quitamos prioridad si es una consulta técnica
+    # ¿El usuario habla de "este archivo/documento"? Si además pregunta por su
+    # memoria técnica, gana la consulta al RAG y no se lee la ventana.
     intentando_leer_ventana = bool(PATRON_LECTURA_IMPLICITA.search(msg_lower))
     if intenciones.get("memoria_tecnica"):
         intentando_leer_ventana = False
@@ -1314,14 +1498,9 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
 
             # 3. Validamos que ahora sí tengamos el diccionario con el texto
             if isinstance(resultado, dict) and "contenido" in resultado:
-                # --- FIX: YA NO SE TRUNCA ACÁ ---
-                # Antes: f"...{resultado['contenido'][:15000]}..."
-                #
-                # El único tope que queda es LIMITE_TOKENS_NUBE_MAXIMO,
-                # aplicado más abajo, y ESE sí es a propósito: no es un
-                # recorte por desconfianza al tamaño, es un techo de
-                # cordura para no mandarle a la API un archivo absurdamente
-                # gigante (varios MB) en una sola petición.
+                # El contenido llega completo. El único tope es
+                # LIMITE_TOKENS_NUBE_MAXIMO (más abajo): un techo de cordura
+                # contra archivos gigantes, no un recorte por defecto.
                 contenido_completo = resultado['contenido']
 
                 tokens_contenido = estimar_tokens(contenido_completo)
@@ -1369,7 +1548,8 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
     if intenciones["calendario"]:
         contexto_historico = _procesar_calendario(contexto_historico)
 
-    # ✅ BLOQUE CORREGIDO (Sin el if redundante)
+    # Guardar en Git responde directo (no pasa por el LLM); solo consultar Git
+    # inyecta su salida como contexto del turno.
     if intenciones["guardar_git"]:
         texto_respuesta = _ejecutar_guardado_git(msg_lower, callback_ui=callback_ui)
         print(f"\n🤖 L-IA (Local/Git): {texto_respuesta}\n")
@@ -1414,14 +1594,15 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
         intenciones["abrir_app"] = False
         intenciones["codigo"] = False
 
-    # --- INTERCEPTOR (SEGUNDO CEREBRO) ---
+    # --- CONSULTA AL SEGUNDO CEREBRO (RAG) ---
     tipo_intencion_principal = "casual"
     contexto_recuperado = None
 
     if intenciones.get("memoria_tecnica"):
         print("💡 [Semáforo] Consultando Segundo Cerebro (ChromaDB)...")
         
-        # 1. Limpieza de muletillas
+        # 1. Se quitan las muletillas que sirvieron de gatillo ("en tus apuntes",
+        #    "recuerdas", etc.) para que la búsqueda vectorial use solo el tema.
         query_limpia = re.sub(
             r'\b(en\s+tus\s+apuntes|de\s+la\s+bit[aá]cora|en\s+la\s+bit[aá]cora|bit[aá]cora\s+t[eé]cnica|documentaci[oó]n|recuerdas?|segundo\s+cerebro|apuntes?)\b',
             '',
@@ -1430,7 +1611,12 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
         ).strip()
         
         consulta = query_limpia if len(query_limpia) > 5 else msg_lower
-        resultados_rag = memoria_rag.buscar_contexto(consulta, n_resultados=5)
+        try:
+            resultados_rag = _obtener_rag().buscar_contexto(consulta, n_resultados=5)
+        except Exception as e:
+            # Si ChromaDB no carga, se responde sin RAG en vez de romper el turno.
+            print(f"❌ [RAG] No se pudo consultar el Segundo Cerebro: {e}")
+            resultados_rag = None
         
         if resultados_rag and len(resultados_rag['documents'][0]) > 0:
             contexto_recuperado = []
@@ -1457,7 +1643,7 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
 
     # --- FASE 8 — GUÍA DE CAPACIDADES ---
     if intenciones.get("guia_capacidades"):
-        for clave in ("abrir_app", "estado_pc", "git", "guardar_git", "codigo", "web", "vision", "clima", "calendario", "memoria_tecnica", "memorizar_documento"):
+        for clave in ("abrir_app", "estado_pc", "git", "guardar_git", "codigo", "web", "vision", "clima", "calendario", "memoria_tecnica", "memorizar_documento", "hora", "rutinas"):
             intenciones[clave] = False
         contexto_historico += _generar_nota_guia_capacidades()
 
@@ -1469,7 +1655,8 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
         elif intenciones.get("estado_pc"):
             tipo_intencion_principal = "estado_pc"
 
-    # ✅ AHORA SÍ: Construimos el System Prompt pasándole qué detectamos
+    # El System Prompt se construye según el tipo de intención (define el tono
+    # y, en modo RAG, los fragmentos que debe citar).
     instrucciones_sistema = prompt_builder.obtener_instrucciones_sistema(
         intencion_detectada=tipo_intencion_principal,
         contexto_rag=contexto_recuperado

@@ -62,7 +62,14 @@ function App() {
     if (!input.trim()) return
 
     const textoUsuario = input
-    setMensajes(prev => [...prev, { rol: 'usuario', texto: textoUsuario }])
+    
+    // Inyectamos el mensaje del usuario y creamos una burbuja VACÍA para L-IA
+    setMensajes(prev => [
+      ...prev, 
+      { rol: 'usuario', texto: textoUsuario },
+      { rol: 'ia', texto: '', origen: '', documento: null } // Placeholder que iremos llenando
+    ])
+    
     setInput('')
     setEstadoLIA('procesando')
 
@@ -72,10 +79,69 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ texto: textoUsuario })
       })
-      const data = await respuesta.json()
-      setMensajes(prev => [...prev, data])
+
+      // Leemos el flujo en vivo
+      const reader = respuesta.body.getReader()
+      const decoder = new TextDecoder("utf-8")
+      let buffer = ""
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        
+        buffer += decoder.decode(value, { stream: true })
+        const partes = buffer.split("\n\n")
+        buffer = partes.pop() // Guardamos el fragmento incompleto para el próximo ciclo
+
+        for (const parte of partes) {
+          if (parte.startsWith("data: ")) {
+            const dataStr = parte.replace("data: ", "")
+            try {
+              const data = JSON.parse(dataStr)
+              
+              if (data.tipo === "chunk") {
+                // Separamos el bloque que llegó en caracteres individuales
+                const letras = data.texto.split("");
+                
+                // Las inyectamos una por una con una micro-pausa
+                for (let i = 0; i < letras.length; i++) {
+                  setMensajes(prev => {
+                    const nuevos = [...prev]
+                    const ultimo = nuevos[nuevos.length - 1]
+                    ultimo.texto += letras[i]
+                    return nuevos
+                  });
+                  // 15 milisegundos de pausa por letra (ajusta a tu gusto)
+                  await new Promise(resolve => setTimeout(resolve, 15));
+                }
+              } else if (data.tipo === "fin") {
+                // Terminó. Le ponemos las etiquetas holográficas de origen y documento
+                setMensajes(prev => {
+                  const nuevos = [...prev]
+                  const ultimo = nuevos[nuevos.length - 1]
+                  ultimo.origen = data.origen
+                  if (data.documento) ultimo.documento = data.documento
+                  return nuevos
+                })
+              } else if (data.tipo === "error") {
+                setMensajes(prev => {
+                  const nuevos = [...prev]
+                  nuevos[nuevos.length - 1].texto += `\n[ERROR]: ${data.texto}`
+                  return nuevos
+                })
+              }
+            } catch(err) {
+              console.error("Error parseando el chunk:", err)
+            }
+          }
+        }
+      }
     } catch (error) {
-      setMensajes(prev => [...prev, { rol: 'sistema', texto: '[ERROR] Fallo de enlace con núcleo.' }])
+      setMensajes(prev => {
+        const nuevos = [...prev]
+        nuevos[nuevos.length - 1].texto = '[ERROR] Caída del enlace con el núcleo.'
+        return nuevos
+      })
     } finally {
       setEstadoLIA('reposo')
     }
