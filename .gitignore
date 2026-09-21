@@ -12,6 +12,6 @@ __pycache__/
 # Capturas de pantalla temporales del asistente
 captura_temp.png
 captura_temp.jpg
-*.png
+
 *.jpg
 *.jpeg
