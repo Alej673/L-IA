@@ -58,29 +58,36 @@ function App() {
   }
 
   const manejarEnvio = async (e) => {
-    e.preventDefault()
-    if (!input.trim()) return
+    // Si viene de un evento (ej. presionar Enter), prevenimos que recargue la página
+    if (e) e.preventDefault();
 
-    const textoUsuario = input
+    // Bloquea si ya está generando o el texto está vacío
+    if (!input.trim() || cargando) return; 
+
+    const textoUsuario = input;
+    
+    setCargando(true);
+    abortControllerRef.current = new AbortController();
     
     // Inyectamos el mensaje del usuario y creamos una burbuja VACÍA para L-IA
     setMensajes(prev => [
       ...prev, 
       { rol: 'usuario', texto: textoUsuario },
-      { rol: 'ia', texto: '', origen: '', documento: null } // Placeholder que iremos llenando
-    ])
+      { rol: 'ia', texto: '', origen: '', documento: null } 
+    ]);
     
-    setInput('')
-    setEstadoLIA('procesando')
+    setInput('');
+    setEstadoLIA('procesando');
 
     try {
       const respuesta = await fetch("http://127.0.0.1:8000/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ texto: textoUsuario })
-      })
+        body: JSON.stringify({ texto: textoUsuario }),
+        signal: abortControllerRef.current.signal
+      });
 
-      // Leemos el flujo en vivo
+      // --- INICIO DE TU BUCLE DE LECTURA EXACTAMENTE COMO LO TIENES ---
       const reader = respuesta.body.getReader()
       const decoder = new TextDecoder("utf-8")
       let buffer = ""
@@ -91,7 +98,7 @@ function App() {
         
         buffer += decoder.decode(value, { stream: true })
         const partes = buffer.split("\n\n")
-        buffer = partes.pop() // Guardamos el fragmento incompleto para el próximo ciclo
+        buffer = partes.pop() 
 
         for (const parte of partes) {
           if (parte.startsWith("data: ")) {
@@ -99,8 +106,7 @@ function App() {
             try {
               const data = JSON.parse(dataStr)
               
-            if (data.tipo === "chunk") {
-                // Si el bloque es masivo (ej. reporte de Git o RAG), lo pintamos de golpe
+              if (data.tipo === "chunk") {
                 if (data.texto.length > 50) {
                   setMensajes(prev => {
                     const nuevos = [...prev]
@@ -108,7 +114,6 @@ function App() {
                     return nuevos
                   });
                 } else {
-                  // Flujo normal letra por letra para los tokens en vivo
                   const letras = data.texto.split("");
                   for (let i = 0; i < letras.length; i++) {
                     setMensajes(prev => {
@@ -117,12 +122,10 @@ function App() {
                       ultimo.texto += letras[i]
                       return nuevos
                     });
-                    // 15ms de pausa por letra
                     await new Promise(resolve => setTimeout(resolve, 15));
                   }
                 }
               } else if (data.tipo === "fin") {
-                // Terminó. Le ponemos las etiquetas holográficas de origen y documento
                 setMensajes(prev => {
                   const nuevos = [...prev]
                   const ultimo = nuevos[nuevos.length - 1]
@@ -143,14 +146,27 @@ function App() {
           }
         }
       }
+      // --- FIN DE TU BUCLE DE LECTURA ---
+
     } catch (error) {
-      setMensajes(prev => {
-        const nuevos = [...prev]
-        nuevos[nuevos.length - 1].texto = '[ERROR] Caída del enlace con el núcleo.'
-        return nuevos
-      })
+      if (error.name === 'AbortError') {
+        setMensajes(prev => {
+          const nuevos = [...prev];
+          nuevos[nuevos.length - 1].texto += '\n\n*(Respuesta abortada)*';
+          nuevos[nuevos.length - 1].cancelado = true; // <-- NUEVO ESTADO
+          return nuevos;
+        });
+      } else {
+        setMensajes(prev => {
+          const nuevos = [...prev];
+          nuevos[nuevos.length - 1].texto += '\n\n[ERROR] Caída del enlace con el núcleo.';
+          return nuevos;
+        });
+      }
     } finally {
-      setEstadoLIA('reposo')
+      // Liberamos los seguros de la interfaz SIEMPRE, pase lo que pase
+      setEstadoLIA('reposo');
+      setCargando(false);
     }
   }
 
@@ -181,6 +197,23 @@ function App() {
     setEscuchando(!escuchando)
     // fetch("http://127.0.0.1:8000/microfono", { method: "POST", body: JSON.stringify({ estado: !escuchando }) })
   }
+
+  const [cargando, setCargando] = useState(false);
+  const abortControllerRef = useRef(null);
+
+  const detenerGeneracion = async () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort(); 
+    }
+    setCargando(false);
+    
+    try {
+      // Cambiado a 127.0.0.1 para mantener tu estándar
+      await fetch("http://127.0.0.1:8000/cancelar", { method: "POST" });
+    } catch (error) {
+      console.error("Error al abortar en el backend:", error);
+    }
+  };
 
   return (
     <div className="hud-container" onDragOver={manejarDragOver} onDragLeave={manejarDragLeave} onDrop={manejarDrop}>
@@ -225,7 +258,7 @@ function App() {
         {/* ZONA EXCLUSIVA DE SCROLL */}
         <div className="chat-terminal">
           {mensajes.map((msg, idx) => (
-            <div key={idx} className={`burbuja-mensaje ${msg.rol}`}>
+            <div key={idx} className={`burbuja-mensaje ${msg.rol} ${msg.cancelado ? 'mensaje-abortado' : ''}`}>
 
               {/* --- NUEVA CABECERA CON ETIQUETAS --- */}
               <div className="remitente" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
@@ -266,8 +299,54 @@ function App() {
           <button type="button" className="hud-btn" onClick={manejarMicrofono} style={{ color: escuchando ? '#ff0055' : '#00ffff', boxShadow: escuchando ? 'inset 0 0 10px rgba(255,0,85,0.5)' : '' }}>
             <Mic size={18} />
           </button>
-          <input type="text" className="hud-input" placeholder="Ingresa comando..." value={input} onChange={(e) => setInput(e.target.value)} />
-          <button type="submit" className="hud-btn animado"><Terminal size={18} /></button>
+          
+          <textarea 
+            className="hud-input custom-scrollbar" 
+            placeholder="Ingresa texto..." 
+            value={input} 
+            onChange={(e) => {
+              setInput(e.target.value);
+              // Resetea a la altura base para recalcular
+              e.target.style.height = '42px'; 
+              // Crece suavemente hasta un máximo de 100px
+              e.target.style.height = `${Math.min(e.target.scrollHeight, 100)}px`;
+            }}
+            disabled={cargando}
+            rows={1}
+            style={{ 
+              resize: 'none', 
+              overflowY: 'auto', 
+              height: '42px', /* Altura fija inicial como el input viejo */
+              padding: '10px 15px', 
+              lineHeight: '20px',
+              fontFamily: 'inherit',
+              boxSizing: 'border-box'
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                manejarEnvio();
+                // Lo devolvemos a su estado delgado al enviar
+                e.target.style.height = '42px'; 
+              }
+            }}
+          />
+
+          {cargando ? (
+            <button 
+              type="button" 
+              className="hud-btn" 
+              onClick={detenerGeneracion} 
+              style={{ color: '#ff0055', borderColor: '#ff0055', boxShadow: '0 0 10px rgba(255,0,85,0.5)' }}
+              title="Abortar Generación"
+            >
+              🛑
+            </button>
+          ) : (
+            <button type="submit" className="hud-btn animado" disabled={!input.trim() || cargando}>
+              <Terminal size={18} />
+            </button>
+          )}
         </form>
       </div>
     </div>

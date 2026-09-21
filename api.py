@@ -32,7 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from core.cerebro import charlar_con_lia
+from core.cerebro import charlar_con_lia, evento_interrupcion
 from core.tools import leer_archivo_local
 from core.memoria_rag import MemoriaRAG
 from core import database
@@ -236,6 +236,14 @@ def recibir_chat(mensaje: MensajeUsuario):
     # Retornamos el flujo abierto en formato Server-Sent Events
     return StreamingResponse(generador_sse(), media_type="text/event-stream")
 
+# ---------------------------------------------------------------------------
+# Endpoint para cancelar la inferencia de la GPU o el stream de la Nube
+# ---------------------------------------------------------------------------
+@app.post("/cancelar")
+async def cancelar_generacion():
+    """Detiene la inferencia de la GPU o el stream de la Nube al instante."""
+    evento_interrupcion.set()
+    return {"status": "abortado"}
 
 # ---------------------------------------------------------------------------
 # Endpoint de ingesta de archivos (RAG)

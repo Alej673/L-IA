@@ -60,6 +60,8 @@ import core.contexto as contexto
 _memoria_rag_instancia = None
 _rag_lock = threading.Lock()
 
+# Bandera táctica de interrupción
+evento_interrupcion = threading.Event()
 
 def _obtener_rag():
     """Devuelve la instancia única de MemoriaRAG, creándola en el primer uso.
@@ -702,6 +704,11 @@ def _generar_respuesta_con_voz(generador_texto, callback_stream=None):
     PUNTUACION_CORTE = ['.', '?', '!', '\n']
 
     for fragmento_entrante in generador_texto:
+        # <-- NUEVO: Freno de emergencia táctico
+        if evento_interrupcion.is_set():
+            print("\n🛑 [Interrupción táctica: Generación abortada por el usuario]")
+            break
+
         if not fragmento_entrante:
             continue
 
@@ -1636,6 +1643,7 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None, cal
     dentro, el error también se transmite en vez de dejar la burbuja colgada.
     """
     hubo_stream = [False]
+    evento_interrupcion.clear()
 
     def _stream_vigilado(fragmento):
         hubo_stream[0] = True
