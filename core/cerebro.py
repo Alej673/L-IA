@@ -810,6 +810,9 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
 
     for intento in range(max_reintentos):
         try:
+            # NUEVO: Latido para evitar el timeout del frontend
+            if callback_stream:
+                callback_stream("*(Analizando arquitectura en la Nube Pro, un momento...)*\n\n")
             # PASO 1: llamada SIN streaming, solo para detectar de forma fiable si
             # Gemini quiere ejecutar una herramienta (los tool-calls no llegan
             # bien fragmentados en modo streaming). Aplica igual a Flash y a
@@ -1457,6 +1460,10 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
         texto_respuesta = _procesar_ingesta_documento(callback_ui=callback_ui)
         database.guardar_mensaje("model", texto_respuesta)
         print(f"\n🤖 L-IA (Sistema/Ingesta): {texto_respuesta}\n")
+        # NUEVO: Forzamos el envío al frontend antes de salir
+        if callback_stream:
+            callback_stream(texto_respuesta)
+            
         return texto_respuesta, "Local"
 
     # ¿El usuario habla de "este archivo/documento"? Si además pregunta por su
@@ -1553,6 +1560,10 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
     if intenciones["guardar_git"]:
         texto_respuesta = _ejecutar_guardado_git(msg_lower, callback_ui=callback_ui)
         print(f"\n🤖 L-IA (Local/Git): {texto_respuesta}\n")
+        # NUEVO: Forzamos el envío al frontend antes de salir
+        if callback_stream:
+            callback_stream(texto_respuesta)
+            
         return texto_respuesta, "Local"
     elif intenciones["git"]:
         intenciones["estado_pc"] = False

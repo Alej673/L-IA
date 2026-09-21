@@ -99,20 +99,27 @@ function App() {
             try {
               const data = JSON.parse(dataStr)
               
-              if (data.tipo === "chunk") {
-                // Separamos el bloque que llegó en caracteres individuales
-                const letras = data.texto.split("");
-                
-                // Las inyectamos una por una con una micro-pausa
-                for (let i = 0; i < letras.length; i++) {
+            if (data.tipo === "chunk") {
+                // Si el bloque es masivo (ej. reporte de Git o RAG), lo pintamos de golpe
+                if (data.texto.length > 50) {
                   setMensajes(prev => {
                     const nuevos = [...prev]
-                    const ultimo = nuevos[nuevos.length - 1]
-                    ultimo.texto += letras[i]
+                    nuevos[nuevos.length - 1].texto += data.texto
                     return nuevos
                   });
-                  // 15 milisegundos de pausa por letra (ajusta a tu gusto)
-                  await new Promise(resolve => setTimeout(resolve, 15));
+                } else {
+                  // Flujo normal letra por letra para los tokens en vivo
+                  const letras = data.texto.split("");
+                  for (let i = 0; i < letras.length; i++) {
+                    setMensajes(prev => {
+                      const nuevos = [...prev]
+                      const ultimo = nuevos[nuevos.length - 1]
+                      ultimo.texto += letras[i]
+                      return nuevos
+                    });
+                    // 15ms de pausa por letra
+                    await new Promise(resolve => setTimeout(resolve, 15));
+                  }
                 }
               } else if (data.tipo === "fin") {
                 // Terminó. Le ponemos las etiquetas holográficas de origen y documento
