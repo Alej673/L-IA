@@ -134,7 +134,7 @@ semaforo = SemaforoAutorizacion()
 # ---------------------------------------------------------------------------
 memoria_rag = MemoriaRAG()
 
-app = FastAPI(title="L-IA API Bridge", version="3.2.1")
+app = FastAPI(title="L-IA API Bridge", version="3.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -182,6 +182,22 @@ def recibir_chat(mensaje: MensajeUsuario):
         """Delega la autorización al semáforo de tu nueva clase."""
         return semaforo.solicitar_autorizacion(herramienta, argumentos)
 
+    def estado_interfaz(info: dict) -> None:
+        """
+        Recibe de core.cerebro la ficha de la ruta elegida (perfil, etiqueta,
+        motivo y mensaje_espera) ANTES de que llegue el primer token, y la
+        reenvía a React como un evento SSE propio ("estado"), separado de
+        los chunks de texto. Así el frontend puede, por ejemplo, mostrar
+        "Analizando arquitectura..." mientras Gemini Pro procesa una tarea
+        de código pesado, sin tener que adivinar el motivo a partir del
+        texto que ya llegó.
+
+        Si el frontend todavía no sabe leer este tipo de evento, simplemente
+        lo ignora (igual que cualquier `item["tipo"]` desconocido) y el chat
+        sigue funcionando exactamente igual que antes.
+        """
+        cola_streaming.put({"tipo": "estado", **info})
+
     # 2. Envolvemos a L-IA en un hilo secundario para no congelar a FastAPI
     def hilo_ia():
         try:
@@ -189,6 +205,7 @@ def recibir_chat(mensaje: MensajeUsuario):
                 entrada,
                 callback_ui=permiso_interfaz,
                 callback_stream=stream_consola,
+                callback_estado=estado_interfaz,
             )
 
             # Recuperamos el documento activo al terminar de pensar

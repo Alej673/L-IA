@@ -7,10 +7,16 @@ Flujo de cada mensaje (ver `charlar_con_lia`):
        lo que encuentren en el contexto del turno.
     2. Semáforo (`_elegir_ruta`): según intención y tamaño del contexto,
        decide entre Local (Gemma 2), Dolphin (sin filtros) o la Nube
-       (Gemini Flash / Pro).
+       (Gemini Flash / Pro). Pro se reserva para código pesado y análisis
+       profundo; la GUI se entera de qué modelo responde (y por qué) mediante
+       `callback_estado`, antes de que llegue el primer token.
     3. La ruta elegida genera la respuesta en streaming; el pipeline de voz
        (`_generar_respuesta_con_voz`) la transmite a la GUI y, si está
        activado, la lee en voz alta.
+
+Regla de oro con la GUI: TODO camino que termine en un mensaje (respuesta,
+error o return directo) debe pasar por `callback_stream`; si no, el frontend
+se queda esperando. `charlar_con_lia` lo garantiza como red de seguridad.
 
 Módulos pesados (`core.voz`, `core.memoria_rag`) NO se importan aquí arriba:
 se cargan bajo demanda (ver sección 0.5) para que el arranque sea instantáneo.
@@ -24,6 +30,7 @@ import re
 import subprocess
 import threading
 import time
+import traceback
 
 # --- Terceros ---
 import ollama
@@ -107,6 +114,10 @@ def estimar_tokens(texto: str) -> int:
 LIMITE_TOKENS_CASUAL = 4000    # Conversación normal: por encima, se pasa a la Nube (Flash).
 LIMITE_TOKENS_CODIGO = 3000    # El código consume más contexto útil: umbral más estricto.
 LIMITE_TOKENS_FLASH = 30000    # Por encima de esto, Flash se queda corto: entra Pro.
+# Código con contexto grande (un archivo largo, varios adjuntos): aunque quepa en
+# Flash, el razonamiento de Pro es más fiable. Súbelo si gasta demasiada cuota;
+# ponlo igual a LIMITE_TOKENS_FLASH para desactivar esta regla.
+LIMITE_TOKENS_CODIGO_PRO = 15000
 
 # Techo de seguridad SOLO para la Nube. No recorta "por desconfianza": evita
 # que un archivo descomunal (decenas de MB) reviente la petición o gaste la
@@ -263,6 +274,33 @@ PATRONES_CLAVE["guardar_git"] = re.compile(
     re.IGNORECASE
 )
 
+# forzar_pro: el usuario pide Gemini Pro de forma explícita ("modo pro",
+# "usa gemini pro", "modo arquitecto"), aunque la tarea no lo exija por tamaño.
+PATRONES_CLAVE["forzar_pro"] = re.compile(
+    r'\b(?:(?:usa|utiliza|con|activa|cambia\s+a|pasa\s+a|modo)\s+(?:el\s+)?(?:modelo\s+)?(?:gemini\s+)?pro'
+    r'|modo\s+arquitecto)\b',
+    re.IGNORECASE
+)
+
+# codigo_pesado: verbo de refactor/migración/auditoría + ALCANCE AMPLIO (todo el
+# proyecto, varios archivos, la arquitectura...). Generaliza las frases fijas de
+# _FRASES_ANALISIS_PROFUNDO. "Reescribe todo el archivo" NO cuenta: es un solo
+# archivo y lo resuelve Flash o Local.
+_VERBOS_CODIGO_PESADO = (
+    r'(?:refactoriz|reestructur|reescrib|reescrit|migr|redise[ñn]|moderniz|'
+    r'reorganiz|audit|analiz|revis)\w*'
+)
+_ALCANCE_AMPLIO = (
+    r'(?:todo\s+el\s+(?:proyecto|c[oó]digo|sistema|repo\w*|backend|frontend)'
+    r'|toda\s+la\s+(?:arquitectura|base\s+de\s+c[oó]digo|app|aplicaci[oó]n|l[oó]gica)'
+    r'|(?:el\s+|la\s+)?(?:proyecto|sistema|repo\w*|arquitectura|base\s+de\s+c[oó]digo)\s+(?:completo|completa|entero|entera)'
+    r'|(?:varios|m[uú]ltiples|todos\s+los)\s+(?:archivos|m[oó]dulos))'
+)
+PATRONES_CLAVE["codigo_pesado"] = re.compile(
+    r'\b' + _VERBOS_CODIGO_PESADO + r'\b.{0,80}?\b' + _ALCANCE_AMPLIO + r'\b',
+    re.IGNORECASE
+)
+
 # guia_capacidades: preguntas sobre qué puede hacer L-IA; activa la nota de
 # autoconocimiento generada en la sección 1.6.
 PATRONES_CLAVE["guia_capacidades"] = re.compile(
@@ -350,6 +388,8 @@ _DESCRIPCIONES_CAPACIDADES = {
     "calendario":        "revisar tus próximos eventos de calendario",
     "git":               "leer el estado de un repositorio Git: cambios pendientes y últimos commits",
     "guardar_git":       "redactar un mensaje de commit y subir los cambios (add, commit y push) automáticamente",
+    "codigo_pesado":     "encargarse de refactorizaciones y análisis de proyectos completos con su modelo más potente (Gemini Pro), que tarda más en empezar pero razona con más rigor",
+    "forzar_pro":        "usar Gemini Pro cuando se lo pides con 'modo pro' o 'modo arquitecto', aunque la tarea no sea enorme",
     "fijar_workspace":   "fijar un archivo o proyecto como su 'workspace activo' para recordarlo en preguntas de seguimiento",
     "limpiar_workspace": "olvidar el workspace activo actual",
     "entorno_activo":    "saber qué ventana o programa tienes abierto en este momento sin tener que preguntarte",
@@ -724,28 +764,77 @@ def leer_repositorio_git(ruta_repo: str) -> str:
     pass
 
 
-def _manejar_error_nube(e: Exception, intento: int, max_reintentos: int, espera: int):
+def _reportar_error(mensaje: str, callback_stream=None) -> str:
+    """Envía `mensaje` a la GUI y lo devuelve.
+
+    Un error que solo se `return`ea, sin pasar por `callback_stream`, deja la
+    burbuja del frontend colgada en "Analizando..." porque React nunca se
+    entera. Toda ruta que termine en un mensaje de error debe salir por aquí.
     """
-    Interpreta una excepción de la API de Gemini y decide qué hacer:
-      - Devuelve un str: ese es el mensaje final, hay que cortar y devolverlo.
-      - Devuelve None: es un error transitorio (503/UNAVAILABLE) y todavía
-        quedan reintentos, así que ya se durmió `espera` segundos y el
-        llamador debe seguir con el siguiente intento del for.
-    Se comparte entre las dos rutas de responder_con_nube (búsqueda web y
-    herramientas locales) para no duplicar la misma lógica de reintentos.
+    if callback_stream:
+        callback_stream(mensaje)
+    return mensaje
+
+
+def _manejar_error_nube(e: Exception, intento: int, max_reintentos: int, espera: int,
+                        permitir_reintento: bool = True, etiqueta: str = "Nube"):
+    """Interpreta una excepción de la API de Gemini y decide qué hacer:
+      - Devuelve un str: ese es el mensaje final, hay que cortar y reportarlo.
+      - Devuelve None: es un error transitorio (503/UNAVAILABLE), quedan
+        reintentos y ya se durmió `espera` segundos; el llamador reintenta.
+
+    `permitir_reintento=False` se usa cuando ya se transmitió texto a la GUI:
+    reintentar duplicaría lo que el usuario ya vio. `etiqueta` ("Nube" o
+    "Nube/Pro") indica en el mensaje quién falló.
     """
     if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-        return "🛑 [L-IA Nube]: Límite de la API gratuita alcanzado. Espera 1 minuto."
+        return f"🛑 [L-IA {etiqueta}]: Límite de la API gratuita alcanzado. Espera 1 minuto."
     if "503" in str(e) or "UNAVAILABLE" in str(e):
+        if not permitir_reintento:
+            return (f"🛑 [L-IA {etiqueta}]: La conexión se cortó a mitad de la respuesta "
+                    f"(servidores de Google saturados). Vuelve a intentarlo.")
         if intento < max_reintentos - 1:
             time.sleep(espera)
             return None
-        return "🛑 [L-IA Nube]: Imposible conectar. Servidores de Google saturados."
-    return f"❌ Error crítico en la Nube: {e}"
+        return f"🛑 [L-IA {etiqueta}]: Imposible conectar. Servidores de Google saturados."
+    return f"❌ Error crítico en la {etiqueta}: {e}"
+
+
+def _ejecutar_con_reintentos(accion, callback_stream, emitidos, etiqueta="Nube",
+                             max_reintentos=3, espera=4):
+    """Ejecuta `accion()` (una llamada a la Nube que devuelve el texto final)
+    con reintentos ante errores transitorios.
+
+    Es el ÚNICO lugar de responder_con_nube donde una excepción se convierte
+    en mensaje, así que todo error final sale por `_reportar_error` y la GUI
+    siempre se entera. `emitidos[0]` cuenta los fragmentos ya transmitidos: si
+    ya salió texto no se reintenta.
+    """
+    for intento in range(max_reintentos):
+        try:
+            return accion()
+        except Exception as e:
+            mensaje = _manejar_error_nube(
+                e, intento, max_reintentos, espera,
+                permitir_reintento=(emitidos[0] == 0), etiqueta=etiqueta
+            )
+            if mensaje is not None:
+                return _reportar_error(mensaje, callback_stream)
+            espera *= 2
+    return _reportar_error(f"🛑 [L-IA {etiqueta}]: No se pudo completar la respuesta.", callback_stream)
 
 
 def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, buscar_web=False,
-                        modelo_nube=MODELO_NUBE_FLASH, callback_ui=None, callback_stream=None):
+                        modelo_nube=MODELO_NUBE_FLASH, callback_ui=None, callback_stream=None,
+                        usar_herramientas=True):
+    """Responde con Gemini (Flash o Pro). Hay tres caminos:
+
+      CASO 1  buscar_web=True          google_search + streaming real.
+      CASO 2  usar_herramientas=False  streaming directo, sin herramientas locales.
+                                       Es el camino de Pro para código pesado.
+      CASO 3  (por defecto)            detección de tool-calls y luego respuesta.
+    """
+    etiqueta = "Nube/Pro" if modelo_nube == MODELO_NUBE_PRO else "Nube"
     print(f"\n[☁️ Enrutando a la Nube ({modelo_nube})...]")
 
     if usar_vision:
@@ -761,8 +850,13 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
         imagen_en_ram = tomar_captura_en_memoria()
         contenidos_api.insert(0, imagen_en_ram)
 
-    max_reintentos = 3
-    espera = 4
+    # Cuenta los fragmentos ya enviados a la GUI (ver _ejecutar_con_reintentos).
+    emitidos = [0]
+
+    def _stream_contado(fragmento):
+        emitidos[0] += 1
+        if callback_stream:
+            callback_stream(fragmento)
 
     # ------------------------------------------------------------
     # CASO 1: búsqueda web (google_search)
@@ -771,28 +865,43 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
     # por completo de su lado: el modelo nunca devuelve un function_call que
     # nosotros deban ejecutar o autorizar por el semáforo. Por eso aquí se
     # puede transmitir en streaming real desde el primer token, sin el paso
-    # previo de detección que necesitan las herramientas locales (CASO 2).
+    # previo de detección que necesitan las herramientas locales (CASO 3).
     if buscar_web:
         print("🌐 [Activando módulo de búsqueda en internet de Google...]")
-        for intento in range(max_reintentos):
-            try:
-                print("\n🤖 L-IA (Nube, streaming real desde el primer token)...")
-                stream = client.models.generate_content_stream(
-                    model=modelo_nube,
-                    contents=contenidos_api,
-                    config={"tools": [{"google_search": {}}]}
-                )
-                generador = (chunk.text for chunk in stream if chunk.text)
-                return _generar_respuesta_con_voz(generador, callback_stream=callback_stream)
-            except Exception as e:
-                resultado = _manejar_error_nube(e, intento, max_reintentos, espera)
-                if resultado is not None:
-                    return resultado
-                espera *= 2
-        return "🛑 [L-IA Nube]: No se pudo completar la búsqueda web."
+
+        def _accion_web():
+            print("\n🤖 L-IA (Nube, streaming real desde el primer token)...")
+            stream = client.models.generate_content_stream(
+                model=modelo_nube,
+                contents=contenidos_api,
+                config={"tools": [{"google_search": {}}]}
+            )
+            generador = (chunk.text for chunk in stream if chunk.text)
+            return _generar_respuesta_con_voz(generador, callback_stream=_stream_contado)
+
+        return _ejecutar_con_reintentos(_accion_web, callback_stream, emitidos, etiqueta)
 
     # ------------------------------------------------------------
-    # CASO 2: posibles herramientas locales (abrir apps, leer Git)
+    # CASO 2: streaming directo, sin herramientas locales (Pro)
+    # ------------------------------------------------------------
+    # Una respuesta larga de código pesado NO puede pasar por la detección
+    # de tool-calls del CASO 3: esa llamada es SIN streaming y esperaría la
+    # respuesta completa de Pro (decenas de segundos) antes de mostrar nada,
+    # con riesgo de timeout. Aquí se transmite desde el primer token.
+    if not usar_herramientas:
+        def _accion_directa():
+            print(f"\n🤖 L-IA (Nube/{modelo_nube}, streaming directo desde el primer token)...")
+            stream = client.models.generate_content_stream(
+                model=modelo_nube,
+                contents=contenidos_api
+            )
+            generador = (chunk.text for chunk in stream if chunk.text)
+            return _generar_respuesta_con_voz(generador, callback_stream=_stream_contado)
+
+        return _ejecutar_con_reintentos(_accion_directa, callback_stream, emitidos, etiqueta)
+
+    # ------------------------------------------------------------
+    # CASO 3: posibles herramientas locales (abrir apps, leer Git)
     # ------------------------------------------------------------
     # Estas herramientas SÍ pueden requerir autorización del usuario (semáforo),
     # así que hay que ver la llamada ANTES de que se ejecute.
@@ -808,61 +917,50 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
     )
 
-    for intento in range(max_reintentos):
-        try:
-            # NUEVO: Latido para evitar el timeout del frontend
-            if callback_stream:
-                callback_stream("*(Analizando arquitectura en la Nube Pro, un momento...)*\n\n")
-            # PASO 1: llamada SIN streaming, solo para detectar de forma fiable si
-            # Gemini quiere ejecutar una herramienta (los tool-calls no llegan
-            # bien fragmentados en modo streaming). Aplica igual a Flash y a
-            # Pro: solo cambia el nombre del modelo.
-            response = client.models.generate_content(
-                model=modelo_nube,
-                contents=contenidos_api,
-                config=config_deteccion,
+    def _accion_herramientas():
+        # PASO 1: llamada SIN streaming, solo para detectar de forma fiable si
+        # Gemini quiere ejecutar una herramienta (los tool-calls no llegan
+        # bien fragmentados en modo streaming).
+        response = client.models.generate_content(
+            model=modelo_nube,
+            contents=contenidos_api,
+            config=config_deteccion,
+        )
+
+        if response.function_calls:
+            llamada = response.function_calls[0]
+            argumentos = dict(llamada.args) if llamada.args else {}
+
+            resultado_sistema = _ejecutar_herramienta_segura(
+                llamada.name,
+                callback_ui_permiso=callback_ui,
+                **argumentos
             )
+            print(f"✅ [Sistema: {resultado_sistema}]")
 
-            if response.function_calls:
-                llamada = response.function_calls[0]
-                argumentos = dict(llamada.args) if llamada.args else {}
+            prompt_bozal = _generar_prompt_bozal(llamada.name, resultado_sistema)
+            contenidos_api.append(prompt_bozal)
 
-                resultado_sistema = _ejecutar_herramienta_segura(
-                    llamada.name,
-                    callback_ui_permiso=callback_ui,
-                    **argumentos
-                )
-                print(f"✅ [Sistema: {resultado_sistema}]")
-
-                prompt_bozal = _generar_prompt_bozal(llamada.name, resultado_sistema)
-                contenidos_api.append(prompt_bozal)
-
-                # PASO 2: con la herramienta ya ejecutada, la respuesta final en
-                # lenguaje natural SÍ va con streaming real, para que voz y GUI
-                # se comporten igual que en Local.
-                print("\n🤖 L-IA (Nube, hablando en bloques)...")
-                stream = client.models.generate_content_stream(
-                    model=modelo_nube,
-                    contents=contenidos_api
-                )
-                generador = (chunk.text for chunk in stream if chunk.text)
-                return _generar_respuesta_con_voz(generador, callback_stream=callback_stream)
-
-            # Sin tool-call: la llamada del PASO 1 ya trajo la respuesta completa.
-            # Se reutiliza ese texto (troceado en oraciones para hablar en
-            # bloques) en vez de pedir una segunda respuesta en streaming, lo
-            # que duplicaría costo y latencia en cada mensaje casual.
+            # PASO 2: con la herramienta ya ejecutada, la respuesta final en
+            # lenguaje natural SÍ va con streaming real, para que voz y GUI
+            # se comporten igual que en Local.
             print("\n🤖 L-IA (Nube, hablando en bloques)...")
-            generador = _dividir_en_fragmentos_hablables(response.text)
-            return _generar_respuesta_con_voz(generador, callback_stream=callback_stream)
+            stream = client.models.generate_content_stream(
+                model=modelo_nube,
+                contents=contenidos_api
+            )
+            generador = (chunk.text for chunk in stream if chunk.text)
+            return _generar_respuesta_con_voz(generador, callback_stream=_stream_contado)
 
-        except Exception as e:
-            resultado = _manejar_error_nube(e, intento, max_reintentos, espera)
-            if resultado is not None:
-                return resultado
-            espera *= 2
+        # Sin tool-call: la llamada del PASO 1 ya trajo la respuesta completa.
+        # Se reutiliza ese texto (troceado en oraciones para hablar en
+        # bloques) en vez de pedir una segunda respuesta en streaming, lo
+        # que duplicaría costo y latencia en cada mensaje casual.
+        print("\n🤖 L-IA (Nube, hablando en bloques)...")
+        generador = _dividir_en_fragmentos_hablables(response.text)
+        return _generar_respuesta_con_voz(generador, callback_stream=_stream_contado)
 
-    return "🛑 [L-IA Nube]: No se pudo completar la respuesta."
+    return _ejecutar_con_reintentos(_accion_herramientas, callback_stream, emitidos, etiqueta)
 
 
 # ==========================================
@@ -937,7 +1035,7 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
             contenido_bruto = response['message']['content']
             llamada_manual = _extraer_llamada_manual(contenido_bruto)
         except Exception as e:
-            return f"❌ Error en el cerebro local: {e}"
+            return _reportar_error(f"❌ Error en el cerebro local: {e}", callback_stream)
 
         mensajes[0]['content'] = instrucciones_sistema
 
@@ -1010,7 +1108,7 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
         return resultado
 
     except Exception as e:
-        return f"❌ Error en el cerebro local: {e}"
+        return _reportar_error(f"❌ Error en el cerebro local: {e}", callback_stream)
 
 
 # ==========================================
@@ -1058,7 +1156,7 @@ def responder_con_local_uncensored(instrucciones_sistema, contexto_historico, ca
         return _generar_respuesta_con_voz(generador, callback_stream=callback_stream)
 
     except Exception as e:
-        return f"❌ Error en el cerebro Dolphin: {e}"
+        return _reportar_error(f"❌ Error en el cerebro Dolphin: {e}", callback_stream)
 
 # ==========================================
 # 6. HERRAMIENTAS DE INTERCEPCIÓN (inyección de contexto)
@@ -1402,46 +1500,150 @@ def _procesar_ingesta_documento(callback_ui=None):
 # ==========================================
 # 7. SEMÁFORO v3 — DECISIÓN DE RUTA
 # ==========================================
+# Instrucción extra que se agrega SOLO cuando Pro responde una tarea de código.
+# Pro tarda más en empezar pero razona mejor: se le pide que aproveche eso con
+# un plan previo, revisión de dependencias y código completo y pegable.
+NOTA_MODO_PRO_CODIGO = (
+    "\n\n[MODO ARQUITECTO — GEMINI PRO]\n"
+    "Esta es una tarea de código pesado. Trabaja como arquitecta senior:\n"
+    "1. Empieza con un plan breve: qué archivos o funciones tocas y por qué. Luego, los cambios.\n"
+    "2. Antes de proponer un cambio, revisa las dependencias entre módulos: no rompas firmas, "
+    "imports ni nombres que otros archivos usan.\n"
+    "3. De cada función o bloque que modifiques, entrega el código COMPLETO y listo para pegar, "
+    "sin '...' ni 'el resto igual'. No reescribas lo que no cambia.\n"
+    "4. Si no tienes evidencia de que algo existe (un módulo, una función, una columna), dilo "
+    "en vez de inventarlo, y no afirmes haber ejecutado ni probado el código.\n"
+    "5. Cierra con una lista corta de riesgos o cosas que conviene probar.\n"
+    "Sarcasmo mínimo y solo en la intro: aquí manda el rigor técnico."
+)
+
+
 def _elegir_ruta(intenciones: dict, msg_lower: str, tokens_totales: int):
-    """Decide dónde se responde. Devuelve (ruta, modelo_nube_o_None).
+    """Decide dónde se responde. Devuelve (ruta, modelo_nube_o_None, motivo).
 
     Orden de prioridad (el primero que aplique gana):
-      1. Contexto enorme o petición de análisis profundo -> Nube / Pro.
+      1. Pro, por cualquiera de estas señales:
+           - pedido explícito ("modo pro", "modo arquitecto")
+           - frase de análisis profundo
+           - tarea de código pesado (refactor/migración de alcance amplio)
+           - contexto enorme (> LIMITE_TOKENS_FLASH)
+           - código con contexto grande (> LIMITE_TOKENS_CODIGO_PRO)
       2. Visión o búsqueda web (solo la Nube puede)      -> Nube / Flash.
       3. Orden explícita de modo sin filtros             -> Dolphin (si cabe en Local).
       4. Contexto mayor al umbral local                  -> Nube / Flash.
       5. Todo lo demás                                   -> Local (Gemma 2).
+
+    `motivo` es una etiqueta corta para logs y para la interfaz.
     """
-    es_analisis_profundo = any(frase in msg_lower for frase in _FRASES_ANALISIS_PROFUNDO)
+    if intenciones.get("forzar_pro"):
+        return "Nube", MODELO_NUBE_PRO, "pedido_explicito"
 
-    if tokens_totales > LIMITE_TOKENS_FLASH or es_analisis_profundo:
-        return "Nube", MODELO_NUBE_PRO
+    if any(frase in msg_lower for frase in _FRASES_ANALISIS_PROFUNDO):
+        return "Nube", MODELO_NUBE_PRO, "analisis_profundo"
 
-    if intenciones["vision"] or intenciones["web"]:
-        return "Nube", MODELO_NUBE_FLASH
+    if intenciones.get("codigo_pesado"):
+        return "Nube", MODELO_NUBE_PRO, "codigo_pesado"
+
+    if tokens_totales > LIMITE_TOKENS_FLASH:
+        return "Nube", MODELO_NUBE_PRO, "contexto_grande"
+
+    # `codigo_bruto` es la intención de código ANTES de que los interceptores de
+    # archivo/entorno la apaguen, así que un "revisa este archivo" con un
+    # archivo largo también cuenta como código.
+    if intenciones.get("codigo_bruto") and tokens_totales > LIMITE_TOKENS_CODIGO_PRO:
+        return "Nube", MODELO_NUBE_PRO, "codigo_contexto_grande"
+
+    if intenciones["vision"]:
+        return "Nube", MODELO_NUBE_FLASH, "vision"
+    if intenciones["web"]:
+        return "Nube", MODELO_NUBE_FLASH, "web"
 
     if intenciones["uncensored"]:
         if tokens_totales <= LIMITE_TOKENS_CASUAL:
-            return "Dolphin", None
-        else:
-            return "Nube", MODELO_NUBE_FLASH
+            return "Dolphin", None, "sin_filtros"
+        return "Nube", MODELO_NUBE_FLASH, "sin_filtros_no_cabe_en_local"
 
     umbral_local = LIMITE_TOKENS_CODIGO if intenciones["codigo"] else LIMITE_TOKENS_CASUAL
 
     if tokens_totales > umbral_local:
-        return "Nube", MODELO_NUBE_FLASH
+        return "Nube", MODELO_NUBE_FLASH, "contexto_medio"
 
-    return "Local", None
+    return "Local", None, "conversacion_local"
+
+
+def _describir_ruta(ruta: str, modelo_nube, motivo: str) -> dict:
+    """Ficha de la ruta elegida, pensada para que la interfaz distinga QUIÉN
+    responde (insignia, mensaje de espera) sin tener que adivinarlo."""
+    if ruta == "Nube" and modelo_nube == MODELO_NUBE_PRO:
+        analisis_de_codigo = motivo.startswith("codigo") or motivo in ("analisis_profundo", "pedido_explicito")
+        return {
+            "ruta": "Nube", "modelo": modelo_nube, "perfil": "pro", "etiqueta": "Gemini Pro",
+            "motivo": motivo,
+            # Pro tarda varios segundos en empezar: la GUI debe mostrar algo mientras tanto.
+            "mensaje_espera": "Analizando arquitectura..." if analisis_de_codigo else "Analizando a fondo...",
+        }
+    if ruta == "Nube":
+        return {"ruta": "Nube", "modelo": modelo_nube, "perfil": "flash", "etiqueta": "Gemini Flash",
+                "motivo": motivo, "mensaje_espera": None}
+    if ruta == "Dolphin":
+        return {"ruta": "Dolphin", "modelo": MODELO_UNCENSORED, "perfil": "dolphin", "etiqueta": "Dolphin",
+                "motivo": motivo, "mensaje_espera": None}
+    return {"ruta": "Local", "modelo": MODELO_LOCAL, "perfil": "local", "etiqueta": "Gemma 2",
+            "motivo": motivo, "mensaje_espera": None}
+
+
+def _notificar_estado(callback_estado, info: dict):
+    """Avisa a la GUI qué ruta va a responder, ANTES del primer token. Un fallo
+    en el callback nunca debe romper la respuesta."""
+    if not callback_estado:
+        return
+    try:
+        callback_estado(info)
+    except Exception as e:
+        print(f"⚠️ [callback_estado falló: {e}]")
+
 
 # ==========================================
 # 8. ENRUTADOR PRINCIPAL
 # ==========================================
-def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
+def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None, callback_estado=None):
     """Punto de entrada de cada mensaje. Devuelve (texto_respuesta, ruta_usada).
 
-    `callback_ui` pide permiso al usuario para herramientas sensibles;
-    `callback_stream` recibe el texto a medida que se genera.
+    `callback_ui`      pide permiso al usuario para herramientas sensibles.
+    `callback_stream`  recibe el texto a medida que se genera.
+    `callback_estado`  (opcional) recibe un dict con la ruta elegida
+                       ({"perfil": "pro"|"flash"|"local"|"dolphin", "etiqueta",
+                       "modelo", "motivo", "mensaje_espera"}) justo antes de
+                       que empiece la respuesta.
+
+    Red de seguridad: garantiza que la GUI SIEMPRE reciba algo. Si la ruta
+    termina sin haber transmitido nada (un error o un return directo, como
+    Git o la ingesta), el texto final se envía aquí; y si algo revienta por
+    dentro, el error también se transmite en vez de dejar la burbuja colgada.
     """
+    hubo_stream = [False]
+
+    def _stream_vigilado(fragmento):
+        hubo_stream[0] = True
+        callback_stream(fragmento)
+
+    try:
+        texto, ruta = _procesar_mensaje(
+            mensaje_usuario, callback_ui,
+            _stream_vigilado if callback_stream else None,
+            callback_estado,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        return _reportar_error(f"❌ Error inesperado en el Cerebro: {e}", callback_stream), "Error"
+
+    if callback_stream and texto and not hubo_stream[0]:
+        callback_stream(texto)
+    return texto, ruta
+
+
+def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_estado):
+    """Cuerpo del enrutador (ver `charlar_con_lia` para los parámetros)."""
     database.guardar_mensaje("user", mensaje_usuario)
     
     contexto_historico = prompt_builder.armar_historial_usuario(mensaje_usuario)
@@ -1451,6 +1653,9 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
     msg_lower = mensaje_real.lower()
 
     intenciones = _detectar_intenciones(msg_lower)
+    # Se guarda la intención de código ANTES de que los interceptores de
+    # archivo/entorno la apaguen; el semáforo la usa para decidir Pro.
+    intenciones["codigo_bruto"] = bool(intenciones.get("codigo"))
 
     # --- INTERCEPTOR DE APRENDIZAJE (INGESTA AL SEGUNDO CEREBRO) ---
     # Es una orden de ESCRITURA permanente, así que se evalúa PRIMERO y corta
@@ -1460,10 +1665,6 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
         texto_respuesta = _procesar_ingesta_documento(callback_ui=callback_ui)
         database.guardar_mensaje("model", texto_respuesta)
         print(f"\n🤖 L-IA (Sistema/Ingesta): {texto_respuesta}\n")
-        # NUEVO: Forzamos el envío al frontend antes de salir
-        if callback_stream:
-            callback_stream(texto_respuesta)
-            
         return texto_respuesta, "Local"
 
     # ¿El usuario habla de "este archivo/documento"? Si además pregunta por su
@@ -1560,10 +1761,6 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
     if intenciones["guardar_git"]:
         texto_respuesta = _ejecutar_guardado_git(msg_lower, callback_ui=callback_ui)
         print(f"\n🤖 L-IA (Local/Git): {texto_respuesta}\n")
-        # NUEVO: Forzamos el envío al frontend antes de salir
-        if callback_stream:
-            callback_stream(texto_respuesta)
-            
         return texto_respuesta, "Local"
     elif intenciones["git"]:
         intenciones["estado_pc"] = False
@@ -1661,7 +1858,8 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
     # --- DETECCIÓN DE TONO PARA EL PROMPT BUILDER ---
     # Si no activamos el modo RAG, verificamos si es código o diagnóstico
     if tipo_intencion_principal != "rag_tecnico":
-        if intenciones.get("codigo") or intenciones.get("git") or intenciones.get("guardar_git"):
+        if (intenciones.get("codigo") or intenciones.get("codigo_pesado")
+                or intenciones.get("git") or intenciones.get("guardar_git")):
             tipo_intencion_principal = "codigo"
         elif intenciones.get("estado_pc"):
             tipo_intencion_principal = "estado_pc"
@@ -1676,7 +1874,18 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
     tokens_totales = estimar_tokens(contexto_historico)
     print(f"🚦 [SEMÁFORO v3] Tokens estimados del contexto total: {tokens_totales}")
 
-    ruta_elegida, modelo_nube_seleccionado = _elegir_ruta(intenciones, msg_lower, tokens_totales)
+    ruta_elegida, modelo_nube_seleccionado, motivo_ruta = _elegir_ruta(intenciones, msg_lower, tokens_totales)
+    info_ruta = _describir_ruta(ruta_elegida, modelo_nube_seleccionado, motivo_ruta)
+    es_pro = info_ruta["perfil"] == "pro"
+    print(f"🚦 [SEMÁFORO v3] Ruta: {info_ruta['etiqueta']} (motivo: {motivo_ruta})")
+
+    # La GUI se entera de quién va a responder ANTES del primer token; con Pro
+    # esto le permite mostrar "Analizando arquitectura..." mientras piensa.
+    _notificar_estado(callback_estado, info_ruta)
+
+    # Pro en una tarea de código recibe instrucciones de "arquitecta senior".
+    if es_pro and (intenciones.get("codigo_pesado") or intenciones.get("codigo_bruto")):
+        instrucciones_sistema += NOTA_MODO_PRO_CODIGO
 
     if ruta_elegida == "Nube":
         texto_respuesta = responder_con_nube(
@@ -1684,7 +1893,10 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None):
             intenciones["vision"], intenciones["web"],
             modelo_nube=modelo_nube_seleccionado,
             callback_ui=callback_ui,
-            callback_stream=callback_stream
+            callback_stream=callback_stream,
+            # Pro solo usa herramientas locales si el usuario pidió abrir algo;
+            # si no, va en streaming directo (ver CASO 2 de responder_con_nube).
+            usar_herramientas=(not es_pro) or intenciones["abrir_app"]
         )
     elif ruta_elegida == "Dolphin":
         texto_respuesta = responder_con_local_uncensored(
