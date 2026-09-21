@@ -61,11 +61,11 @@ Capacidad de descargar un modelo y montar otro bajo demanda usando `keep_alive=0
 
 | Interfaz principal | Streaming y respuesta |
 |:---:|:---:|
-| ![Interfaz principal de L-IA](Interfaz_LIA.png) | ![Streaming de respuesta](Streaming_LIA.png) |
+| ![Interfaz principal de L-IA](docs/Interfaz_LIA.png) | ![Streaming de respuesta](docs/Streaming_LIA.png) |
 
 | Configuración de modelos | Workspace activo |
 |:---:|:---:|
-| ![Configuración de modelos](Modelos_LIA.png) | ![Workspace activo](Workspace_LIA.png) |
+| ![Configuración de modelos](docs/Modelos_LIA.png) | ![Workspace activo](docs/Workspace_LIA.png) |
 
 ---
 
