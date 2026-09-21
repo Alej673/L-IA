@@ -93,7 +93,7 @@ client = genai.Client(api_key=api_key)
 MODELO_LOCAL = 'gemma2'                # Cerebro cotidiano (rápido, censurado)
 MODELO_UNCENSORED = 'dolphin-mistral'  # Especialista sin filtros (solo bajo demanda explícita)
 MODELO_NUBE_FLASH = 'gemini-3.7-flash' # Analista rápido (visión, web, contexto medio)
-MODELO_NUBE_PRO = 'gemini-3.1-pro'     # Artillería pesada (contexto enorme / análisis profundo)
+MODELO_NUBE_PRO = 'gemini-3.1-pro-preview'     # Artillería pesada (contexto enorme / análisis profundo)
 
 # Ruta del proyecto/repositorio sobre el que se está trabajando. Persiste entre
 # turnos para que un "¿qué cambió?" sin ruta explícita reutilice el último
@@ -780,23 +780,32 @@ def _manejar_error_nube(e: Exception, intento: int, max_reintentos: int, espera:
                         permitir_reintento: bool = True, etiqueta: str = "Nube"):
     """Interpreta una excepción de la API de Gemini y decide qué hacer:
       - Devuelve un str: ese es el mensaje final, hay que cortar y reportarlo.
-      - Devuelve None: es un error transitorio (503/UNAVAILABLE), quedan
+      - Devuelve None: es un error transitorio (503/UNAVAILABLE/Red), quedan
         reintentos y ya se durmió `espera` segundos; el llamador reintenta.
-
-    `permitir_reintento=False` se usa cuando ya se transmitió texto a la GUI:
-    reintentar duplicaría lo que el usuario ya vio. `etiqueta` ("Nube" o
-    "Nube/Pro") indica en el mensaje quién falló.
     """
-    if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+    error_str = str(e)
+    
+    if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
         return f"🛑 [L-IA {etiqueta}]: Límite de la API gratuita alcanzado. Espera 1 minuto."
-    if "503" in str(e) or "UNAVAILABLE" in str(e):
+        
+    # Tratamos las desconexiones abruptas de red como transitorias (igual que un 503)
+    es_transitorio = any(err in error_str for err in [
+        "503", "UNAVAILABLE", "Server disconnected", "Connection reset", "104"
+    ])
+    
+    if es_transitorio:
         if not permitir_reintento:
             return (f"🛑 [L-IA {etiqueta}]: La conexión se cortó a mitad de la respuesta "
-                    f"(servidores de Google saturados). Vuelve a intentarlo.")
+                    f"(servidores de Google inestables). Vuelve a intentarlo.")
         if intento < max_reintentos - 1:
             time.sleep(espera)
-            return None
-        return f"🛑 [L-IA {etiqueta}]: Imposible conectar. Servidores de Google saturados."
+            return None  # Señal para reintentar
+        return f"🛑 [L-IA {etiqueta}]: Imposible conectar. Servidores de Google saturados o desconectados."
+        
+    if "404" in error_str or "NOT_FOUND" in error_str:
+        return (f"🛑 [L-IA {etiqueta}]: El modelo configurado no existe (Error 404). "
+                f"Verifica los nombres asignados a MODELO_NUBE_FLASH y PRO en cerebro.py.")
+                
     return f"❌ Error crítico en la {etiqueta}: {e}"
 
 
@@ -969,7 +978,12 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
 def _extraer_llamada_manual(texto):
     match = re.search(r'\{[^{}]*"accion"[^{}]*\}', texto, re.DOTALL)
     if match:
-        return json.loads(match.group(0))
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            # Si el modelo generó un JSON inválido, ignoramos el error 
+            # para permitir que el flujo avance hacia la opción de respaldo.
+            pass
 
     # --- Fallback: gemma2 a veces ignora el formato JSON estricto y en su
     # lugar devuelve una pseudo-llamada entre corchetes, ej:
