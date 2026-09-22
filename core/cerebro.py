@@ -432,22 +432,26 @@ def tomar_captura_en_memoria():
 def _extraer_referencia_archivo(mensaje):
     nombre_detectado = None
 
+    # Buscar rutas entre comillas
     match_ruta_comillas = re.search(r'"([a-zA-Z]:\\[^"]+)"', mensaje)
     if match_ruta_comillas:
         nombre_detectado = match_ruta_comillas.group(1).strip()
 
+    # Buscar rutas con extensiones comunes
     elif (match_ruta := re.search(
         r'([a-zA-Z]:\\[^\*?"<>|]+\.(?:txt|py|php|js|json|html|css|md|env|cpp|h|docx|pdf))',
         mensaje, re.IGNORECASE
     )):
         nombre_detectado = match_ruta.group(1).strip()
 
+    # Buscar nombres de archivos con extensiones comunes
     elif (match_ext := re.search(
         r'\b([a-zA-Z0-9_\-]+\s*[a-zA-Z0-9_\-]*\.(?:txt|py|php|js|json|html|css|md|env|cpp|h|docx|pdf))\b',
         mensaje, re.IGNORECASE
     )):
         nombre_detectado = match_ext.group(1).strip()
 
+    # Buscar archivos por acción
     else:
         patron_accion_archivo = (
             r'\b(?:le[eráiow]*|revis[aaréiów]*|analiz[aaréiów]*|abr[iraéiów]*|'
@@ -455,7 +459,6 @@ def _extraer_referencia_archivo(mensaje):
             r'(?:el\s+|la\s+|del\s+|un\s+|una\s+)?'
             r'(?:archivo|documento|nota|pdf|docx|word|script|codigo|código)\s+'
             r'(?:llamado\s+|de\s+|titulado\s+)?'
-            r'(?!(?:que|para|porque|as[ií]|y)\b)'
             r'([a-zA-Z0-9_\-\.]+(?:\s+[a-zA-Z0-9_\-\.]+){0,4}?)'
             r'(?=\s+(?:que|para|porque|as[ií]|y)\b|\s*[\.\?!]|\Z)'
         )
@@ -463,8 +466,10 @@ def _extraer_referencia_archivo(mensaje):
         if match_intencion:
             limpio = match_intencion.group(1).strip()
             for palabra_extra in [" por favor", " para mi", " que tengo", " en mi pc"]:
-                if limpio.endswith(palabra_extra):
-                    limpio = limpio.replace(palabra_extra, "")
+                # Verificamos ignorando mayúsculas/minúsculas y recortamos por longitud (slicing)
+                # en lugar de un .replace() que podría corromper el medio del nombre del archivo.
+                if limpio.lower().endswith(palabra_extra):
+                    limpio = limpio[:-len(palabra_extra)]
             nombre_detectado = limpio.strip()
 
     if nombre_detectado:
@@ -472,7 +477,6 @@ def _extraer_referencia_archivo(mensaje):
         return nombre_detectado
 
     return None
-
 
 def _extraer_ciudad_clima(mensaje):
     match = re.search(
@@ -1247,12 +1251,13 @@ def _procesar_calendario(contexto_historico):
     return contexto_historico
 
 
-def _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=None):
+def _resolver_proyecto_activo(mensaje_real: str, msg_lower: str) -> str:
+    """Helper para centralizar la deducción de la ruta del proyecto activo (DRY)."""
     global PROYECTO_ACTIVO_ACTUAL
     rutas_conocidas = _cargar_rutas_personalizadas()
-
+    
     alias_detectado, ruta_encontrada = _encontrar_ruta_inteligente(msg_lower, rutas_conocidas)
-
+    
     if ruta_encontrada:
         PROYECTO_ACTIVO_ACTUAL = ruta_encontrada
         print(f"📌 [Proyecto activo cambiado por alias flexible: '{alias_detectado}']")
@@ -1262,8 +1267,13 @@ def _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=None)
             PROYECTO_ACTIVO_ACTUAL = match_ruta_explicita.group(0).strip().rstrip('\\')
         elif PROYECTO_ACTIVO_ACTUAL is None:
             PROYECTO_ACTIVO_ACTUAL = os.getcwd()
+            
+    return PROYECTO_ACTIVO_ACTUAL
 
-    ruta = PROYECTO_ACTIVO_ACTUAL
+
+def _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=None):
+    ruta = _resolver_proyecto_activo(mensaje_real, msg_lower)
+    
     print(f"\n⚙️ [L-IA solicitando ejecución de: leer_repositorio_git en '{ruta}']")
     resultado_git = _ejecutar_herramienta_segura(
         "leer_repositorio_git", callback_ui_permiso=callback_ui, ruta_repo=ruta
@@ -1275,21 +1285,8 @@ def _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=None)
 
 
 def _ejecutar_guardado_git(msg_lower, callback_ui=None):
-    global PROYECTO_ACTIVO_ACTUAL
-    rutas_conocidas = _cargar_rutas_personalizadas()
-
-    alias_detectado, ruta_encontrada = _encontrar_ruta_inteligente(msg_lower, rutas_conocidas)
-
-    if ruta_encontrada:
-        PROYECTO_ACTIVO_ACTUAL = ruta_encontrada
-        print(f"📌 [Proyecto activo cambiado por alias flexible: '{alias_detectado}']")
-    else:
-        match_ruta_explicita = re.search(r'[a-zA-Z]:\\(?:[^\s"<>|]+\\?)+', msg_lower)
-        if match_ruta_explicita:
-            PROYECTO_ACTIVO_ACTUAL = match_ruta_explicita.group(0).strip().rstrip('\\')
-        elif PROYECTO_ACTIVO_ACTUAL is None:
-            PROYECTO_ACTIVO_ACTUAL = os.getcwd()
-    ruta = PROYECTO_ACTIVO_ACTUAL
+    # Se pasa msg_lower en ambos argumentos para no alterar la firma requerida por charlar_con_lia
+    ruta = _resolver_proyecto_activo(msg_lower, msg_lower)
     print(f"\n🧠 [L-IA analizando código en '{ruta}' para crear el commit...]")
 
     try:
@@ -1316,11 +1313,13 @@ def _ejecutar_guardado_git(msg_lower, callback_ui=None):
         messages=[{'role': 'user', 'content': prompt_commit}]
     )['message']['content'].strip()
 
-    titulo_match = re.search(r'TITULO:\s*(.*)', respuesta_llm, re.IGNORECASE)
-    desc_match = re.search(r'DESCRIPCION:\s*(.*)', respuesta_llm, re.IGNORECASE | re.DOTALL)
+    # Regex endurecido contra posibles asteriscos de Markdown generados por Gemma 2
+    titulo_match = re.search(r'\*?TITULO\*?:\s*\*?(.*)', respuesta_llm, re.IGNORECASE)
+    desc_match = re.search(r'\*?DESCRIPCION\*?:\s*\*?(.*)', respuesta_llm, re.IGNORECASE | re.DOTALL)
 
-    titulo = titulo_match.group(1).strip() if titulo_match else "Actualización automática de código"
-    descripcion = desc_match.group(1).strip() if desc_match else respuesta_llm
+    # Limpiamos asteriscos residuales por si el modelo intentó formatear solo el valor
+    titulo = titulo_match.group(1).replace('*', '').strip() if titulo_match else "Actualización automática de código"
+    descripcion = desc_match.group(1).replace('*', '').strip() if desc_match else respuesta_llm
 
     print(f"📝 [Título propuesto]: {titulo}")
 
@@ -1332,7 +1331,6 @@ def _ejecutar_guardado_git(msg_lower, callback_ui=None):
         descripcion_commit=descripcion
     )
 
-    # Damos formato Markdown dependiendo de si el usuario autorizó o bloqueó
     if "🚫" in resultado or "Error" in resultado or "falló" in resultado.lower():
         return (
             f"🛑 **Operación Git Interrumpida**\n\n"
@@ -1340,7 +1338,6 @@ def _ejecutar_guardado_git(msg_lower, callback_ui=None):
             f"**Reporte del Sistema:**\n> {resultado}"
         )
     else:
-        # Limpiamos un poco el resultado para que encaje perfecto en el bloque de código
         resultado_limpio = resultado.replace("✅ Cambios guardados y subidos exitosamente.", "").strip()
         
         return (
@@ -1350,7 +1347,6 @@ def _ejecutar_guardado_git(msg_lower, callback_ui=None):
             f"**📝 Detalles del Sistema:**\n"
             f"```text\n{resultado_limpio}\n```"
         )
-
 
 def _procesar_workspace_fase_7(mensaje_real, msg_lower, fijar: bool):
     if not fijar:

@@ -47,6 +47,7 @@
   border-radius: 50%;
   filter: blur(4px);
   pointer-events: none;
+  transition: background 0.9s ease;
 }
 
 /* Anillo que contiene las partículas orbitales */
@@ -63,6 +64,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
+  transition: background 0.9s ease, box-shadow 0.9s ease;
 }
 
 .anillo-exterior {
@@ -72,6 +74,7 @@
   border: 2px dashed #00ffff;
   border-radius: 50%;
   opacity: 0.5;
+  transition: border-color 0.9s ease;
 }
 
 .anillo-medio {
@@ -81,6 +84,7 @@
   border: 2px solid transparent;
   border-radius: 50%;
   opacity: 0.7;
+  transition: border-color 0.9s ease;
 }
 
 .anillo-interior {
@@ -91,14 +95,76 @@
   border-top-color: #00ffff;
   border-bottom-color: #00ffff;
   border-radius: 50%;
+  transition: border-color 0.9s ease;
 }
 
+/* Incremento de luminosidad del núcleo y desbordamiento visible */
 .centro-nucleo {
   position: relative;
-  width: 34px;
-  height: 34px;
+  width: 64px;
+  height: 64px;
   border-radius: 50%;
   z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: visible; /* CRÍTICO: Permite que las "Zzz" salgan de la esfera */
+  will-change: transform, box-shadow;
+  transition: background 0.6s ease, box-shadow 0.6s ease;
+}
+
+/* Tipografía y brillo para las partículas de sueño */
+.particula-zzz {
+  position: absolute;
+  font-family: monospace;
+  font-weight: 900;
+  pointer-events: none;
+  user-select: none;
+  text-shadow: 0 0 8px currentColor;
+}
+
+/* Rostro holográfico: ojos + boca centrados dentro del núcleo */
+.rostro-holografico {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.fila-ojos {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.ojo {
+  flex-shrink: 0;
+}
+
+.boca {
+  flex-shrink: 0;
+}
+
+/* Contenedor del escáner (efecto de análisis RAG) */
+.escaner-rag {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.escaner-rag-barra {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 30%;
+  background: linear-gradient(to bottom, transparent, rgba(255,255,255,0.85), transparent);
 }
 
 /* Barras tipo ecualizador — aparecen solo al escribir */
@@ -182,6 +248,17 @@
   border-radius: 8px;
   font-family: inherit;
   box-shadow: inset 2px 2px 5px rgba(0,0,0,0.8);
+}
+
+/* Ajuste de fluidez para el rostro interactivo */
+.rostro-holografico {
+  will-change: transform;
+  pointer-events: none; /* Evita bloquear clics al núcleo */
+}
+
+/* Suavizado en la esfera central cuando cambie de modo */
+.centro-nucleo {
+  will-change: transform, box-shadow;
 }
 
 /* =========================================
