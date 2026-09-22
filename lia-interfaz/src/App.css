@@ -123,6 +123,38 @@
   text-shadow: 0 0 8px currentColor;
 }
 
+/* Lentes holográficos para lectura de documentos */
+.lentes-lectura {
+  position: absolute;
+  display: flex;
+  gap: 2px;
+  z-index: 3;
+}
+.lente {
+  width: 18px;
+  height: 12px;
+  border: 2px solid rgba(0, 255, 255, 0.8);
+  border-radius: 2px 2px 6px 6px;
+  background: rgba(0, 255, 255, 0.1);
+  backdrop-filter: blur(2px);
+}
+.puente-lentes {
+  width: 4px;
+  height: 2px;
+  background: rgba(0, 255, 255, 0.8);
+  align-self: center;
+}
+
+/* Nodo secundario para la animación de Git Branch */
+.nodo-git {
+  position: absolute;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  box-shadow: 0 0 10px currentColor;
+  z-index: 1;
+}
+
 /* Rostro holográfico: ojos + boca centrados dentro del núcleo */
 .rostro-holografico {
   position: relative;
