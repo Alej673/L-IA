@@ -638,39 +638,38 @@ def _generar_prompt_bozal(nombre_herramienta: str, resultado: str) -> str:
 HABLAR_RESPUESTA = False  # Switch maestro: el launcher lo enciende si le hablaste por micrófono.
 
 
-def _generar_respuesta_con_voz(generador_texto, callback_stream=None):
+def _generar_respuesta_con_voz(generador_texto, callback_stream=None, texto_para_mostrar=None):
     """Consume un generador de texto, lo transmite a la GUI y, si la voz está
     activa, lo lee en voz alta frase por frase.
 
     El generador puede producir tokens sueltos (streaming real) o frases ya
-    completas (ver `_dividir_en_fragmentos_hablables`); da igual.
+    completas (ver `_dividir_en_fragmentos_hablables`); da igual para la voz.
 
-    Con la voz activa hay dos hilos en cadena:
-        sintetizador (Edge TTS -> .mp3)  ->  reproductor (pygame)
-    Mientras suena la frase N, la N+1 ya se está sintetizando, así que la
-    latencia de red del TTS queda oculta detrás del audio.
+    `texto_para_mostrar`: si se pasa (un texto YA completo, con su Markdown
+    intacto), es lo que se manda a `callback_stream` en un solo golpe, en vez
+    de ir emitiendo cada fragmento del generador (que puede venir aplanado
+    para TTS). Úsalo cuando `generador_texto` sea una versión "hablable" de
+    un texto que ya tenías completo de antes.
     """
     respuesta_completa = ""
     bloque_actual = ""
     hablar = HABLAR_RESPUESTA
 
+    if texto_para_mostrar and callback_stream:
+        callback_stream(texto_para_mostrar)
+
     if hablar:
         try:
-            # Carga perezosa: `voz` solo entra en memoria si realmente se habla.
-            # Se importa aquí (hilo principal) y no dentro de los hilos: si
-            # fallara, un error dentro de un hilo daemon pasaría en silencio
-            # y `join()` se quedaría esperando para siempre.
             import core.voz as voz
         except Exception as e:
             print(f"⚠️ [Voz no disponible, continúo solo con texto: {e}]")
             hablar = False
 
     if hablar:
-        cola_texto = queue.Queue()   # frases pendientes de sintetizar
-        cola_audio = queue.Queue()   # .mp3 listos, pendientes de reproducir
+        cola_texto = queue.Queue()
+        cola_audio = queue.Queue()
 
         def hilo_sintetizador():
-            """Solo sintetiza. `None` es la señal de cierre y se propaga al reproductor."""
             while True:
                 frase = cola_texto.get()
                 if frase is None:
@@ -680,7 +679,6 @@ def _generar_respuesta_con_voz(generador_texto, callback_stream=None):
                 try:
                     ruta = voz.sintetizar_a_archivo(frase)
                 except Exception as e:
-                    # Una frase fallida no debe romper la cadena: se omite y se sigue.
                     print(f"⚠️ [TTS falló en una frase: {e}]")
                     ruta = None
                 if ruta:
@@ -688,7 +686,6 @@ def _generar_respuesta_con_voz(generador_texto, callback_stream=None):
                 cola_texto.task_done()
 
         def hilo_reproductor():
-            """Solo reproduce, en orden y de a un archivo. Nunca toca Edge TTS."""
             while True:
                 ruta = cola_audio.get()
                 if ruta is None:
@@ -708,7 +705,6 @@ def _generar_respuesta_con_voz(generador_texto, callback_stream=None):
     PUNTUACION_CORTE = ['.', '?', '!', '\n']
 
     for fragmento_entrante in generador_texto:
-        # <-- NUEVO: Freno de emergencia táctico
         if evento_interrupcion.is_set():
             print("\n🛑 [Interrupción táctica: Generación abortada por el usuario]")
             break
@@ -720,11 +716,11 @@ def _generar_respuesta_con_voz(generador_texto, callback_stream=None):
         bloque_actual += fragmento_entrante
 
         print(fragmento_entrante, end="", flush=True)
-        if callback_stream:
+        # Clave: si ya mostramos el texto completo arriba, NO volvemos a
+        # emitir cada fragmento aplanado hacia la GUI.
+        if callback_stream and not texto_para_mostrar:
             callback_stream(fragmento_entrante)
 
-        # Se manda a sintetizar al cerrar una oración; los bloques de <=15
-        # caracteres se siguen acumulando para no producir audios entrecortados.
         if hablar and any(p in fragmento_entrante for p in PUNTUACION_CORTE):
             fragmento = bloque_actual.strip()
             if len(fragmento) > 15:
@@ -735,13 +731,12 @@ def _generar_respuesta_con_voz(generador_texto, callback_stream=None):
         resto = bloque_actual.strip()
         if len(resto) > 2:
             cola_texto.put(resto)
-        cola_texto.put(None)      # cierra el sintetizador, que a su vez cierra al reproductor
+        cola_texto.put(None)
         t_sintetizador.join()
         t_reproductor.join()
 
     print()
-    return respuesta_completa
-
+    return respuesta_completa if not texto_para_mostrar else texto_para_mostrar
 
 # Corta tras . ? ! o salto de línea (usa un lookbehind, así que la puntuación se conserva).
 _PATRON_DIVISION_ORACIONES = re.compile(r'(?<=[\.\?\!\n])\s*')
@@ -965,12 +960,12 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
             # lenguaje natural SÍ va con streaming real, para que voz y GUI
             # se comporten igual que en Local.
             print("\n🤖 L-IA (Nube, hablando en bloques)...")
-            stream = client.models.generate_content_stream(
-                model=modelo_nube,
-                contents=contenidos_api
+            generador = _dividir_en_fragmentos_hablables(response.text)
+            return _generar_respuesta_con_voz(
+                generador,
+                callback_stream=_stream_contado,
+                texto_para_mostrar=response.text,   # <-- NUEVO: la GUI recibe el Markdown intacto
             )
-            generador = (chunk.text for chunk in stream if chunk.text)
-            return _generar_respuesta_con_voz(generador, callback_stream=_stream_contado)
 
         # Sin tool-call: la llamada del PASO 1 ya trajo la respuesta completa.
         # Se reutiliza ese texto (troceado en oraciones para hablar en
@@ -978,7 +973,11 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
         # que duplicaría costo y latencia en cada mensaje casual.
         print("\n🤖 L-IA (Nube, hablando en bloques)...")
         generador = _dividir_en_fragmentos_hablables(response.text)
-        return _generar_respuesta_con_voz(generador, callback_stream=_stream_contado)
+        return _generar_respuesta_con_voz(
+            generador, 
+            callback_stream=_stream_contado,
+            texto_para_mostrar=response.text  # <-- SOLUCIÓN: Envía el Markdown intacto a la GUI
+        )
 
     return _ejecutar_con_reintentos(_accion_herramientas, callback_stream, emitidos, etiqueta)
 

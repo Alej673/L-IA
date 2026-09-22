@@ -27,129 +27,151 @@ function useCicloDeTono(tonos, intervaloMs = 1800) {
 }
 
 // =========================================
-// NÚCLEO LIA: Animación central fusionada
+// NÚCLEO L-IA: Expresividad y Micro-Estados
 // =========================================
 function NucleoLIA({ estado }) {
   const cfg = CONFIG_ESTADOS[estado] || CONFIG_ESTADOS.reposo;
   const { label, giro, pulso, tonos } = cfg;
   const color = useCicloDeTono(tonos, estado === 'error' ? 600 : 1800);
-  const colorRostro = '#021017'; // Un poco más oscuro para mejor contraste
+  const colorRostro = '#021017';
 
-  // --- ESTADOS BASE Y TRACKING (Los tuyos) ---
   const [parpadeo, setParpadeo] = useState(false);
   const [mouseOffset, setMouseOffset] = useState({ x: 0, y: 0 });
-  const [miradaAleatoria, setMiradaAleatoria] = useState({ x: 0, y: 0 });
+  const [miradaVagante, setMiradaVagante] = useState({ x: 0, y: 0 });
   const [tiempoInactiva, setTiempoInactiva] = useState(0);
+  const [subEstado, setSubEstado] = useState('normal');
 
-  // --- NUEVO: Evolución del aburrimiento ---
-  // Reemplazamos el booleano 'aburrida' por niveles: 'normal', 'bostezo', 'durmiendo'
-  const [subEstado, setSubEstado] = useState('normal'); 
-
-  // 1. Manejador Global de Movimiento del Ratón (Tu código)
+  // 1. Detección de movimiento y reinicio de inactividad
   useEffect(() => {
     const handleMouseMove = (e) => {
-      setSubEstado('normal'); // Despierta al mover el ratón
       setTiempoInactiva(0);
-      setMiradaAleatoria({ x: 0, y: 0 });
-
+      setSubEstado('normal');
       const windowCenterX = window.innerWidth / 2;
       const windowCenterY = window.innerHeight / 2;
-      const offsetX = (e.clientX - windowCenterX) / 50; 
-      const offsetY = (e.clientY - windowCenterY) / 70;
+      const offsetX = (e.clientX - windowCenterX) / 45;
+      const offsetY = (e.clientY - windowCenterY) / 60;
       const limit = (val, max) => Math.min(Math.max(val, -max), max);
-      
-      setMouseOffset({ x: limit(offsetX, 12), y: limit(offsetY, 8) });
+      setMouseOffset({ x: limit(offsetX, 10), y: limit(offsetY, 7) });
     };
-
     window.addEventListener('mousemove', handleMouseMove);
     return () => window.removeEventListener('mousemove', handleMouseMove);
   }, []);
 
-  // 2. Temporizador Fusionado (Miradas + Bostezo + Dormir)
+  // 2. Progresión de estados de aburrimiento / reposo
   useEffect(() => {
-    let intervaloTiempo = null;
-    let intervaloAccion = null;
-
-    if (estado === 'reposo') {
-      // Contador general
-      intervaloTiempo = setInterval(() => {
-        setTiempoInactiva(prev => {
-          const nuevoTiempo = prev + 1;
-          // Evolución del aburrimiento
-          if (nuevoTiempo > 30) setSubEstado('durmiendo'); // A los 30s se duerme
-          else if (nuevoTiempo === 20) setSubEstado('bostezo'); // A los 20s da un bostezo largo
-          else if (nuevoTiempo > 23 && nuevoTiempo < 30) setSubEstado('normal'); // Termina de bostezar
-          return nuevoTiempo;
-        });
-      }, 1000);
-
-      // Miradas aleatorias solo si NO está durmiendo
-      intervaloAccion = setInterval(() => {
-        if (subEstado !== 'durmiendo' && tiempoInactiva > 2 && tiempoInactiva < 20) {
-          setMiradaAleatoria({
-             x: (Math.random() - 0.5) * 8, 
-             y: (Math.random() - 0.5) * 4  
-          });
-          setTimeout(() => setMiradaAleatoria({ x: 0, y: 0 }), Math.random() * 2000 + 1000);
-        }
-      }, 4000);
+    if (estado !== 'reposo') {
+      setSubEstado('normal');
+      return;
     }
+    const timer = setInterval(() => {
+      setTiempoInactiva(prev => {
+        const t = prev + 1;
+        if (t > 40) setSubEstado('durmiendo');
+        else if (t > 34) setSubEstado('bostezo');
+        else if (t > 24) setSubEstado('molesta');
+        else if (t > 15) setSubEstado('impaciente');
+        else if (t > 7) setSubEstado('alegre');
+        else setSubEstado('normal');
+        return t;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [estado]);
 
-    return () => {
-      clearInterval(intervaloTiempo);
-      clearInterval(intervaloAccion);
-    };
+  // 3. Mirada errante natural cuando el usuario no mueve el mouse
+  useEffect(() => {
+    if (estado !== 'reposo' || subEstado === 'durmiendo') {
+      setMiradaVagante({ x: 0, y: 0 });
+      return;
+    }
+    const intervaloMirada = setInterval(() => {
+      if (tiempoInactiva > 3) {
+        const angulo = Math.random() * Math.PI * 2;
+        const radio = 4 + Math.random() * 5;
+        setMiradaVagante({ x: Math.cos(angulo) * radio, y: Math.sin(angulo) * (radio * 0.6) });
+      } else {
+        setMiradaVagante({ x: 0, y: 0 });
+      }
+    }, 2800);
+    return () => clearInterval(intervaloMirada);
   }, [estado, subEstado, tiempoInactiva]);
 
-  // 3. Parpadeo Orgánico (Se detiene si está dormida)
+  // 4. Ciclo de parpadeo (se apaga al dormir)
   useEffect(() => {
-    const intervaloParpadeo = setInterval(() => {
-      if (subEstado !== 'durmiendo') {
-        setParpadeo(true);
-        setTimeout(() => setParpadeo(false), 150);
-      }
-    }, Math.random() * 4000 + 2000);
-    return () => clearInterval(intervaloParpadeo);
+    if (subEstado === 'durmiendo') return;
+    const ciclo = setInterval(() => {
+      setParpadeo(true);
+      setTimeout(() => setParpadeo(false), 140);
+    }, Math.random() * 3500 + 2500);
+    return () => clearInterval(ciclo);
   }, [subEstado]);
 
-  // --- EXPRESIONES FACIALES FUSIONADAS ---
+  // Geometría facial por estado
   const getOjos = () => {
-    if (parpadeo || subEstado === 'durmiendo') return { height: '2px', width: '10px', y: 4, rotate: 0, borderRadius: '2px', scaleY: 1 };
-    if (subEstado === 'bostezo') return { height: '3px', width: '9px', y: -1, rotate: -12, borderRadius: '2px', scaleY: 1 };
-
-    if (estado === 'error') return { height: '7px', width: '10px', y: 0, rotate: 18, borderRadius: '4px', scaleY: 1 };
-    if (estado === 'procesando' || estado === 'procesando_rag') return { height: '10px', width: '10px', y: -2, rotate: 0, borderRadius: '50%', scaleY: 1 };
-    if (estado === 'escribiendo') return { height: '8px', width: '9px', y: -2, rotate: -6, borderRadius: '4px 4px 50% 50%', scaleY: 1 };
-
-    // Reposo / Normal: Ojos circulares/ligeramente ovalados
+    if (parpadeo || subEstado === 'durmiendo') {
+      return { height: '2px', width: '10px', y: 3, rotate: 0, borderRadius: '2px', scaleY: 1 };
+    }
+    if (subEstado === 'bostezo') {
+      return { height: '3px', width: '9px', y: -2, rotate: -15, borderRadius: '2px', scaleY: 1 };
+    }
+    if (subEstado === 'alegre') {
+      return { height: '6px', width: '10px', y: -1, rotate: 0, borderRadius: '50% 50% 0 0', scaleY: 1 };
+    }
+    if (subEstado === 'impaciente') {
+      return { height: '8px', width: '10px', y: 0, rotate: -8, borderRadius: '30%', scaleY: 1 };
+    }
+    if (subEstado === 'molesta' || estado === 'error') {
+      return { height: '7px', width: '10px', y: 1, rotate: 18, borderRadius: '4px', scaleY: 1 };
+    }
+    if (estado === 'procesando' || estado === 'procesando_rag') {
+      return { height: '10px', width: '10px', y: -2, rotate: 0, borderRadius: '50%', scaleY: 1 };
+    }
+    if (estado === 'escribiendo') {
+      return { height: '8px', width: '9px', y: -2, rotate: -5, borderRadius: '4px 4px 50% 50%', scaleY: 1 };
+    }
     return { height: '9px', width: '9px', y: 0, rotate: 0, borderRadius: '50%', scaleY: 1 };
-  }
+  };
 
   const getBoca = () => {
-    if (subEstado === 'durmiendo') return { width: '6px', height: '2px', borderRadius: '1px', scaleY: 1, rotate: 0, y: 3 };
-    if (subEstado === 'bostezo') return { width: '10px', height: '14px', borderRadius: '40%', scaleY: 1.2, rotate: 0, y: 0 };
-
-    if (estado === 'error') return { width: '12px', height: '3px', borderRadius: '2px', scaleY: 1, rotate: -10, y: 0 };
-    if (estado === 'escribiendo') return { width: '16px', height: '6px', borderRadius: '3px 3px 10px 10px', scaleY: [1, 1.5, 0.8, 1.3], rotate: 0, y: 0 };
-    if (estado === 'procesando' || estado === 'procesando_rag') return { width: '5px', height: '5px', borderRadius: '50%', scaleY: 1, rotate: 0, y: 0 };
-
-    // Reposo / Normal: leve sonrisa (esquinas inferiores más curvas que las superiores)
-    return { width: '11px', height: '4px', borderRadius: '1px 1px 8px 8px', scaleY: 1, rotate: 0, y: 1 };
-  }
+    if (subEstado === 'durmiendo') {
+      return { width: '6px', height: '2px', borderRadius: '1px', scaleY: 1, rotate: 0, y: 3 };
+    }
+    if (subEstado === 'bostezo') {
+      return { width: '10px', height: '14px', borderRadius: '40%', scaleY: 1.2, rotate: 0, y: 1 };
+    }
+    if (subEstado === 'alegre') {
+      return { width: '13px', height: '6px', borderRadius: '0 0 10px 10px', scaleY: 1, rotate: 0, y: 2 };
+    }
+    if (subEstado === 'impaciente') {
+      return { width: '9px', height: '3px', borderRadius: '2px', scaleY: 1, rotate: 6, y: 1 };
+    }
+    if (subEstado === 'molesta' || estado === 'error') {
+      return { width: '12px', height: '3px', borderRadius: '2px', scaleY: 1, rotate: -8, y: 1 };
+    }
+    if (estado === 'escribiendo') {
+      return { width: '15px', height: '6px', borderRadius: '3px 3px 10px 10px', scaleY: [1, 1.4, 0.8, 1.2], rotate: 0, y: 0 };
+    }
+    if (estado === 'procesando' || estado === 'procesando_rag') {
+      return { width: '5px', height: '5px', borderRadius: '50%', scaleY: 1, rotate: 0, y: 0 };
+    }
+    // Reposo / Normal: leve sonrisa
+    return { width: '10px', height: '3px', borderRadius: '1px 1px 6px 6px', scaleY: 1, rotate: 0, y: 1 };
+  };
 
   const ojosCfg = getOjos();
   const bocaCfg = getBoca();
 
-  // El desplazamiento final de la cara respeta tu lógica de Parallax
   const faceOffset = estado === 'reposo' && subEstado !== 'durmiendo'
-        ? { x: mouseOffset.x + miradaAleatoria.x, y: mouseOffset.y + miradaAleatoria.y } 
-        : { x: 0, y: subEstado === 'durmiendo' ? 4 : 0 }; // Si duerme, la cara cae un poco al centro-abajo
+    ? {
+        x: tiempoInactiva > 3 ? miradaVagante.x : mouseOffset.x,
+        y: tiempoInactiva > 3 ? miradaVagante.y : mouseOffset.y,
+      }
+    : { x: 0, y: subEstado === 'durmiendo' ? 4 : 0 };
 
   return (
     <div className="nucleo-wrapper">
       <div className="nucleo-halo" style={{ background: `radial-gradient(circle, ${color}33, transparent 70%)` }} />
 
-      {/* Anillos Orbitales */}
       <motion.div className="anillo-particulas" animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: giro * 2.2, ease: 'linear' }}>
         {[...Array(6)].map((_, i) => (
           <span key={i} className="particula" style={{ background: color, boxShadow: `0 0 8px ${color}`, transform: `rotate(${i * 60}deg) translateX(88px)` }} />
@@ -160,65 +182,97 @@ function NucleoLIA({ estado }) {
       <motion.div className="anillo-medio" style={{ borderTopColor: color, borderBottomColor: color }} animate={{ rotate: -360 }} transition={{ repeat: Infinity, duration: giro * 1.5, ease: 'linear' }} />
       <motion.div className="anillo-interior" style={{ borderColor: color }} animate={{ scale: [1, 1.15, 1], opacity: [0.55, 1, 0.55] }} transition={{ repeat: Infinity, duration: pulso }} />
 
-      {/* Núcleo Central */}
       <motion.div
         className="centro-nucleo"
         style={{
           background: `radial-gradient(circle at 45% 35%, #ffffff 0%, #a6ffff 30%, ${color} 80%)`,
           boxShadow: `0 0 25px ${color}, 0 0 55px ${color}66`,
-          overflow: 'visible' // CRÍTICO: Inyectado aquí para que las Zzz puedan salir de la esfera
+          overflow: 'visible',
         }}
         animate={{
-          scale: estado === 'escribiendo' ? [1, 1.22, 0.94, 1.12, 1] : 
-                 subEstado === 'bostezo' ? [1, 1.14, 0.96, 1] : 
-                 [1, 1.08, 1],
-          opacity: subEstado === 'durmiendo' ? 0.75 : 1
+          scale: estado === 'escribiendo' ? [1, 1.2, 0.95, 1.1, 1] :
+                 subEstado === 'bostezo' ? [1, 1.15, 0.95, 1] :
+                 [1, 1.06, 1],
+          opacity: subEstado === 'durmiendo' ? 0.7 : 1,
         }}
         transition={{ repeat: Infinity, duration: subEstado === 'bostezo' ? 2.5 : pulso, ease: 'easeInOut' }}
       >
-        
-        {/* Generador de Partículas Zzz */}
-        {subEstado === 'durmiendo' && (
-          <div style={{ position: 'absolute', top: '-10px', right: '-10px', zIndex: 10 }}>
-            {[0, 1, 2].map((i) => (
-              <motion.span
-                key={i}
-                className="particula-zzz"
-                style={{ color, position: 'absolute', textShadow: `0 0 8px ${color}` }}
-                initial={{ opacity: 0, y: 0, x: 0, scale: 0.6 }}
-                animate={{ opacity: [0, 1, 0], y: -20 - (i * 12), x: 10 + (i * 8), scale: [0.6, 1.2, 0.8] }}
-                transition={{ repeat: Infinity, duration: 2.6, delay: i * 0.8, ease: 'easeOut' }}
-              >
-                Z
-              </motion.span>
-            ))}
-          </div>
-        )}
+        {/* ICONOS FLOTANTES DE EMOCIÓN */}
+        <AnimatePresence>
+          {subEstado === 'durmiendo' && (
+            <div style={{ position: 'absolute', top: '-15px', right: '-15px', zIndex: 10, pointerEvents: 'none' }}>
+              {[0, 1, 2].map((i) => (
+                <motion.span
+                  key={`zzz-${i}`}
+                  style={{ color, position: 'absolute', fontWeight: 'bold', fontSize: '13px', textShadow: `0 0 6px ${color}` }}
+                  initial={{ opacity: 0, y: 0, x: 0, scale: 0.5 }}
+                  animate={{ opacity: [0, 1, 0], y: -24 - (i * 12), x: 12 + (i * 8), scale: [0.5, 1.1, 0.8] }}
+                  transition={{ repeat: Infinity, duration: 2.4, delay: i * 0.7, ease: 'easeOut' }}
+                >
+                  z
+                </motion.span>
+              ))}
+            </div>
+          )}
+          {subEstado === 'impaciente' && (
+            <motion.div
+              initial={{ opacity: 0, y: -5, scale: 0.8 }}
+              animate={{ opacity: [0.4, 1, 0.4], y: -18 }}
+              exit={{ opacity: 0 }}
+              transition={{ repeat: Infinity, duration: 1.4 }}
+              style={{ position: 'absolute', top: 0, right: '0px', color, fontSize: '11px', fontWeight: 'bold', letterSpacing: '2px', textShadow: `0 0 6px ${color}` }}
+            >
+              ...
+            </motion.div>
+          )}
+          {subEstado === 'molesta' && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.6, rotate: -15 }}
+              animate={{ opacity: [0.7, 1, 0.7], scale: [1, 1.15, 1] }}
+              exit={{ opacity: 0 }}
+              transition={{ repeat: Infinity, duration: 0.8 }}
+              style={{ position: 'absolute', top: '-10px', right: '-5px', color: '#ff0055', fontSize: '14px', textShadow: '0 0 8px #ff0055' }}
+            >
+              💢
+            </motion.div>
+          )}
+          {subEstado === 'alegre' && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.5 }}
+              animate={{ opacity: [0.3, 0.9, 0.3], y: [-10, -16, -10], scale: [0.8, 1.1, 0.8] }}
+              exit={{ opacity: 0 }}
+              transition={{ repeat: Infinity, duration: 1.8 }}
+              style={{ position: 'absolute', top: '-5px', right: '-8px', color: '#00ffff', fontSize: '12px', textShadow: '0 0 8px #00ffff' }}
+            >
+              ✦
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-        {/* Escáner RAG */}
         {estado === 'procesando_rag' && (
           <div className="escaner-rag">
             <motion.div className="escaner-rag-barra" animate={{ top: ['-10%', '110%'] }} transition={{ repeat: Infinity, duration: 1.3, ease: 'linear' }} />
           </div>
         )}
 
-        {/* Rostro con Parallax */}
-        <motion.div 
+        <motion.div
           className="rostro-holografico"
           animate={{ x: faceOffset.x, y: faceOffset.y }}
-          transition={{ type: "spring", stiffness: 120, damping: 20 }}
+          transition={{ type: 'spring', stiffness: 100, damping: 18 }}
         >
           <div className="fila-ojos">
-            {/* Ojo Izquierdo: Pasamos el objeto directamente para evitar redundancias */}
             <motion.div className="ojo" style={{ background: colorRostro }} animate={ojosCfg} transition={{ duration: 0.15 }} />
-            {/* Ojo Derecho: Invertimos la rotación para simetría */}
             <motion.div className="ojo" style={{ background: colorRostro }} animate={{ ...ojosCfg, rotate: -ojosCfg.rotate }} transition={{ duration: 0.15 }} />
           </div>
-          <motion.div className="boca" style={{ background: colorRostro }} animate={bocaCfg} transition={{ duration: estado === 'escribiendo' ? 0.45 : 0.2, repeat: estado === 'escribiendo' ? Infinity : 0, ease: 'easeInOut' }} />
+          <motion.div
+            className="boca"
+            style={{ background: colorRostro }}
+            animate={bocaCfg}
+            transition={{ duration: estado === 'escribiendo' ? 0.4 : 0.2, repeat: estado === 'escribiendo' ? Infinity : 0, ease: 'easeInOut' }}
+          />
         </motion.div>
       </motion.div>
 
-      {/* Barras Ecualizador */}
       {estado === 'escribiendo' && (
         <div className="barras-voz">
           {[0, 1, 2, 3, 4].map((i) => (
@@ -227,19 +281,28 @@ function NucleoLIA({ estado }) {
         </div>
       )}
 
-      {/* Destello Error */}
       {estado === 'error' && (
         <motion.div className="destello-error" style={{ borderColor: color }} animate={{ opacity: [0, 0.5, 0], scale: [1, 1.08, 1] }} transition={{ repeat: Infinity, duration: 0.5 }} />
       )}
 
-      {/* Etiqueta Inferior */}
       <AnimatePresence mode="wait">
-        <motion.div key={estado} className="etiqueta-estado" style={{ color, textShadow: `0 0 8px ${color}99` }} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.25 }}>
-          {subEstado === 'durmiendo' ? 'MODO REPOSO' : label}
+        <motion.div
+          key={`${estado}-${subEstado}`}
+          className="etiqueta-estado"
+          style={{ color, textShadow: `0 0 8px ${color}99` }}
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -6 }}
+          transition={{ duration: 0.25 }}
+        >
+          {subEstado === 'durmiendo' ? 'SUSPENDIDA (REPOSO)' :
+           subEstado === 'bostezo' ? 'MODO REPOSO...' :
+           subEstado === 'molesta' ? 'ESPERANDO ÓRDENES...' :
+           subEstado === 'impaciente' ? 'EN ESPERA' : label}
         </motion.div>
       </AnimatePresence>
     </div>
-  )
+  );
 }
 
 function App() {
