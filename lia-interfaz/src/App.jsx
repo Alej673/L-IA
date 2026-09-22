@@ -4,8 +4,161 @@ import { Mic, Paperclip, Terminal, Cpu, Database, Upload, AlertTriangle } from '
 import ReactMarkdown from 'react-markdown'
 import './App.css'
 
+// =========================================
+// CONFIGURACIÓN VISUAL POR ESTADO DEL NÚCLEO
+// =========================================
+const CONFIG_ESTADOS = {
+  reposo: {
+    color: '#00ffff',
+    label: 'EN ESPERA',
+    giro: 14,
+    pulso: 3,
+  },
+  procesando: {
+    color: '#ffaa00',
+    label: 'PENSANDO...',
+    giro: 2.2,
+    pulso: 0.9,
+  },
+  escribiendo: {
+    color: '#39ff88',
+    label: 'ESCRIBIENDO...',
+    giro: 1.4,
+    pulso: 0.5,
+  },
+  procesando_rag: {
+    color: '#ff00ff',
+    label: 'ANALIZANDO DOCUMENTO...',
+    giro: 1.6,
+    pulso: 0.7,
+  },
+  error: {
+    color: '#ff0033',
+    label: 'ERROR CRÍTICO',
+    giro: 0.6,
+    pulso: 0.25,
+  },
+}
+
+// =========================================
+// COMPONENTE: NÚCLEO L-IA (bolita central)
+// =========================================
+function NucleoLIA({ estado }) {
+  const cfg = CONFIG_ESTADOS[estado] || CONFIG_ESTADOS.reposo
+  const { color, label, giro, pulso } = cfg
+
+  return (
+    <div className="nucleo-wrapper">
+      {/* Halo ambiental de fondo, cambia de color suavemente */}
+      <motion.div
+        className="nucleo-halo"
+        animate={{ background: `radial-gradient(circle, ${color}33, transparent 70%)` }}
+        transition={{ duration: 0.6 }}
+      />
+
+      {/* Anillo de partículas orbitales */}
+      <motion.div
+        className="anillo-particulas"
+        animate={{ rotate: 360 }}
+        transition={{ repeat: Infinity, duration: giro * 2.2, ease: 'linear' }}
+      >
+        {[...Array(6)].map((_, i) => (
+          <span
+            key={i}
+            className="particula"
+            style={{
+              background: color,
+              boxShadow: `0 0 8px ${color}`,
+              transform: `rotate(${i * 60}deg) translateX(88px)`,
+            }}
+          />
+        ))}
+      </motion.div>
+
+      {/* Anillo exterior punteado */}
+      <motion.div
+        className="anillo-exterior"
+        style={{ borderColor: color }}
+        animate={{ rotate: 360 }}
+        transition={{ repeat: Infinity, duration: giro, ease: 'linear' }}
+      />
+
+      {/* Anillo medio, gira al revés para efecto giroscopio */}
+      <motion.div
+        className="anillo-medio"
+        style={{ borderTopColor: color, borderBottomColor: color }}
+        animate={{ rotate: -360 }}
+        transition={{ repeat: Infinity, duration: giro * 1.5, ease: 'linear' }}
+      />
+
+      {/* Anillo interior, pulsa */}
+      <motion.div
+        className="anillo-interior"
+        style={{ borderColor: color }}
+        animate={{ scale: [1, 1.15, 1], opacity: [0.55, 1, 0.55] }}
+        transition={{ repeat: Infinity, duration: pulso }}
+      />
+
+      {/* Núcleo central con gradiente "vivo" */}
+      <motion.div
+        className="centro-nucleo"
+        style={{
+          background: `radial-gradient(circle at 35% 30%, #ffffff, ${color} 65%)`,
+          boxShadow: `0 0 25px ${color}, 0 0 55px ${color}66`,
+        }}
+        animate={{
+          scale: estado === 'escribiendo' ? [1, 1.22, 0.94, 1.12, 1] : [1, 1.08, 1],
+        }}
+        transition={{
+          repeat: Infinity,
+          duration: estado === 'escribiendo' ? 0.6 : pulso,
+          ease: 'easeInOut',
+        }}
+      />
+
+      {/* Barras estilo ecualizador — solo mientras L-IA escribe */}
+      {estado === 'escribiendo' && (
+        <div className="barras-voz">
+          {[0, 1, 2, 3, 4].map((i) => (
+            <motion.span
+              key={i}
+              style={{ background: color, boxShadow: `0 0 6px ${color}` }}
+              animate={{ height: ['20%', '85%', '35%', '65%', '20%'] }}
+              transition={{ repeat: Infinity, duration: 0.9, delay: i * 0.09, ease: 'easeInOut' }}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Destello de alerta — solo en error */}
+      {estado === 'error' && (
+        <motion.div
+          className="destello-error"
+          animate={{ opacity: [0, 0.5, 0] }}
+          transition={{ repeat: Infinity, duration: 0.5 }}
+        />
+      )}
+
+      {/* Etiqueta de estado, con transición al cambiar */}
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={estado}
+          className="etiqueta-estado"
+          style={{ color, textShadow: `0 0 8px ${color}99` }}
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -6 }}
+          transition={{ duration: 0.25 }}
+        >
+          {label}
+        </motion.div>
+      </AnimatePresence>
+    </div>
+  )
+}
+
 function App() {
-  const [estadoLIA, setEstadoLIA] = useState('reposo') 
+  const [estadoLIA, setEstadoLIA] = useState('reposo')
   const [input, setInput] = useState('')
   const [isDragging, setIsDragging] = useState(false)
   const [escuchando, setEscuchando] = useState(false)
@@ -16,20 +169,18 @@ function App() {
   const finalDelChatRef = useRef(null)
   const archivoInputRef = useRef(null)
 
-  // NUEVO ESTADO DEL SEMÁFORO
+  // ESTADO DEL SEMÁFORO
   const [semaforo, setSemaforo] = useState({ activa: false, herramienta: '', argumentos: '' })
 
   useEffect(() => {
     finalDelChatRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [mensajes])
 
-  const colorNucleo = estadoLIA === 'reposo' ? '#00ffff' : estadoLIA === 'procesando' ? '#ffaa00' : estadoLIA === 'procesando_rag' ? '#ff00ff' : '#ff3300'
-
-  // NUEVO: Vigía del Semáforo
+  // Vigía del Semáforo
   useEffect(() => {
     let intervalo;
-    // Solo vigila si L-IA está pensando (procesando)
-    if (estadoLIA === 'procesando') {
+    // Solo vigila si L-IA está pensando o escribiendo
+    if (estadoLIA === 'procesando' || estadoLIA === 'escribiendo') {
       intervalo = setInterval(async () => {
         try {
           const res = await fetch("http://127.0.0.1:8000/semaforo")
@@ -43,7 +194,7 @@ function App() {
     return () => clearInterval(intervalo)
   }, [estadoLIA, semaforo.activa])
 
-  // NUEVA: Función para responder al semáforo
+  // Función para responder al semáforo
   const responderSemaforo = async (autorizado) => {
     try {
       await fetch("http://127.0.0.1:8000/semaforo/responder", {
@@ -57,27 +208,28 @@ function App() {
     }
   }
 
-  const manejarEnvio = async (e) => {
-    // Si viene de un evento (ej. presionar Enter), prevenimos que recargue la página
-    if (e) e.preventDefault();
+  const [cargando, setCargando] = useState(false);
+  const abortControllerRef = useRef(null);
 
-    // Bloquea si ya está generando o el texto está vacío
-    if (!input.trim() || cargando) return; 
+  const manejarEnvio = async (e) => {
+    if (e) e.preventDefault();
+    if (!input.trim() || cargando) return;
 
     const textoUsuario = input;
-    
+
     setCargando(true);
     abortControllerRef.current = new AbortController();
-    
-    // Inyectamos el mensaje del usuario y creamos una burbuja VACÍA para L-IA
+
     setMensajes(prev => [
-      ...prev, 
+      ...prev,
       { rol: 'usuario', texto: textoUsuario },
-      { rol: 'ia', texto: '', origen: '', documento: null } 
+      { rol: 'ia', texto: '', origen: '', documento: null }
     ]);
-    
+
     setInput('');
-    setEstadoLIA('procesando');
+    setEstadoLIA('procesando'); // fase 1: esperando que el núcleo "piense"
+
+    let huboError = false;
 
     try {
       const respuesta = await fetch("http://127.0.0.1:8000/chat", {
@@ -87,26 +239,32 @@ function App() {
         signal: abortControllerRef.current.signal
       });
 
-      // --- INICIO DE TU BUCLE DE LECTURA EXACTAMENTE COMO LO TIENES ---
       const reader = respuesta.body.getReader()
       const decoder = new TextDecoder("utf-8")
       let buffer = ""
+      let yaEscribiendo = false
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        
+
         buffer += decoder.decode(value, { stream: true })
         const partes = buffer.split("\n\n")
-        buffer = partes.pop() 
+        buffer = partes.pop()
 
         for (const parte of partes) {
           if (parte.startsWith("data: ")) {
             const dataStr = parte.replace("data: ", "")
             try {
               const data = JSON.parse(dataStr)
-              
+
               if (data.tipo === "chunk") {
+                // fase 2: en cuanto llega el primer chunk, pasamos a "escribiendo"
+                if (!yaEscribiendo) {
+                  yaEscribiendo = true
+                  setEstadoLIA('escribiendo')
+                }
+
                 if (data.texto.length > 50) {
                   setMensajes(prev => {
                     const nuevos = [...prev]
@@ -134,6 +292,7 @@ function App() {
                   return nuevos
                 })
               } else if (data.tipo === "error") {
+                huboError = true
                 setMensajes(prev => {
                   const nuevos = [...prev]
                   nuevos[nuevos.length - 1].texto += `\n[ERROR]: ${data.texto}`
@@ -146,17 +305,17 @@ function App() {
           }
         }
       }
-      // --- FIN DE TU BUCLE DE LECTURA ---
 
     } catch (error) {
       if (error.name === 'AbortError') {
         setMensajes(prev => {
           const nuevos = [...prev];
           nuevos[nuevos.length - 1].texto += '\n\n*(Respuesta abortada)*';
-          nuevos[nuevos.length - 1].cancelado = true; // <-- NUEVO ESTADO
+          nuevos[nuevos.length - 1].cancelado = true;
           return nuevos;
         });
       } else {
+        huboError = true;
         setMensajes(prev => {
           const nuevos = [...prev];
           nuevos[nuevos.length - 1].texto += '\n\n[ERROR] Caída del enlace con el núcleo.';
@@ -164,9 +323,14 @@ function App() {
         });
       }
     } finally {
-      // Liberamos los seguros de la interfaz SIEMPRE, pase lo que pase
-      setEstadoLIA('reposo');
       setCargando(false);
+      if (huboError) {
+        // fase de error: el núcleo destella en rojo un momento antes de calmarse
+        setEstadoLIA('error');
+        setTimeout(() => setEstadoLIA('reposo'), 1600);
+      } else {
+        setEstadoLIA('reposo');
+      }
     }
   }
 
@@ -179,10 +343,11 @@ function App() {
       const respuesta = await fetch("http://127.0.0.1:8000/ingestar", { method: "POST", body: formData })
       const data = await respuesta.json()
       setMensajes(prev => [...prev, { rol: 'ia', texto: data.mensaje }])
+      setEstadoLIA('reposo')
     } catch (error) {
       setMensajes(prev => [...prev, { rol: 'sistema', texto: '[ERROR] Fallo en RAG.' }])
-    } finally {
-      setEstadoLIA('reposo')
+      setEstadoLIA('error')
+      setTimeout(() => setEstadoLIA('reposo'), 1600)
     }
   }
 
@@ -192,23 +357,17 @@ function App() {
   const manejarClickArchivo = () => archivoInputRef.current?.click()
   const manejarSeleccionArchivo = (e) => { if (e.target.files.length > 0) procesarArchivoRAG(e.target.files[0]); e.target.value = null }
 
-  // MICRÓFONO SILENCIOSO: Solo cambia estado visual y (a futuro) llama a la API, no ensucia el chat
   const manejarMicrofono = () => {
     setEscuchando(!escuchando)
-    // fetch("http://127.0.0.1:8000/microfono", { method: "POST", body: JSON.stringify({ estado: !escuchando }) })
   }
-
-  const [cargando, setCargando] = useState(false);
-  const abortControllerRef = useRef(null);
 
   const detenerGeneracion = async () => {
     if (abortControllerRef.current) {
-      abortControllerRef.current.abort(); 
+      abortControllerRef.current.abort();
     }
     setCargando(false);
-    
+
     try {
-      // Cambiado a 127.0.0.1 para mantener tu estándar
       await fetch("http://127.0.0.1:8000/cancelar", { method: "POST" });
     } catch (error) {
       console.error("Error al abortar en el backend:", error);
@@ -217,15 +376,23 @@ function App() {
 
   return (
     <div className="hud-container" onDragOver={manejarDragOver} onDragLeave={manejarDragLeave} onDrop={manejarDrop}>
-      
-      {/* EL NUEVO MODAL DEL SEMÁFORO */}
+
+      {/* CAPA DE DRAG & DROP */}
+      {isDragging && (
+        <div className="capa-drag">
+          <Upload size={40} />
+          <p>Suelta el archivo para ingestarlo</p>
+        </div>
+      )}
+
+      {/* MODAL DEL SEMÁFORO */}
       <AnimatePresence>
         {semaforo.activa && (
-          <motion.div 
+          <motion.div
             className="modal-overlay"
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
           >
-            <motion.div 
+            <motion.div
               className="modal-semaforo"
               initial={{ scale: 0.8, y: 50 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.8, opacity: 0 }}
               transition={{ type: "spring", bounce: 0.5 }}
@@ -233,10 +400,32 @@ function App() {
               <AlertTriangle color="#ff0055" size={50} style={{ marginBottom: '10px' }} />
               <h3 style={{ color: '#ff0055', margin: '0 0 15px 0', letterSpacing: '2px' }}>ALERTA NIVEL 2</h3>
               <p style={{ color: '#fff', fontSize: '14px', marginBottom: '10px' }}>L-IA requiere autorización crítica para ejecutar:</p>
-              
+
               <div className="codigo-alerta">{semaforo.herramienta}</div>
               <p style={{ color: '#fff', fontSize: '14px', margin: '15px 0 10px 0' }}>Argumentos detectados:</p>
-              <div className="codigo-alerta">{semaforo.argumentos}</div>
+
+              <pre className="codigo-alerta custom-scrollbar" style={{
+                whiteSpace: 'pre-wrap',
+                wordWrap: 'break-word',
+                textAlign: 'left',
+                maxHeight: '180px',
+                overflowY: 'auto',
+                fontSize: '13px',
+                lineHeight: '1.5',
+                margin: '0 0 20px 0'
+              }}>
+                {(() => {
+                  if (!semaforo.argumentos) return "Ninguno";
+                  try {
+                    const obj = typeof semaforo.argumentos === 'string'
+                      ? JSON.parse(semaforo.argumentos)
+                      : semaforo.argumentos;
+                    return JSON.stringify(obj, null, 2);
+                  } catch (e) {
+                    return semaforo.argumentos;
+                  }
+                })()}
+              </pre>
 
               <div className="botones-alerta">
                 <button className="btn-denegar" onClick={() => responderSemaforo(false)}>ABORTAR</button>
@@ -249,36 +438,28 @@ function App() {
 
       <div className="panel central">
         {/* NÚCLEO ESTÁTICO (NO HACE SCROLL) */}
-        <div className="nucleo-wrapper">
-          <motion.div className="anillo-exterior" style={{ borderColor: colorNucleo }} animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: estadoLIA === 'reposo' ? 10 : 1.5, ease: "linear" }} />
-          <motion.div className="anillo-interior" style={{ borderColor: colorNucleo }} animate={{ scale: [1, 1.1, 1] }} transition={{ repeat: Infinity, duration: estadoLIA === 'reposo' ? 2 : 0.5 }} />
-          <div className="centro-nucleo" style={{ background: colorNucleo, boxShadow: `0 0 20px ${colorNucleo}` }} />
-        </div>
+        <NucleoLIA estado={estadoLIA} />
 
         {/* ZONA EXCLUSIVA DE SCROLL */}
         <div className="chat-terminal">
           {mensajes.map((msg, idx) => (
             <div key={idx} className={`burbuja-mensaje ${msg.rol} ${msg.cancelado ? 'mensaje-abortado' : ''}`}>
 
-              {/* --- NUEVA CABECERA CON ETIQUETAS --- */}
               <div className="remitente" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                 <span>{msg.rol === 'ia' ? '> L-IA:' : msg.rol === 'sistema' ? '> SYS:' : '> TÚ:'}</span>
 
-                {/* ETIQUETA DE MODELO (Local, Nube, Dolphin) */}
                 {msg.rol === 'ia' && msg.origen && (
                   <span className={`badge-origen ${msg.origen.toLowerCase()}`}>
                     {msg.origen.toUpperCase()}
                   </span>
                 )}
 
-                {/* ETIQUETA DE DOCUMENTO ACTIVO */}
                 {msg.rol === 'ia' && msg.documento && (
                   <span className="badge-doc">
                     📄 {msg.documento}
                   </span>
                 )}
               </div>
-              {/* ---------------------------------- */}
 
               <div className="contenido-markdown">
                 {msg.rol === 'ia' ? (
@@ -299,25 +480,23 @@ function App() {
           <button type="button" className="hud-btn" onClick={manejarMicrofono} style={{ color: escuchando ? '#ff0055' : '#00ffff', boxShadow: escuchando ? 'inset 0 0 10px rgba(255,0,85,0.5)' : '' }}>
             <Mic size={18} />
           </button>
-          
-          <textarea 
-            className="hud-input custom-scrollbar" 
-            placeholder="Ingresa texto..." 
-            value={input} 
+
+          <textarea
+            className="hud-input custom-scrollbar"
+            placeholder="Ingresa texto..."
+            value={input}
             onChange={(e) => {
               setInput(e.target.value);
-              // Resetea a la altura base para recalcular
-              e.target.style.height = '42px'; 
-              // Crece suavemente hasta un máximo de 100px
+              e.target.style.height = '42px';
               e.target.style.height = `${Math.min(e.target.scrollHeight, 100)}px`;
             }}
             disabled={cargando}
             rows={1}
-            style={{ 
-              resize: 'none', 
-              overflowY: 'auto', 
-              height: '42px', /* Altura fija inicial como el input viejo */
-              padding: '10px 15px', 
+            style={{
+              resize: 'none',
+              overflowY: 'auto',
+              height: '42px',
+              padding: '10px 15px',
               lineHeight: '20px',
               fontFamily: 'inherit',
               boxSizing: 'border-box'
@@ -326,17 +505,16 @@ function App() {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 manejarEnvio();
-                // Lo devolvemos a su estado delgado al enviar
-                e.target.style.height = '42px'; 
+                e.target.style.height = '42px';
               }
             }}
           />
 
           {cargando ? (
-            <button 
-              type="button" 
-              className="hud-btn" 
-              onClick={detenerGeneracion} 
+            <button
+              type="button"
+              className="hud-btn"
+              onClick={detenerGeneracion}
               style={{ color: '#ff0055', borderColor: '#ff0055', boxShadow: '0 0 10px rgba(255,0,85,0.5)' }}
               title="Abortar Generación"
             >

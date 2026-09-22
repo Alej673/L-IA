@@ -26,14 +26,43 @@
   margin-top: 0;
 }
 
-/* Núcleo Central Animado */
+/* =========================================
+   NÚCLEO CENTRAL — L-IA
+   ========================================= */
 .nucleo-wrapper {
   position: relative;
-  height: 200px;
+  height: 220px;
   display: flex;
   justify-content: center;
   align-items: center;
   margin-bottom: 20px;
+  flex-shrink: 0;
+}
+
+/* Halo ambiental difuso detrás de todo */
+.nucleo-halo {
+  position: absolute;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  filter: blur(4px);
+  pointer-events: none;
+}
+
+/* Anillo que contiene las partículas orbitales */
+.anillo-particulas {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+}
+
+.particula {
+  position: absolute;
+  top: -3px;
+  left: -3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
 }
 
 .anillo-exterior {
@@ -43,6 +72,15 @@
   border: 2px dashed #00ffff;
   border-radius: 50%;
   opacity: 0.5;
+}
+
+.anillo-medio {
+  position: absolute;
+  width: 122px;
+  height: 122px;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  opacity: 0.7;
 }
 
 .anillo-interior {
@@ -56,11 +94,48 @@
 }
 
 .centro-nucleo {
-  width: 30px;
-  height: 30px;
-  background: #00ffff;
+  position: relative;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
-  box-shadow: 0 0 20px #00ffff;
+  z-index: 2;
+}
+
+/* Barras tipo ecualizador — aparecen solo al escribir */
+.barras-voz {
+  position: absolute;
+  bottom: 18px;
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 22px;
+  z-index: 3;
+}
+
+.barras-voz span {
+  width: 3px;
+  border-radius: 2px;
+  display: block;
+}
+
+/* Destello rápido para el estado de error */
+.destello-error {
+  position: absolute;
+  width: 170px;
+  height: 170px;
+  border-radius: 50%;
+  border: 2px solid #ff0033;
+  pointer-events: none;
+}
+
+/* Etiqueta de texto bajo el núcleo (PENSANDO..., ESCRIBIENDO..., etc.) */
+.etiqueta-estado {
+  position: absolute;
+  bottom: -6px;
+  font-size: 10px;
+  letter-spacing: 2px;
+  font-weight: bold;
+  white-space: nowrap;
 }
 
 /* Chat y Controles */
@@ -124,24 +199,31 @@
     margin: 0;
   }
 
-  /* Si tienes paneles laterales (como stats o menú), los ocultamos en el widget flotante para ahorrar espacio */
   .panel:not(:has(.chat-terminal)) {
     display: none;
   }
 
-  /* El panel central toma el 100% de la ventana */
   .panel:has(.chat-terminal) {
     flex: 1;
     border: 1px solid rgba(0, 255, 255, 0.4);
     box-shadow: inset 0 0 15px rgba(0, 255, 255, 0.1);
   }
 
-  /* EL TRUCO DE ORO PARA EL OVERFLOW EN FLEXBOX */
   .chat-terminal {
     flex: 1;
-    min-height: 0; /* Sin esto, el flexbox ignora los límites y se desborda */
+    min-height: 0;
     padding: 10px;
   }
+
+  .nucleo-wrapper {
+    height: 170px;
+  }
+
+  .nucleo-halo { width: 170px; height: 170px; }
+  .anillo-exterior { width: 115px; height: 115px; }
+  .anillo-medio { width: 94px; height: 94px; }
+  .anillo-interior { width: 76px; height: 76px; }
+  .particula { transform-origin: center; }
 }
 
 /* Scrollbar futurista (aplica a ambas interfaces) */
@@ -160,27 +242,22 @@
 .panel.central {
   display: flex;
   flex-direction: column;
-  height: 100vh; /* Ocupa el alto exacto de la ventana flotante */
+  height: 100vh;
   padding: 15px;
   box-sizing: border-box;
-  overflow: hidden; /* Evita que el panel entero haga scroll */
-}
-
-.nucleo-wrapper {
-  flex-shrink: 0; /* Prohíbe que el núcleo se aplaste o se mueva */
-  margin-bottom: 20px;
+  overflow: hidden;
 }
 
 .controles-input {
-  flex-shrink: 0; /* Prohíbe que los inputs se oculten */
+  flex-shrink: 0;
   margin-top: 15px;
 }
 
 /* EL CUADRO OSCURO SCROLLABLE */
 .chat-terminal {
-  flex: 1; /* Toma todo el espacio sobrante entre el núcleo y los controles */
-  min-height: 0; /* Truco de Flexbox para evitar desbordes */
-  overflow-y: auto; /* Solo este div tiene barra de scroll */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   border: 1px solid rgba(0,255,255,0.2);
   background: rgba(0,0,0,0.6);
   padding: 15px;
@@ -342,28 +419,24 @@
   box-shadow: 0 0 10px rgba(0,0,0,0.5);
 }
 
-/* 1. Cerebro Local (Gemma 2) -> Cyan */
 .badge-origen.local {
   background: rgba(0, 255, 255, 0.1);
   color: #00ffff;
   border: 1px solid #00ffff;
 }
 
-/* 2. Cerebro Nube (Gemini) -> Morado */
 .badge-origen.nube {
   background: rgba(170, 0, 255, 0.1);
   color: #c44dff;
   border: 1px solid #c44dff;
 }
 
-/* 3. Cerebro Sin Censura (Dolphin) -> Rojo Táctico */
 .badge-origen.dolphin {
   background: rgba(255, 0, 85, 0.1);
   color: #ff0055;
   border: 1px solid #ff0055;
 }
 
-/* 4. Etiqueta del Documento Activo -> Naranja/Dorado */
 .badge-doc {
   background: rgba(255, 170, 0, 0.1);
   color: #ffaa00;
@@ -386,7 +459,7 @@
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: #00ffff; /* Cian del núcleo */
+  background: #00ffff;
   border-radius: 4px;
   opacity: 0.8;
 }
@@ -399,9 +472,9 @@
    ESTILO PARA MENSAJES CANCELADOS
    ========================================= */
 .burbuja-mensaje.mensaje-abortado {
-  opacity: 0.35; /* Bastante opaco para indicar que está inactivo */
+  opacity: 0.35;
   filter: grayscale(0.8);
-  border: 1px dashed rgba(255, 0, 85, 0.4); /* Un borde sutil rojo táctico */
+  border: 1px dashed rgba(255, 0, 85, 0.4);
   transition: all 0.3s ease;
 }
 
