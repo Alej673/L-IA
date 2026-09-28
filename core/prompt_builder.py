@@ -67,15 +67,15 @@ def _armar_workspace(workspace_activo, workspace_resumen, hechos):
                 for item in historial:
                     texto += f"   - {item.get('ruta')} (Resumen: {item.get('resumen')})\n"
         except json.JSONDecodeError:
-            # Un historial corrupto no debe romper el prompt: simplemente se omite.
             pass
 
+    # LA NUEVA REGLA ESTRICTA
     texto += (
-        "\n- Si el usuario hace preguntas ambiguas, asume que se refiere al FOCO PRINCIPAL o a los de SEGUNDO PLANO sin repreguntar la ruta. "
-        "Usa los resúmenes para respuestas rápidas; si pide análisis profundos, usa la herramienta de lectura de archivo.\n"
+        "\n[REGLA CRÍTICA DE CONTEXTO]: Si el usuario menciona 'este archivo', 'el documento', 'el código' o 'el workspace', "
+        "SE REFIERE ESTRICTAMENTE AL FOCO PRINCIPAL. PROHIBIDO hacerte la desentendida o pedirle el nombre de la ruta. "
+        "Usa el resumen técnico de arriba para responder de inmediato. Si te pide un análisis profundo, la herramienta de lectura de pantalla se encargará."
     )
     return texto
-
 
 def _armar_hechos(hechos):
     """Lista lo aprendido del usuario, omitiendo las claves internas del

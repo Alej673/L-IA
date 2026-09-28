@@ -479,6 +479,9 @@ function App() {
     { rol: 'ia', texto: 'L-IA v3.2.0 inicializada. Esperando directivas...' }
   ])
 
+  // ESTADO DEL WORKSPACE ACTIVO (archivo en el que L-IA está enfocada)
+  const [workspaceActivo, setWorkspaceActivo] = useState(null)
+
   const finalDelChatRef = useRef(null)
   const archivoInputRef = useRef(null)
 
@@ -672,11 +675,34 @@ const manejarEnvio = async (e) => {
       const respuesta = await fetch("http://127.0.0.1:8000/ingestar", { method: "POST", body: formData })
       const data = await respuesta.json()
       setMensajes(prev => [...prev, { rol: 'ia', texto: data.mensaje }])
+
+      // Activa el indicador de workspace solo si la ingesta salió bien
+      if (respuesta.ok && data.status === 'completado') {
+        setWorkspaceActivo(archivo.name)
+      }
+
       setEstadoLIA('reposo')
     } catch (error) {
       setMensajes(prev => [...prev, { rol: 'sistema', texto: '[ERROR] Fallo en RAG.' }])
       setEstadoLIA('error')
       setTimeout(() => setEstadoLIA('reposo'), 1600)
+    }
+  }
+
+  // Libera el archivo en el que L-IA está enfocada
+  const limpiarWorkspace = async () => {
+    try {
+      const respuesta = await fetch("http://127.0.0.1:8000/workspace/limpiar", { method: "POST" })
+      const data = await respuesta.json()
+      if (data.status === 'completado') {
+        setWorkspaceActivo(null)
+        setMensajes(prev => [...prev, { rol: 'sistema', texto: '[SISTEMA] Workspace liberado.' }])
+      } else {
+        setMensajes(prev => [...prev, { rol: 'sistema', texto: '[ERROR] No se pudo liberar el workspace.' }])
+      }
+    } catch (error) {
+      console.error("Error al limpiar workspace", error)
+      setMensajes(prev => [...prev, { rol: 'sistema', texto: '[ERROR] Sin enlace con el núcleo al liberar el workspace.' }])
     }
   }
 
@@ -768,6 +794,54 @@ const manejarEnvio = async (e) => {
       <div className="panel central">
         {/* NÚCLEO ESTÁTICO (NO HACE SCROLL) */}
         <NucleoLIA estado={estadoLIA} />
+
+        {/* INDICADOR DE WORKSPACE ACTIVO */}
+        <AnimatePresence>
+          {workspaceActivo && (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                margin: '0 0 8px 0',
+                padding: '6px 12px',
+                background: 'rgba(57, 255, 136, 0.08)',
+                border: '1px solid rgba(57, 255, 136, 0.35)',
+                borderRadius: '6px',
+                color: '#39ff88',
+                fontSize: '12px',
+                letterSpacing: '1px'
+              }}
+            >
+              <motion.span
+                style={{
+                  width: '8px',
+                  height: '8px',
+                  borderRadius: '50%',
+                  background: '#39ff88',
+                  boxShadow: '0 0 8px #39ff88',
+                  flexShrink: 0
+                }}
+                animate={{ opacity: [0.5, 1, 0.5] }}
+                transition={{ repeat: Infinity, duration: 1.6, ease: 'easeInOut' }}
+              />
+              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                TRABAJANDO EN: {workspaceActivo}
+              </span>
+              <button
+                type="button"
+                onClick={limpiarWorkspace}
+                title="Liberar workspace"
+                style={{ background: 'none', border: 'none', color: '#ff0055', cursor: 'pointer', fontSize: '14px' }}
+              >
+                ✕
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* ZONA EXCLUSIVA DE SCROLL */}
         <div className="chat-terminal">

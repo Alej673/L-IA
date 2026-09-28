@@ -36,6 +36,7 @@ from core.cerebro import charlar_con_lia, evento_interrupcion
 from core.tools import leer_archivo_local
 from core.memoria_rag import MemoriaRAG
 from core import database
+from core.cerebro import charlar_con_lia, evento_interrupcion, asimilar_documento_maestro
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("lia.api")
@@ -246,20 +247,12 @@ async def cancelar_generacion():
     return {"status": "abortado"}
 
 # ---------------------------------------------------------------------------
-# Endpoint de ingesta de archivos (RAG)
+# Endpoint de ingesta de archivos (RAG + Workspace)
 # ---------------------------------------------------------------------------
 @app.post("/ingestar")
 async def ingestar_archivo(archivo: UploadFile = File(...)):
-    """
-    Recibe un archivo subido desde el frontend, lo guarda temporalmente,
-    extrae su texto y lo indexa en la memoria RAG para que L-IA pueda
-    consultarlo luego.
-    """
     logger.info("Recibiendo archivo: %s", archivo.filename)
 
-    # Nunca confiar en el nombre de archivo tal cual lo manda el cliente:
-    # os.path.basename() evita un path traversal (ej. "../../etc/passwd")
-    # que escriba fuera de la carpeta temp_rag.
     nombre_seguro = os.path.basename(archivo.filename or "archivo_sin_nombre")
     if not nombre_seguro:
         return {"status": "error", "mensaje": "Nombre de archivo inválido."}
@@ -272,31 +265,35 @@ async def ingestar_archivo(archivo: UploadFile = File(...)):
             shutil.copyfileobj(archivo.file, buffer)
 
         ruta_absoluta = os.path.abspath(ruta_temporal)
-        datos = leer_archivo_local(ruta_absoluta)
 
-        if isinstance(datos, dict) and "contenido" in datos:
-            texto_a_vectorizar = datos["contenido"]
+        # Llamada directa a la función importada
+        mensaje_resultado = asimilar_documento_maestro(ruta_absoluta)
 
-            cantidad_fragmentos = memoria_rag.indexar_documento(
-                texto_completo=texto_a_vectorizar,
-                nombre_origen=nombre_seguro,
-            )
+        if mensaje_resultado.startswith("Error") or "Fallo crítico" in mensaje_resultado:
+            return {"status": "error", "mensaje": mensaje_resultado}
 
-            database.establecer_workspace_activo(ruta_absoluta)
-
-            mensaje_final = (
-                f"Archivo asimilado. Dividido en {cantidad_fragmentos} fragmentos en el RAG y "
-                f"fijado en mi entorno de trabajo. Ya puedes pedirme que lo resuma o analice."
-            )
-            return {"status": "completado", "mensaje": mensaje_final}
-
-        return {
-            "status": "error",
-            "mensaje": f"Error al extraer el texto de {nombre_seguro}. Revisa el formato.",
-        }
+        return {"status": "completado", "mensaje": mensaje_resultado}
 
     except Exception as e:
         logger.exception("Fallo al procesar el archivo %s", nombre_seguro)
         return {"status": "error", "mensaje": f"Fallo al procesar {nombre_seguro}: {e}"}
     finally:
         archivo.file.close()
+
+# ---------------------------------------------------------------------------
+# Endpoint para liberar el Workspace Activo
+# ---------------------------------------------------------------------------
+@app.post("/workspace/limpiar")
+async def limpiar_workspace_api():
+    """
+    Limpia el archivo activo en la base de datos (SQLite), 
+    desvinculando la atención a corto plazo de L-IA.
+    """
+    try:
+        # Asumiendo que tu módulo 'database' ya está importado en api.py
+        database.limpiar_workspace_activo()
+        logger.info("Workspace liberado correctamente desde el HUD.")
+        return {"status": "completado", "mensaje": "Workspace liberado exitosamente."}
+    except Exception as e:
+        logger.exception("Fallo al intentar limpiar el workspace activo.")
+        return {"status": "error", "mensaje": f"Error al limpiar: {str(e)}"}

@@ -339,16 +339,97 @@ PATRONES_CLAVE["limpiar_workspace"] = re.compile(
 )
 
 # Referencias a "este archivo / este documento / resume esto": el usuario se
-# refiere a lo que tiene abierto en pantalla, no a una ruta escrita. No es una
-# intención del semáforo (por eso no vive en PATRONES_CLAVE): la usa
-# `charlar_con_lia` para activar la lectura automática de la ventana activa.
+# refiere a lo que tiene abierto en pantalla, o al archivo fijado en el Workspace.
+# Ampliado para entender lenguaje natural coloquial.
 PATRON_LECTURA_IMPLICITA = re.compile(
-    r'\b(este|esta)\s+(archivo|documento|c[oó]digo|texto)\b'
-    r'|\b(del|de\s+la|el|la)\s+(archivo|documento|c[oó]digo|texto)\s+que\s+(estoy|tengo)\s+\w+'
-    r'|\bde\s+este\s+(archivo|documento|c[oó]digo)\b'
-    r'|\bres[uú]m\w*\s+esto\b',
+    r'\b(este|esta)\s+(archivo|documento|c[oó]digo|texto|workspace|proyecto)\b'
+    r'|\b(del|de\s+la|el|la)\s+(archivo|documento|c[oó]digo|texto|workspace|proyecto)\s+que\s+(estoy|tengo)\s+\w+'
+    r'|\bde\s+este\s+(archivo|documento|c[oó]digo|workspace)\b'
+    r'|\bres[uú]m\w*\s+(esto|el\s+workspace|el\s+archivo)\b'
+    r'|\b(del|el)\s+workspace\b', # <-- Captura "hazme un resumen del workspace"
     re.IGNORECASE
 )
+
+# Mención explícita del workspace / archivo fijado.
+_PATRON_MENCION_WORKSPACE = re.compile(
+    r'\bworkspace\b|\bfijad[oa]\b|\b(archivo|documento|entorno)\s+activo\b',
+    re.IGNORECASE
+)
+# "el archivo", "ese documento"... solo cuenta si HAY un workspace fijado.
+_PATRON_REFERENCIA_GENERICA = re.compile(
+    r'\b(el|del|ese|dicho|aquel)\s+(archivo|documento|doc|c[oó]digo|texto)\b',
+    re.IGNORECASE
+)
+_REGEX_ARCHIVO_EN_VENTANA = re.compile(
+    r'([a-zA-Z0-9_\-\s]+\.(html|php|js|css|py|docx|pdf|txt|md|pptx|xlsx))',
+    re.IGNORECASE
+)
+
+def _obtener_workspace_activo():
+    """Ruta del workspace fijado en SQLite, o None.
+
+    ⚠️ AJUSTA el nombre del getter al que exista en tu database.py (el que
+    lee lo que guarda `establecer_workspace_activo`).
+    """
+    for nombre in ("obtener_workspace_activo", "get_workspace_activo", "leer_workspace_activo"):
+        getter = getattr(database, nombre, None)
+        if callable(getter):
+            try:
+                ruta = getter()
+            except Exception as e:
+                print(f"⚠️ [Workspace] No se pudo leer el workspace activo: {e}")
+                return None
+            if isinstance(ruta, dict):
+                ruta = ruta.get("ruta")
+            return ruta or None
+    print("⚠️ [Workspace] database.py no expone un getter de workspace activo.")
+    return None
+
+
+def _leer_documento_completo(ruta_o_nombre):
+    """Lee el archivo completo. Devuelve (contenido, nombre) o (None, None).
+    Resuelve el caso de 'múltiples coincidencias' tomando la primera ruta."""
+    resultado = tools.leer_archivo_local(ruta_o_nombre)
+
+    if isinstance(resultado, str) and "múltiples coincidencias" in resultado.lower():
+        match_primera = re.search(r'1\.\s+([a-zA-Z]:\\[^\n]+)', resultado)
+        if match_primera:
+            resultado = tools.leer_archivo_local(match_primera.group(1).strip())
+
+    if isinstance(resultado, dict) and "contenido" in resultado:
+        nombre = resultado.get("nombre") or os.path.basename(ruta_o_nombre)
+        return resultado["contenido"], nombre
+    return None, None
+
+
+def _resolver_documento_referenciado(ruta_workspace, prioridad_workspace: bool):
+    """Busca el documento al que se refiere el usuario.
+
+    Devuelve (contenido, nombre, origen) con origen 'workspace' o 'ventana'.
+    Si el mensaje menciona el workspace, este va primero; si no, va primero la
+    ventana activa y el workspace queda de respaldo.
+    """
+    def _desde_workspace():
+        if not ruta_workspace:
+            return None
+        contenido, nombre = _leer_documento_completo(ruta_workspace)
+        return (contenido, nombre, "workspace") if contenido else None
+
+    def _desde_ventana():
+        ventana = contexto.obtener_ventana_activa()
+        print(f"\n🕵️ [Interceptor] Ventana activa capturada: '{ventana}'")
+        match = _REGEX_ARCHIVO_EN_VENTANA.search(ventana or "")
+        if not match:
+            return None
+        contenido, nombre = _leer_documento_completo(match.group(1).strip())
+        return (contenido, nombre, "ventana") if contenido else None
+
+    orden = (_desde_workspace, _desde_ventana) if prioridad_workspace else (_desde_ventana, _desde_workspace)
+    for buscar in orden:
+        encontrado = buscar()
+        if encontrado:
+            return encontrado
+    return None, None, None
 
 def _detectar_intenciones(mensaje_lower: str) -> dict:
     """Devuelve {intención: bool} evaluando todos los patrones sobre el mensaje
@@ -1453,9 +1534,68 @@ def _procesar_archivo(ruta_o_nombre, contexto_historico):
 # es una escritura permanente, no una lectura efímera. Por eso vive aparte,
 # aunque reutiliza `contexto.obtener_ventana_activa()` y
 # `tools.leer_archivo_local()` para no duplicar la detección del archivo.
+
+def asimilar_documento_maestro(ruta_absoluta: str, origen_texto: str = "archivo") -> str:
+    """
+    Función unificada para procesar un documento.
+    Realiza 3 tareas críticas:
+    1. Indexa el contenido en ChromaDB (Memoria RAG a largo plazo).
+    2. Fija la ruta en SQLite como el Workspace activo.
+    3. Genera el Micro-Resumen de 25 palabras para la atención a corto plazo.
+    """
+    print(f"\n🧠 [Asimilación Maestra] Procesando: '{ruta_absoluta}'")
+    
+    # 1. Leer el archivo físicamente
+    datos = tools.leer_archivo_local(ruta_absoluta)
+    if not (isinstance(datos, dict) and "contenido" in datos):
+        return f"Error: No pude extraer el texto de '{ruta_absoluta}'. Verifica permisos o el formato."
+        
+    texto_a_vectorizar = datos["contenido"]
+    nombre_archivo = os.path.basename(ruta_absoluta)
+    
+    # 2. Vectorizar en ChromaDB (RAG)
+    try:
+        cantidad_fragmentos = _obtener_rag().indexar_documento(
+            texto_completo=texto_a_vectorizar,
+            nombre_origen=nombre_archivo
+        )
+        print(f"✅ [RAG] Indexados {cantidad_fragmentos} fragmentos en el Segundo Cerebro.")
+    except Exception as e:
+        print(f"❌ [Ingesta RAG] Falló la vectorización: {e}")
+        return f"Fallo crítico en el Segundo Cerebro al intentar memorizar '{nombre_archivo}'."
+
+    # 3. Generar Micro-Resumen (Atención a corto plazo)
+    fragmento_resumen = texto_a_vectorizar[:3000]
+    prompt_resumen = (
+        "Eres un analizador estricto. Lee este texto y devuelve UNICAMENTE un "
+        "resumen técnico de máximo 25 palabras indicando su propósito o tema central. Cero saludos.\n\n"
+        f"{fragmento_resumen}"
+    )
+    
+    resumen_tecnico = "Ruta fijada, pero no se generó resumen."
+    try:
+        respuesta = ollama.chat(
+            model=MODELO_LOCAL,
+            messages=[{'role': 'user', 'content': prompt_resumen}],
+            options={'num_gpu': 31, 'temperature': 0.1}
+        )
+        resumen_tecnico = respuesta['message']['content'].strip()
+        print(f"🧠 [Micro-resumen generado]: {resumen_tecnico}")
+    except Exception as e:
+        print(f"⚠️ [Error generando micro-resumen: {e}]")
+
+    # 4. Guardar en SQLite (Workspace)
+    database.establecer_workspace_activo(ruta_absoluta)
+    database.guardar_hecho("workspace_resumen", resumen_tecnico, categoria="contexto_fase7")
+    
+    return (
+        f"Asimilación completa. Procesé '{nombre_archivo}', lo dividí en {cantidad_fragmentos} "
+        f"fragmentos para mi memoria a largo plazo y lo he fijado como mi entorno activo. "
+        f"Resumen generado: {resumen_tecnico}"
+    )
+
 def _procesar_ingesta_documento(callback_ui=None):
-    """Vectoriza en el Segundo Cerebro el archivo de la ventana activa y
-    devuelve el mensaje de confirmación (o de error) para el usuario."""
+    """Vectoriza en el Segundo Cerebro el archivo de la ventana activa."""
     ventana_actual = contexto.obtener_ventana_activa()
     print(f"\n🧠 [Aprendizaje] Escaneando ventana para ingesta: '{ventana_actual}'")
 
@@ -1471,47 +1611,24 @@ def _procesar_ingesta_documento(callback_ui=None):
             "(.docx, .pdf, .py) en tu ventana activa. Ábrelo y repite la orden."
         )
 
-    # Leemos el archivo físicamente (misma herramienta que usa el resto del cerebro)
+    # Obtenemos la ruta absoluta usando la herramienta de lectura
     resultado = tools.leer_archivo_local(nombre_archivo)
-
-    # Mismo parche que en el interceptor de lectura automática: si
-    # leer_archivo_local devuelve una lista de coincidencias en vez del
-    # contenido, tomamos la primera ruta absoluta y reintentamos con ella.
+    
+    # Manejo de múltiples coincidencias
     if isinstance(resultado, str) and "múltiples coincidencias" in resultado.lower():
         match_primera = re.search(r'1\.\s+([a-zA-Z]:\\[^\n]+)', resultado)
         if match_primera:
             ruta_absoluta = match_primera.group(1).strip()
-            resultado = tools.leer_archivo_local(ruta_absoluta)
+        else:
+             return "Hay múltiples archivos con ese nombre. Por favor, sé más específico."
+    elif isinstance(resultado, dict) and "ruta" in resultado:
+        # Asegúrate de que leer_archivo_local devuelve la ruta absoluta en su diccionario
+        ruta_absoluta = resultado.get("ruta", nombre_archivo)
+    else:
+        return f"Pude ver el archivo '{nombre_archivo}', pero hubo un error al extraerlo. Revisa los permisos."
 
-    if not (isinstance(resultado, dict) and "contenido" in resultado):
-        return "Pude ver el archivo, pero hubo un error al extraer su contenido. Revisa los permisos."
-
-    texto_a_vectorizar = resultado["contenido"]
-
-    # `indexar_documento` fragmenta el texto en chunks de ~600 caracteres (con
-    # solapamiento de 100) y los guarda en la colección "documentos_tecnicos"
-    # de ChromaDB, cada uno con el nombre del archivo como metadato "origen"
-    # (el mismo campo que lee el bloque de memoria_tecnica al armar el RAG).
-    # `_obtener_rag()` puede tardar la primera vez (carga ChromaDB) y podría
-    # fallar, así que se protege para responder con un mensaje claro.
-    try:
-        cantidad_fragmentos = _obtener_rag().indexar_documento(
-            texto_completo=texto_a_vectorizar,
-            nombre_origen=nombre_archivo
-        )
-    except Exception as e:
-        print(f"❌ [Ingesta] Falló la vectorización de '{nombre_archivo}': {e}")
-        return (
-            f"No pude memorizar '{nombre_archivo}': el Segundo Cerebro (ChromaDB) "
-            f"no respondió. Revisa la consola para ver el detalle."
-        )
-
-    return (
-        f"Asimilación completa. Procesé '{nombre_archivo}' y lo dividí en {cantidad_fragmentos} "
-        f"fragmentos que ya quedaron vectorizados en mi memoria a largo plazo. "
-        f"Ya puedes hacerme consultas técnicas sobre él."
-    )
-
+    # ¡Llamamos a la función maestra!
+    return asimilar_documento_maestro(ruta_absoluta)
 
 # ==========================================
 # 7. SEMÁFORO v3 — DECISIÓN DE RUTA
@@ -1684,72 +1801,77 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
         print(f"\n🤖 L-IA (Sistema/Ingesta): {texto_respuesta}\n")
         return texto_respuesta, "Local"
 
-    # ¿El usuario habla de "este archivo/documento"? Si además pregunta por su
-    # memoria técnica, gana la consulta al RAG y no se lee la ventana.
-    intentando_leer_ventana = bool(PATRON_LECTURA_IMPLICITA.search(msg_lower))
-    if intenciones.get("memoria_tecnica"):
-        intentando_leer_ventana = False
+    # --- LECTURA DE DOCUMENTO REFERENCIADO (Workspace fijado o ventana activa) ---
+    ruta_workspace = _obtener_workspace_activo()
+    menciona_workspace = bool(_PATRON_MENCION_WORKSPACE.search(msg_lower))
 
-    # --- INTERCEPTOR DE ARCHIVOS AUTOMÁTICO (FASE 7.2) ---
-    # Si pides resumir "esto", Python busca el archivo por su cuenta sin preguntarle a la IA
-    if intentando_leer_ventana:
-        ventana_actual = contexto.obtener_ventana_activa()
-        print(f"\n🕵️ [Interceptor] Ventana activa capturada: '{ventana_actual}'")
+    archivo_detectado = _extraer_referencia_archivo(mensaje_real)
+    if menciona_workspace:
+        # "lee el archivo del workspace" no nombra un archivo real: el regex
+        # capturaría "del workspace" como si fuera un nombre.
+        archivo_detectado = None
 
-        # contexto.obtener_ventana_activa() ya devuelve el título CON la
-        # extensión inferida (ej. "informe.docx") cuando pudo deducirla del
-        # sufijo de la app (" - Word", " - Excel", etc.), así que un único
-        # regex de extensión alcanza -- ya no hace falta el fallback manual
-        # de " - Word" que antes vivía acá duplicado y desincronizado.
-        match_archivo = re.search(
-            r'([a-zA-Z0-9_\-\s]+\.(html|php|js|css|py|docx|pdf|txt|md|pptx|xlsx))',
-            ventana_actual, re.IGNORECASE
+    es_orden_de_workspace = bool(intenciones.get("fijar_workspace") or intenciones.get("limpiar_workspace"))
+
+    intentando_leer_documento = (
+        bool(PATRON_LECTURA_IMPLICITA.search(msg_lower))
+        or (menciona_workspace and bool(ruta_workspace))
+        or (bool(ruta_workspace) and not archivo_detectado
+            and bool(_PATRON_REFERENCIA_GENERICA.search(msg_lower)))
+    )
+    # Fijar/limpiar el workspace y consultar la memoria técnica tienen su propio camino.
+    if es_orden_de_workspace or intenciones.get("memoria_tecnica"):
+        intentando_leer_documento = False
+
+    documento_cargado = False
+    if intentando_leer_documento:
+        contenido_doc, nombre_doc, origen_doc = _resolver_documento_referenciado(
+            ruta_workspace, prioridad_workspace=menciona_workspace
         )
-        nombre_archivo = match_archivo.group(1).strip() if match_archivo else None
 
-        # Si logramos deducir el nombre:
-        if nombre_archivo:
-            # 1. Ejecutamos la búsqueda automática
-            resultado = tools.leer_archivo_local(nombre_archivo)
+        if contenido_doc:
+            # Único tope: el techo de cordura de la Nube. El Semáforo decide el
+            # modelo según el tamaño real (Local -> Flash -> Pro).
+            tokens_doc = estimar_tokens(contenido_doc)
+            if tokens_doc > LIMITE_TOKENS_NUBE_MAXIMO:
+                limite_caracteres = LIMITE_TOKENS_NUBE_MAXIMO * 4
+                contenido_doc = contenido_doc[:limite_caracteres]
+                print(f"⚠️ [Semáforo] '{nombre_doc}' excede el techo ({tokens_doc} tokens). "
+                      f"Se recorta a {limite_caracteres} caracteres.")
 
-            # --- PARCHE PARA MÚLTIPLES COINCIDENCIAS (DUPLICADOS) ---
-            if isinstance(resultado, str) and "múltiples coincidencias" in resultado.lower():
-                # Extraemos la ruta exacta de la opción "1."
-                match_primera = re.search(r'1\.\s+([a-zA-Z]:\\[^\n]+)', resultado)
-                if match_primera:
-                    ruta_absoluta = match_primera.group(1).strip()
-                    # 2. Re-ejecutamos la lectura, pero esta vez con la ruta absoluta directa
-                    resultado = tools.leer_archivo_local(ruta_absoluta)
+            print(f"📖 [Lectura completa] '{nombre_doc}' desde {origen_doc} "
+                  f"(~{estimar_tokens(contenido_doc)} tokens)")
 
-            # 3. Validamos que ahora sí tengamos el diccionario con el texto
-            if isinstance(resultado, dict) and "contenido" in resultado:
-                # El contenido llega completo. El único tope es
-                # LIMITE_TOKENS_NUBE_MAXIMO (más abajo): un techo de cordura
-                # contra archivos gigantes, no un recorte por defecto.
-                contenido_completo = resultado['contenido']
+            contexto_historico += _envolver_contenido_externo(
+                f"DOCUMENTO DEL {origen_doc.upper()} — '{nombre_doc}' (LECTURA COMPLETA)",
+                contenido_doc
+            )
+            contexto_historico += (
+                "\n[SISTEMA]: Arriba tienes el contenido COMPLETO del documento. Basa tu "
+                "respuesta en ese texto, NO en el micro-resumen de 25 palabras. Si te piden "
+                "un resumen, cubre sus secciones o fases principales con detalle."
+            )
 
-                tokens_contenido = estimar_tokens(contenido_completo)
-                if tokens_contenido > LIMITE_TOKENS_NUBE_MAXIMO:
-                    limite_caracteres = LIMITE_TOKENS_NUBE_MAXIMO * 4
-                    contenido_completo = contenido_completo[:limite_caracteres]
-                    print(
-                        f"⚠️ [Semáforo] Archivo '{nombre_archivo}' excede el techo de cordura "
-                        f"({tokens_contenido} tokens > {LIMITE_TOKENS_NUBE_MAXIMO}). "
-                        f"Se recorta a los primeros {limite_caracteres} caracteres, ni Local ni "
-                        f"Nube procesan documentos de ese tamaño en una sola pasada."
-                    )
+            documento_cargado = True
+            intenciones["documento_cargado"] = True
+            intenciones["abrir_app"] = False
+            intenciones["codigo"] = False
+            intenciones["vision"] = False
+            intenciones["web"] = False
 
-                contexto_historico += (
-                    f"\n\n[SISTEMA - LECTURA AUTOMÁTICA DE VENTANA]:\n"
-                    f"Aquí está el contenido del archivo '{nombre_archivo}' que el usuario está viendo:\n"
-                    f"<<<INICIO>>>\n{contenido_completo}\n<<<FIN>>>\n"
-                )
-
-                # Apagamos forzosamente la intención de abrir apps
-                intenciones["abrir_app"] = False
-                intenciones["codigo"] = False
-                intenciones["vision"] = False
-                intenciones["web"] = False
+        elif ruta_workspace:
+            contexto_historico += (
+                f"\n\n[SISTEMA: Hay un workspace fijado en '{ruta_workspace}', pero no pude "
+                f"leer el archivo (movido, borrado o sin permisos). Díselo claramente a "
+                f"Alejandro y sugiérele volver a fijarlo. NO inventes su contenido.]"
+            )
+        else:
+            contexto_historico += (
+                "\n\n[SISTEMA: El usuario habla de 'este archivo/documento', pero NO hay "
+                "ningún workspace fijado ni una ventana con un archivo reconocible. Dile de "
+                "forma directa que no tienes ningún archivo activo y que lo suba o lo fije "
+                "('estoy trabajando en <archivo>'). NO adivines de qué archivo habla.]"
+            )
 
     # 1. Filtro para código vs web
     if intenciones["codigo"] or "{" in mensaje_real or "function " in msg_lower or "$" in mensaje_real:
@@ -1759,7 +1881,8 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     if intenciones["git"]:
         intenciones["estado_pc"] = False
 
-    archivo_detectado = _extraer_referencia_archivo(mensaje_real)
+    if documento_cargado:
+        archivo_detectado = None  # ya lo leímos completo arriba
 
     if intenciones["portapapeles"]:
         contexto_historico, _ = _procesar_portapapeles(contexto_historico)
