@@ -150,6 +150,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def renombrar_sesion_silenciosamente(sesion_id, texto_usuario):
+    """Genera un título corto basado en el primer mensaje usando el LLM en segundo plano."""
+    import ollama
+    try:
+        # Verificamos si la sesión aún tiene el nombre genérico
+        conexion = database.obtener_conexion()
+        cursor = conexion.cursor()
+        cursor.execute("SELECT titulo FROM sesiones_chat WHERE id = ?", (sesion_id,))
+        fila = cursor.fetchone()
+        conexion.close()
+
+        if fila and fila["titulo"] == "Nueva Conversación":
+            prompt = (
+                "Actúa como un generador de títulos. Resume este mensaje del usuario "
+                "en MÁXIMO 4 PALABRAS. Sin comillas, sin puntos, solo el título directo.\n"
+                f"Mensaje: {texto_usuario}"
+            )
+            # Llamada ultra-rápida a Gemma
+            respuesta = ollama.chat(
+                model='gemma2',
+                messages=[{'role': 'user', 'content': prompt}],
+                options={'temperature': 0.2, 'num_predict': 15}
+            )
+            nuevo_titulo = respuesta['message']['content'].strip('".*\n ')
+
+            # Fallback de seguridad por si responde muy largo
+            if len(nuevo_titulo) > 30:
+                nuevo_titulo = texto_usuario[:25] + "..."
+
+            database.actualizar_titulo_sesion(sesion_id, nuevo_titulo)
+    except Exception as e:
+        print(f"⚠️ [Título Automático] Falló el renombrado: {e}")
 
 # ---------------------------------------------------------------------------
 # Endpoints del semáforo (usados por React)
@@ -194,8 +226,11 @@ async def responder_semaforo(respuesta: RespuestaSemaforo):
 @app.post("/chat")
 def recibir_chat(mensaje: MensajeUsuario):
     entrada = mensaje.texto
-    sesion_actual = mensaje.sesion_id  # <-- Capturamos la sesión
+    sesion_actual = mensaje.sesion_id  
     logger.info(f"[Usuario | Sesión: {sesion_actual[:8]}] -> {entrada}")
+
+    # ---> DISPARAMOS EL AUTONOMBRE EN SEGUNDO PLANO <---
+    threading.Thread(target=renombrar_sesion_silenciosamente, args=(sesion_actual, entrada), daemon=True).start()
 
     cola_streaming = queue.Queue()
 

@@ -215,6 +215,14 @@ def listar_sesiones():
     conexion.close()
     return [dict(f) for f in filas]
 
+def actualizar_titulo_sesion(sesion_id, nuevo_titulo):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("UPDATE sesiones_chat SET titulo = ?, ultima_actualizacion = ? WHERE id = ?", 
+                   (nuevo_titulo, _ahora(), sesion_id))
+    conexion.commit()
+    conexion.close()
+
 # ============================================================
 # WORKSPACE / CONTEXTO ACTIVO - AISLADO POR SESIÓN
 # ============================================================
