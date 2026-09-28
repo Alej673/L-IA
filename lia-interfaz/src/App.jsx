@@ -1,10 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Mic, Paperclip, Terminal, Cpu, Database, Upload, AlertTriangle, Activity, ShieldAlert } from 'lucide-react'
+import { Mic, Paperclip, Terminal, Cpu, Database, Upload, AlertTriangle, Activity, ShieldAlert, MessageSquare, Plus, Folder, Menu } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import './App.css'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+
+const API = "http://127.0.0.1:8000";
+
+// Extensiones que el backend sabe leer (ajústalas a tu /ingestar)
+const EXTENSIONES_VALIDAS = ['txt', 'md', 'py', 'js', 'php', 'html', 'css', 'json', 'docx', 'pdf', 'pptx', 'xlsx'];
+
+const MENSAJE_INICIAL = 'L-IA v3.2.0 inicializada. Esperando directivas...';
 
 // =========================================
 // CONFIGURACIÓN VISUAL POR ESTADO DEL NÚCLEO
@@ -57,7 +64,10 @@ function useGestoPensamiento(activo, intervaloMs = 1400) {
 // =========================================
 // NÚCLEO L-IA: Expresividad, Micro-Estados y Tareas
 // =========================================
-function NucleoLIA({ estado }) {
+// `mensajeEspera` (opcional): texto que manda el backend vía callback_estado
+// (ej. "Analizando arquitectura..." cuando responde Gemini Pro). Si llega,
+// reemplaza las frases rotativas mientras L-IA piensa.
+function NucleoLIA({ estado, mensajeEspera }) {
   // Fallback a procesando_pregunta si enviamos un estado 'procesando' genérico
   const estadoReal = estado === 'procesando' ? 'procesando_pregunta' : estado;
 
@@ -71,7 +81,6 @@ function NucleoLIA({ estado }) {
   const color = useCicloDeTono(tonos, estadoReal === 'error' ? 600 : 1800);
   const colorRostro = '#021017';
 
-  // --- TUS ESTADOS ORIGINALES INTACTOS ---
   const [parpadeo, setParpadeo] = useState(false);
   const [mouseOffset, setMouseOffset] = useState({ x: 0, y: 0 });
   const [miradaVagante, setMiradaVagante] = useState({ x: 0, y: 0 });
@@ -94,7 +103,24 @@ function NucleoLIA({ estado }) {
     return () => window.removeEventListener('mousemove', handleMouseMove);
   }, []);
 
-  // 2. Progresión de aburrimiento (Tu lógica exacta)
+  // Interceptor global para Drag & Drop en Tauri v2
+  useEffect(() => {
+    const evitarNavegacionNativa = (e) => {
+      e.preventDefault();
+      // Solo detenemos la propagación en el drop a nivel ventana
+      // para evitar que Tauri abra el archivo.
+    };
+
+    window.addEventListener('dragover', evitarNavegacionNativa);
+    window.addEventListener('drop', evitarNavegacionNativa);
+
+    return () => {
+      window.removeEventListener('dragover', evitarNavegacionNativa);
+      window.removeEventListener('drop', evitarNavegacionNativa);
+    };
+  }, []);
+
+  // 2. Progresión de aburrimiento
   useEffect(() => {
     if (estadoReal !== 'reposo') {
       setSubEstado('normal');
@@ -133,17 +159,21 @@ function NucleoLIA({ estado }) {
     return () => clearInterval(intervaloMirada);
   }, [estadoReal, subEstado, tiempoInactiva]);
 
-  // 4. Parpadeo
+  // 4. Parpadeo (con limpieza del timeout interno para no tocar estado desmontado)
   useEffect(() => {
     if (subEstado === 'durmiendo') return;
+    let timeoutId;
     const ciclo = setInterval(() => {
       setParpadeo(true);
-      setTimeout(() => setParpadeo(false), 140);
+      timeoutId = setTimeout(() => setParpadeo(false), 140);
     }, Math.random() * 3500 + 2500);
-    return () => clearInterval(ciclo);
+    return () => {
+      clearInterval(ciclo);
+      clearTimeout(timeoutId);
+    };
   }, [subEstado]);
 
-  // --- GEOMETRÍA FACIAL FUSIONADA (Tus Emociones + Mis Pensamientos) ---
+  // --- GEOMETRÍA FACIAL ---
   const getOjos = () => {
     // 1. Estados de reposo/aburrimiento
     if (parpadeo || subEstado === 'durmiendo') return { height: '2px', width: '10px', y: 3, rotate: 0, borderRadius: '2px', scaleY: 1 };
@@ -185,7 +215,7 @@ function NucleoLIA({ estado }) {
     if (pensando && gesto === 'casi')          return { width: '6px', height: '6px', borderRadius: '50%', scaleY: 1, rotate: 0, y: 1 };
 
     // 3. Estados de procesamiento táctico (fallback / gesto 'duda')
-    if (estadoReal === 'procesando_pregunta') return { width: '4px', height: '4px', borderRadius: '50%', scaleY: 1, rotate: 0, y: 1 }; // Boca pensativa "hmmm"
+    if (estadoReal === 'procesando_pregunta') return { width: '4px', height: '4px', borderRadius: '50%', scaleY: 1, rotate: 0, y: 1 };
 
     // 4. Generales
     if (estadoReal === 'escribiendo') return { width: '15px', height: '6px', borderRadius: '3px 3px 10px 10px', scaleY: [1, 1.4, 0.8, 1.2], rotate: 0, y: 0 };
@@ -204,6 +234,17 @@ function NucleoLIA({ estado }) {
       }
     : { x: 0, y: subEstado === 'durmiendo' ? 4 : 0 };
 
+  // Texto de la etiqueta inferior
+  const textoEtiqueta =
+    subEstado === 'durmiendo' ? 'SUSPENDIDA (REPOSO)' :
+    subEstado === 'bostezo' ? 'MODO REPOSO...' :
+    subEstado === 'molesta' ? 'ESPERANDO ÓRDENES...' :
+    subEstado === 'impaciente' ? 'EN ESPERA' :
+    pensando && mensajeEspera ? mensajeEspera.toUpperCase() :
+    pensando && FRASES_PENSAMIENTO[estadoReal]
+      ? FRASES_PENSAMIENTO[estadoReal][rondaGesto % FRASES_PENSAMIENTO[estadoReal].length]
+      : label;
+
   return (
     <div className="nucleo-wrapper">
       <div className="nucleo-halo" style={{ background: `radial-gradient(circle, ${color}33, transparent 70%)` }} />
@@ -211,8 +252,8 @@ function NucleoLIA({ estado }) {
       {/* NODO DE GIT BRANCHING */}
       <AnimatePresence>
         {estadoReal === 'procesando_git' && (
-          <motion.div 
-            className="nodo-git" 
+          <motion.div
+            className="nodo-git"
             style={{ background: color, color: color, top: '50%', left: '50%', marginTop: '-7px', marginLeft: '-7px' }}
             initial={{ x: 0, y: 0, opacity: 0 }}
             animate={{ x: 50, y: -30, opacity: 1 }}
@@ -252,7 +293,7 @@ function NucleoLIA({ estado }) {
         }}
         transition={{ repeat: Infinity, duration: subEstado === 'bostezo' ? 2.5 : pulso, ease: 'easeInOut' }}
       >
-        {/* TUS ICONOS FLOTANTES DE EMOCIÓN (INTACTOS) */}
+        {/* ICONOS FLOTANTES DE EMOCIÓN */}
         <AnimatePresence>
           {subEstado === 'durmiendo' && (
             <div style={{ position: 'absolute', top: '-15px', right: '-15px', zIndex: 10, pointerEvents: 'none' }}>
@@ -307,7 +348,7 @@ function NucleoLIA({ estado }) {
         {/* LENTES DE LECTURA */}
         <AnimatePresence>
           {estadoReal === 'procesando_doc' && (
-            <motion.div 
+            <motion.div
               className="lentes-lectura"
               style={{ color }}
               initial={{ opacity: 0, y: -10 }}
@@ -369,13 +410,7 @@ function NucleoLIA({ estado }) {
           exit={{ opacity: 0, y: -6 }}
           transition={{ duration: 0.25 }}
         >
-          {subEstado === 'durmiendo' ? 'SUSPENDIDA (REPOSO)' :
-           subEstado === 'bostezo' ? 'MODO REPOSO...' :
-           subEstado === 'molesta' ? 'ESPERANDO ÓRDENES...' :
-           subEstado === 'impaciente' ? 'EN ESPERA' :
-           pensando && FRASES_PENSAMIENTO[estadoReal]
-             ? FRASES_PENSAMIENTO[estadoReal][rondaGesto % FRASES_PENSAMIENTO[estadoReal].length]
-             : label}
+          {textoEtiqueta}
         </motion.div>
       </AnimatePresence>
     </div>
@@ -385,18 +420,18 @@ function NucleoLIA({ estado }) {
 // Sub-componente para renderizar bloques de código vs código en línea
 function BloqueDeCodigo({ node, inline, className, children, ...props }) {
   const [copiado, setCopiado] = useState(false);
-  
+
   const match = /language-(\w+)/.exec(className || '');
   const lenguaje = match ? match[1] : 'text';
   const codigoString = String(children).replace(/\n$/, '');
 
-  // CRÍTICO: Si no tiene saltos de línea y no tiene clase de lenguaje,
+  // Si no tiene saltos de línea y no tiene clase de lenguaje,
   // es código en línea (como `readline()` o `$mayor`)
   const esMultilinea = Boolean(match) || codigoString.includes('\n');
 
   if (!esMultilinea) {
     return (
-      <code 
+      <code
         style={{
           background: 'rgba(0, 255, 255, 0.12)',
           color: '#39ff88',
@@ -405,7 +440,7 @@ function BloqueDeCodigo({ node, inline, className, children, ...props }) {
           fontSize: '13px',
           fontFamily: 'monospace',
           border: '1px solid rgba(0, 255, 255, 0.25)'
-        }} 
+        }}
         {...props}
       >
         {children}
@@ -426,32 +461,32 @@ function BloqueDeCodigo({ node, inline, className, children, ...props }) {
   return (
     <div style={{ position: 'relative', marginTop: '12px', marginBottom: '12px', borderRadius: '6px', overflow: 'hidden', border: '1px solid rgba(0,255,255,0.2)' }}>
       <div style={{
-        display: 'flex', 
-        justifyContent: 'space-between', 
+        display: 'flex',
+        justifyContent: 'space-between',
         alignItems: 'center',
-        background: '#041c26', 
-        padding: '6px 12px', 
+        background: '#041c26',
+        padding: '6px 12px',
         borderBottom: '1px solid rgba(0,255,255,0.1)'
       }}>
         <span style={{ color: '#00ffff', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1px', opacity: 0.8 }}>
           {lenguaje}
         </span>
-        <button 
-          onClick={manejarCopia} 
-          style={{ 
-            background: 'none', 
-            border: 'none', 
-            color: copiado ? '#39ff88' : '#00ffff', 
-            cursor: 'pointer', 
-            fontSize: '11px', 
+        <button
+          onClick={manejarCopia}
+          style={{
+            background: 'none',
+            border: 'none',
+            color: copiado ? '#39ff88' : '#00ffff',
+            cursor: 'pointer',
+            fontSize: '11px',
             letterSpacing: '1px',
-            transition: 'all 0.2s' 
+            transition: 'all 0.2s'
           }}
         >
           {copiado ? '✓ COPIADO' : 'COPIAR'}
         </button>
       </div>
-      
+
       <SyntaxHighlighter
         children={codigoString}
         style={vscDarkPlus}
@@ -476,21 +511,124 @@ function App() {
   const [isDragging, setIsDragging] = useState(false)
   const [escuchando, setEscuchando] = useState(false)
   const [mensajes, setMensajes] = useState([
-    { rol: 'ia', texto: 'L-IA v3.2.0 inicializada. Esperando directivas...' }
+    { rol: 'ia', texto: MENSAJE_INICIAL }
   ])
+
+  // Mensaje de espera que manda el backend (ej. "Analizando arquitectura..." con Gemini Pro)
+  const [mensajeEspera, setMensajeEspera] = useState(null)
 
   // ESTADO DEL WORKSPACE ACTIVO (archivo en el que L-IA está enfocada)
   const [workspaceActivo, setWorkspaceActivo] = useState(null)
 
+  // ---> ESTADOS MULTI-SESIÓN <---
+  const [sesiones, setSesiones] = useState([])
+  const [sesionActual, setSesionActual] = useState('default')
+  const [sidebarAbierto, setSidebarAbierto] = useState(false) // solo se usa en modo ventana pequeña (drawer)
+
   const finalDelChatRef = useRef(null)
   const archivoInputRef = useRef(null)
+  const textareaRef = useRef(null)
+
+  // Contador de entradas/salidas del arrastre: evita el parpadeo al cruzar elementos hijos
+  const dragContador = useRef(0)
 
   // ESTADO DEL SEMÁFORO
   const [semaforo, setSemaforo] = useState({ activa: false, herramienta: '', argumentos: '' })
 
+  const [cargando, setCargando] = useState(false);
+  const abortControllerRef = useRef(null);
+
+  // ---------- Helpers de estado inmutable ----------
+  // Siempre se crea un objeto nuevo (evita duplicar texto en React StrictMode).
+  const actualizarUltimoMensaje = (fn) => {
+    setMensajes(prev => {
+      if (prev.length === 0) return prev
+      const copia = [...prev]
+      copia[copia.length - 1] = fn(copia[copia.length - 1])
+      return copia
+    })
+  }
+
+  const agregarSistema = (texto) =>
+    setMensajes(prev => [...prev, { rol: 'sistema', texto }])
+
+  const nombreDeRuta = (ruta) => (ruta ? String(ruta).split(/[\\/]/).pop() : null)
+
   useEffect(() => {
     finalDelChatRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [mensajes])
+
+  // =========================================
+  // MULTI-SESIÓN
+  // =========================================
+  const cargarSesiones = async () => {
+    try {
+      const res = await fetch(`${API}/sesiones`)
+      if (res.ok) {
+        const data = await res.json()
+        setSesiones(data)
+      }
+    } catch (e) {
+      console.error("Fallo al cargar lista de sesiones", e)
+    }
+  }
+
+  // Carga el historial y el workspace de una pestaña
+  const cargarContextoSesion = async (idSesion) => {
+    try {
+      const res = await fetch(`${API}/sesiones/${idSesion}/contexto`)
+      if (res.ok) {
+        const data = await res.json()
+        const mapeados = (data.historial || []).map(m => ({
+          rol: m.rol === 'model' ? 'ia' : 'usuario',
+          texto: m.mensaje
+        }))
+        if (mapeados.length === 0) {
+          mapeados.push({ rol: 'ia', texto: MENSAJE_INICIAL })
+        }
+        // Solo cambiamos de sesión cuando el contexto llegó bien
+        setSesionActual(idSesion)
+        setMensajes(mapeados)
+        setWorkspaceActivo(nombreDeRuta(data.workspace_activo))
+      }
+    } catch (e) {
+      console.error("Fallo al cargar contexto de sesión", e)
+    }
+  }
+
+  const crearNuevaSesion = async () => {
+    if (cargando) return
+    try {
+      const res = await fetch(`${API}/sesiones/nueva`, { method: "POST" })
+      if (res.ok) {
+        const data = await res.json()
+        await cargarSesiones()
+        cargarContextoSesion(data.sesion_id)
+      }
+    } catch (e) {
+      console.error("Fallo al crear sesión", e)
+    }
+  }
+
+  // Al montar: lista de pestañas + historial de "default"
+  // (esto reemplaza al antiguo GET /workspace, porque el contexto ya trae el workspace)
+  useEffect(() => {
+    cargarSesiones()
+    cargarContextoSesion("default")
+  }, [])
+
+  // Evita que el navegador abra el archivo en otra pestaña si se suelta fuera de la zona de drop
+  useEffect(() => {
+    const bloquear = (e) => {
+      if (Array.from(e.dataTransfer?.types || []).includes('Files')) e.preventDefault()
+    }
+    window.addEventListener('dragover', bloquear)
+    window.addEventListener('drop', bloquear)
+    return () => {
+      window.removeEventListener('dragover', bloquear)
+      window.removeEventListener('drop', bloquear)
+    }
+  }, [])
 
   // Vigía del Semáforo
   useEffect(() => {
@@ -500,7 +638,7 @@ function App() {
     if (piensaOEscribe) {
       intervalo = setInterval(async () => {
         try {
-          const res = await fetch("http://127.0.0.1:8000/semaforo")
+          const res = await fetch(`${API}/semaforo`)
           const data = await res.json()
           if (data.activa && !semaforo.activa) {
             setSemaforo(data)
@@ -514,7 +652,7 @@ function App() {
   // Función para responder al semáforo
   const responderSemaforo = async (autorizado) => {
     try {
-      await fetch("http://127.0.0.1:8000/semaforo/responder", {
+      await fetch(`${API}/semaforo/responder`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ autorizado })
@@ -525,10 +663,7 @@ function App() {
     }
   }
 
-  const [cargando, setCargando] = useState(false);
-  const abortControllerRef = useRef(null);
-
-const manejarEnvio = async (e) => {
+  const manejarEnvio = async (e) => {
     if (e) e.preventDefault();
     if (!input.trim() || cargando) return;
 
@@ -544,32 +679,40 @@ const manejarEnvio = async (e) => {
     ]);
 
     setInput('');
+    if (textareaRef.current) textareaRef.current.style.height = '42px';
 
     // 1. Estado por defecto (duda)
-    let estadoTemporal = 'procesando_pregunta'; 
+    let estadoTemporal = 'procesando_pregunta';
     const textoMinusculas = textoUsuario.toLowerCase();
 
-    // Filtramos palabras clave para disparar las animaciones correctas
-    if (textoMinusculas.includes('git') || textoMinusculas.includes('commit') || textoMinusculas.includes('ramas')) {
+    // Filtramos palabras clave para disparar las animaciones correctas.
+    // `\bram\b` evita que "programa" o "diagrama" activen el estado de sistema.
+    if (/\b(git|commit|commits|ramas)\b/.test(textoMinusculas)) {
       estadoTemporal = 'procesando_git';
-    } else if (textoMinusculas.includes('sistema') || textoMinusculas.includes('hardware') || textoMinusculas.includes('ram')) {
+    } else if (/\b(sistema|hardware|ram)\b/.test(textoMinusculas)) {
       estadoTemporal = 'procesando_sistema';
-    } else if (textoMinusculas.includes('archivo') || textoMinusculas.includes('lee') || textoMinusculas.includes('revisa')) {
+    } else if (/(archivo|documento|workspace|\blee\b|\brevisa)/.test(textoMinusculas)) {
       estadoTemporal = 'procesando_doc';
     } else if (textoMinusculas.includes('?')) {
       estadoTemporal = 'procesando_pregunta';
     }
 
     setEstadoLIA(estadoTemporal);
+    setMensajeEspera(null);
     let huboError = false;
 
     try {
-      const respuesta = await fetch("http://127.0.0.1:8000/chat", {
+      const respuesta = await fetch(`${API}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ texto: textoUsuario }),
+        // MANDAMOS LA SESIÓN ACTIVA AL BACKEND
+        body: JSON.stringify({ texto: textoUsuario, sesion_id: sesionActual }),
         signal: abortControllerRef.current.signal
       });
+
+      if (!respuesta.ok || !respuesta.body) {
+        throw new Error(`HTTP ${respuesta.status}`)
+      }
 
       const reader = respuesta.body.getReader()
       const decoder = new TextDecoder("utf-8")
@@ -585,79 +728,70 @@ const manejarEnvio = async (e) => {
         buffer = partes.pop()
 
         for (const parte of partes) {
-          if (parte.startsWith("data: ")) {
-            const dataStr = parte.replace("data: ", "")
-            try {
-              const data = JSON.parse(dataStr)
+          if (!parte.startsWith("data: ")) continue
+          const dataStr = parte.replace("data: ", "")
+          try {
+            const data = JSON.parse(dataStr)
 
-              if (data.tipo === "chunk") {
-                // fase 2: en cuanto llega el primer chunk, pasamos a "escribiendo"
-                if (!yaEscribiendo) {
-                  yaEscribiendo = true
-                  setEstadoLIA('escribiendo')
-                }
+            if (data.tipo === "estado") {
+              // El backend reenvía lo que manda callback_estado en cerebro.py
+              // ({ perfil, etiqueta, modelo, motivo, mensaje_espera }).
+              if (!yaEscribiendo) setMensajeEspera(data.mensaje_espera || null)
 
-                if (data.texto.length > 50) {
-                  setMensajes(prev => {
-                    const nuevos = [...prev]
-                    nuevos[nuevos.length - 1].texto += data.texto
-                    return nuevos
-                  });
-                } else {
-                  const letras = data.texto.split("");
-                  for (let i = 0; i < letras.length; i++) {
-                    setMensajes(prev => {
-                      const nuevos = [...prev]
-                      const ultimo = nuevos[nuevos.length - 1]
-                      ultimo.texto += letras[i]
-                      return nuevos
-                    });
-                    await new Promise(resolve => setTimeout(resolve, 15));
-                  }
-                }
-              } else if (data.tipo === "fin") {
-                setMensajes(prev => {
-                  const nuevos = [...prev]
-                  const ultimo = nuevos[nuevos.length - 1]
-                  ultimo.origen = data.origen
-                  if (data.documento) ultimo.documento = data.documento
-                  return nuevos
-                })
-              } else if (data.tipo === "error") {
-                huboError = true
-                setMensajes(prev => {
-                  const nuevos = [...prev]
-                  nuevos[nuevos.length - 1].texto += `\n[ERROR]: ${data.texto}`
-                  return nuevos
-                })
+            } else if (data.tipo === "chunk") {
+              // en cuanto llega el primer chunk, pasamos a "escribiendo"
+              if (!yaEscribiendo) {
+                yaEscribiendo = true
+                setMensajeEspera(null)
+                setEstadoLIA('escribiendo')
               }
-            } catch(err) {
-              console.error("Error parseando el chunk:", err)
+
+              if (data.texto.length > 50) {
+                actualizarUltimoMensaje(m => ({ ...m, texto: m.texto + data.texto }))
+              } else {
+                const letras = data.texto.split("");
+                for (let i = 0; i < letras.length; i++) {
+                  actualizarUltimoMensaje(m => ({ ...m, texto: m.texto + letras[i] }))
+                  await new Promise(resolve => setTimeout(resolve, 15));
+                }
+              }
+
+            } else if (data.tipo === "fin") {
+              actualizarUltimoMensaje(m => ({
+                ...m,
+                origen: data.origen,
+                documento: data.documento || m.documento
+              }))
+
+              // ---> SINCRONIZACIÓN VISUAL <---
+              if (data.workspace !== undefined) {
+                setWorkspaceActivo(data.workspace);
+              }
+              // Refresca la barra lateral (títulos nuevos e iconos de workspace)
+              cargarSesiones();
+
+            } else if (data.tipo === "error") {
+              huboError = true
+              actualizarUltimoMensaje(m => ({ ...m, texto: m.texto + `\n[ERROR]: ${data.texto}` }))
             }
+          } catch (err) {
+            console.error("Error parseando el chunk:", err)
           }
         }
       }
 
     } catch (error) {
       if (error.name === 'AbortError') {
-        setMensajes(prev => {
-          const nuevos = [...prev];
-          nuevos[nuevos.length - 1].texto += '\n\n*(Respuesta abortada)*';
-          nuevos[nuevos.length - 1].cancelado = true;
-          return nuevos;
-        });
+        actualizarUltimoMensaje(m => ({ ...m, texto: m.texto + '\n\n*(Respuesta abortada)*', cancelado: true }))
       } else {
         huboError = true;
-        setMensajes(prev => {
-          const nuevos = [...prev];
-          nuevos[nuevos.length - 1].texto += '\n\n[ERROR] Caída del enlace con el núcleo.';
-          return nuevos;
-        });
+        actualizarUltimoMensaje(m => ({ ...m, texto: m.texto + '\n\n[ERROR] Caída del enlace con el núcleo.' }))
       }
     } finally {
       setCargando(false);
+      setMensajeEspera(null);
       if (huboError) {
-        // fase de error: el núcleo destella un momento antes de calmarse
+        // el núcleo destella un momento antes de calmarse
         setEstadoLIA('error');
         setTimeout(() => setEstadoLIA('reposo'), 1600);
       } else {
@@ -668,49 +802,111 @@ const manejarEnvio = async (e) => {
 
   const procesarArchivoRAG = async (archivo) => {
     setEstadoLIA('procesando_rag')
-    setMensajes(prev => [...prev, { rol: 'sistema', texto: `[SISTEMA] Ingestando ${archivo.name}...` }])
+    agregarSistema(`[SISTEMA] Ingestando ${archivo.name}...`)
     const formData = new FormData()
     formData.append("archivo", archivo)
+    formData.append("sesion_id", sesionActual) // a qué chat pertenece
     try {
-      const respuesta = await fetch("http://127.0.0.1:8000/ingestar", { method: "POST", body: formData })
+      const respuesta = await fetch(`${API}/ingestar`, { method: "POST", body: formData })
       const data = await respuesta.json()
       setMensajes(prev => [...prev, { rol: 'ia', texto: data.mensaje }])
 
       // Activa el indicador de workspace solo si la ingesta salió bien
       if (respuesta.ok && data.status === 'completado') {
         setWorkspaceActivo(archivo.name)
+        cargarSesiones()
       }
 
       setEstadoLIA('reposo')
     } catch (error) {
-      setMensajes(prev => [...prev, { rol: 'sistema', texto: '[ERROR] Fallo en RAG.' }])
+      agregarSistema('[ERROR] Fallo en RAG.')
       setEstadoLIA('error')
       setTimeout(() => setEstadoLIA('reposo'), 1600)
     }
   }
 
-  // Libera el archivo en el que L-IA está enfocada
+  // Libera el archivo en el que L-IA está enfocada (en la sesión actual)
   const limpiarWorkspace = async () => {
     try {
-      const respuesta = await fetch("http://127.0.0.1:8000/workspace/limpiar", { method: "POST" })
+      const respuesta = await fetch(`${API}/workspace/limpiar`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sesion_id: sesionActual })
+      })
       const data = await respuesta.json()
-      if (data.status === 'completado') {
+      if (data.status === 'completado' || data.status === 'ok') {
         setWorkspaceActivo(null)
-        setMensajes(prev => [...prev, { rol: 'sistema', texto: '[SISTEMA] Workspace liberado.' }])
+        agregarSistema('[SISTEMA] Workspace liberado.')
+        cargarSesiones()
       } else {
-        setMensajes(prev => [...prev, { rol: 'sistema', texto: '[ERROR] No se pudo liberar el workspace.' }])
+        agregarSistema('[ERROR] No se pudo liberar el workspace.')
       }
     } catch (error) {
       console.error("Error al limpiar workspace", error)
-      setMensajes(prev => [...prev, { rol: 'sistema', texto: '[ERROR] Sin enlace con el núcleo al liberar el workspace.' }])
+      agregarSistema('[ERROR] Sin enlace con el núcleo al liberar el workspace.')
     }
   }
 
-  const manejarDragOver = (e) => { e.preventDefault(); if (!isDragging) setIsDragging(true) }
-  const manejarDragLeave = (e) => { e.preventDefault(); setIsDragging(false) }
-  const manejarDrop = (e) => { e.preventDefault(); setIsDragging(false); if (e.dataTransfer.files.length > 0) procesarArchivoRAG(e.dataTransfer.files[0]) }
+  // =========================================
+  // DRAG & DROP
+  // =========================================
+  const tieneArchivos = (e) =>
+    Array.from(e.dataTransfer?.types || []).includes('Files')
+
+  const manejarDragEnter = (e) => {
+    if (!tieneArchivos(e)) return
+    e.preventDefault()
+    dragContador.current += 1
+    setIsDragging(true)
+  }
+
+  const manejarDragOver = (e) => {
+    if (!tieneArchivos(e)) return
+    e.preventDefault() // obligatorio para que el navegador permita el drop
+    e.dataTransfer.dropEffect = 'copy'
+  }
+
+  const manejarDragLeave = (e) => {
+    if (!tieneArchivos(e)) return
+    e.preventDefault()
+    dragContador.current = Math.max(0, dragContador.current - 1)
+    if (dragContador.current === 0) setIsDragging(false)
+  }
+
+  const manejarDrop = (e) => {
+    if (!tieneArchivos(e)) return
+    e.preventDefault()
+    dragContador.current = 0
+    setIsDragging(false)
+
+    const archivos = Array.from(e.dataTransfer.files || [])
+    if (archivos.length === 0) return
+
+    if (cargando || estadoLIA === 'procesando_rag') {
+      agregarSistema('[SISTEMA] Estoy ocupada. Suelta el archivo cuando termine.')
+      return
+    }
+
+    const archivo = archivos[0]
+    const ext = archivo.name.includes('.') ? archivo.name.split('.').pop().toLowerCase() : ''
+
+    if (!EXTENSIONES_VALIDAS.includes(ext)) {
+      agregarSistema(`[SISTEMA] Formato .${ext || '(sin extensión)'} no soportado. Acepto: ${EXTENSIONES_VALIDAS.join(', ')}.`)
+      return
+    }
+
+    if (archivos.length > 1) {
+      agregarSistema(`[SISTEMA] Recibí ${archivos.length} archivos; ingesto solo el primero (${archivo.name}).`)
+    }
+
+    procesarArchivoRAG(archivo)
+  }
+
   const manejarClickArchivo = () => archivoInputRef.current?.click()
-  const manejarSeleccionArchivo = (e) => { if (e.target.files.length > 0) procesarArchivoRAG(e.target.files[0]); e.target.value = null }
+  const manejarSeleccionArchivo = (e) => {
+    if (e.target.files.length > 0) procesarArchivoRAG(e.target.files[0])
+    e.target.value = null
+  }
 
   const manejarMicrofono = () => {
     setEscuchando(!escuchando)
@@ -723,22 +919,87 @@ const manejarEnvio = async (e) => {
     setCargando(false);
 
     try {
-      await fetch("http://127.0.0.1:8000/cancelar", { method: "POST" });
+      await fetch(`${API}/cancelar`, { method: "POST" });
     } catch (error) {
       console.error("Error al abortar en el backend:", error);
     }
   };
 
   return (
-    <div className="hud-container" onDragOver={manejarDragOver} onDragLeave={manejarDragLeave} onDrop={manejarDrop}>
+    <div
+      className="hud-container"
+      onDragEnter={manejarDragEnter}
+      onDragOver={manejarDragOver}
+      onDragLeave={manejarDragLeave}
+      onDrop={manejarDrop}
+    >
 
-      {/* CAPA DE DRAG & DROP */}
+      {/* CAPA DE DRAG & DROP (pointer-events: none para no robar los eventos del arrastre) */}
       {isDragging && (
-        <div className="capa-drag">
+        <div className="capa-drag" style={{ pointerEvents: 'none' }}>
           <Upload size={40} />
           <p>Suelta el archivo para ingestarlo</p>
         </div>
       )}
+
+      {/* --- PANEL LATERAL IZQUIERDO (SIDEBAR MULTI-SESIÓN) --- */}
+      {sidebarAbierto && <div className="sidebar-backdrop" onClick={() => setSidebarAbierto(false)} />}
+      <div className={`panel lateral-izquierdo ${sidebarAbierto ? 'abierto' : ''}`} style={{ padding: '15px' }}>
+        <h2 className="hud-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          HISTORIAL DE CONVERSACIÓN
+          <button
+            onClick={crearNuevaSesion}
+            disabled={cargando}
+            className="hud-btn"
+            style={{ padding: '6px 10px', display: 'flex', alignItems: 'center', gap: '5px', fontSize: '10px' }}
+          >
+            <Plus size={12} /> NUEVA
+          </button>
+        </h2>
+
+        <div className="lista-sesiones custom-scrollbar" style={{ display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto', flex: 1 }}>
+          {sesiones.map(s => {
+            const isActiva = s.id === sesionActual;
+            const nombreArchivo = nombreDeRuta(s.workspace_activo);
+            // No se cambia de pestaña mientras L-IA está respondiendo (evita mezclar chats)
+            const bloqueada = cargando && !isActiva;
+
+            return (
+              <div
+                key={s.id}
+                onClick={() => { if (!isActiva && !cargando) { cargarContextoSesion(s.id); setSidebarAbierto(false) } }}
+                style={{
+                  background: isActiva ? 'rgba(0, 255, 255, 0.15)' : 'rgba(0, 0, 0, 0.4)',
+                  border: `1px solid ${isActiva ? '#00ffff' : 'rgba(0,255,255,0.1)'}`,
+                  padding: '10px',
+                  borderRadius: '6px',
+                  cursor: isActiva ? 'default' : bloqueada ? 'not-allowed' : 'pointer',
+                  opacity: bloqueada ? 0.5 : 1,
+                  transition: 'all 0.2s ease',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '5px'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: isActiva ? '#fff' : '#88ccff', fontSize: '12px' }}>
+                  <MessageSquare size={14} />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: isActiva ? 'bold' : 'normal' }}>
+                    {s.titulo || 'Conversación'}
+                  </span>
+                </div>
+
+                {/* Workspace activo dentro de cada sesión */}
+                {nombreArchivo && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px', color: '#39ff88', fontSize: '10px', paddingLeft: '22px' }}>
+                    <Folder size={12} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nombreArchivo}</span>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
 
       {/* MODAL DEL SEMÁFORO */}
       <AnimatePresence>
@@ -791,9 +1052,15 @@ const manejarEnvio = async (e) => {
         )}
       </AnimatePresence>
 
+      {/* --- PANEL CENTRAL --- */}
       <div className="panel central">
+        {/* BOTÓN PARA ABRIR EL SIDEBAR (solo visible en ventana pequeña) */}
+        <button type="button" className="hud-btn btn-menu-sidebar" onClick={() => setSidebarAbierto(true)} title="Sesiones">
+          <Menu size={18} />
+        </button>
+
         {/* NÚCLEO ESTÁTICO (NO HACE SCROLL) */}
-        <NucleoLIA estado={estadoLIA} />
+        <NucleoLIA estado={estadoLIA} mensajeEspera={mensajeEspera} />
 
         {/* INDICADOR DE WORKSPACE ACTIVO */}
         <AnimatePresence>
@@ -844,7 +1111,7 @@ const manejarEnvio = async (e) => {
         </AnimatePresence>
 
         {/* ZONA EXCLUSIVA DE SCROLL */}
-        <div className="chat-terminal">
+        <div className="chat-terminal custom-scrollbar">
           {mensajes.map((msg, idx) => (
             <div key={idx} className={`burbuja-mensaje ${msg.rol} ${msg.cancelado ? 'mensaje-abortado' : ''}`}>
 
@@ -887,6 +1154,7 @@ const manejarEnvio = async (e) => {
           </button>
 
           <textarea
+            ref={textareaRef}
             className="hud-input custom-scrollbar"
             placeholder="Ingresa texto..."
             value={input}
@@ -895,7 +1163,7 @@ const manejarEnvio = async (e) => {
               e.target.style.height = '42px';
               e.target.style.height = `${Math.min(e.target.scrollHeight, 100)}px`;
             }}
-            disabled={cargando}
+            readOnly={cargando}  // readOnly (no disabled): un textarea disabled no recibe eventos de arrastre
             rows={1}
             style={{
               resize: 'none',
@@ -910,7 +1178,6 @@ const manejarEnvio = async (e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 manejarEnvio();
-                e.target.style.height = '42px';
               }
             }}
           />
@@ -931,6 +1198,15 @@ const manejarEnvio = async (e) => {
             </button>
           )}
         </form>
+      </div>
+
+      {/* PANEL DERECHO (para controles extra / telemetría más adelante) */}
+      <div className="panel lateral-derecho">
+        <h2 className="hud-title">SISTEMA L-IA</h2>
+        <div style={{ color: '#00ffff', opacity: 0.7, fontSize: '11px', marginTop: '10px' }}>
+          Módulos en línea.<br />
+          Esperando telemetría...
+        </div>
       </div>
     </div>
   )

@@ -119,21 +119,26 @@ El sarcasmo, suave y con cariño, va solo en la intro; luego mantente analítica
 # =============================================================================
 # BUILDER PRINCIPAL
 # =============================================================================
-def obtener_instrucciones_sistema(intencion_detectada="casual", contexto_rag=None):
+def obtener_instrucciones_sistema(intencion_detectada="casual", contexto_rag=None, sesion_id="default"):
     """Ensambla el System Prompt completo.
 
     intencion_detectada: tipo de intención según cerebro.py ("casual",
         "codigo", "estado_pc", "rag_tecnico", ...); define el tono.
     contexto_rag: lista de {"origen", "texto"} recuperada de ChromaDB, o None.
     """
-    contexto = database.construir_contexto_ia()
+    contexto = database.construir_contexto_ia(sesion_id=sesion_id) 
 
     perfil = contexto['perfil']
     estado = contexto['self_state']
     herramientas_activas = ", ".join([h['nombre'] for h in contexto['herramientas']])
+    
+    # 3. Ya no buscamos en los 'hechos' generales, el database ya nos los dio limpios
     workspace_activo = contexto.get('workspace_activo')
-    workspace_resumen = next((h['valor'] for h in contexto['hechos'] if h['clave'] == 'workspace_resumen'), None)
+    workspace_resumen = contexto.get('workspace_resumen')
 
+    # NOTA: En tu versión anterior, le pasabas contexto['hechos'] a _armar_workspace, 
+    # pero como ya movimos el historial a la sesión, asegúrate de que _armar_workspace
+    # ya no dependa de 'hechos' o pásale un array vacío si no quieres modificar esa función ahora.
     workspace_texto = _armar_workspace(workspace_activo, workspace_resumen, contexto['hechos'])
     hechos_texto = _armar_hechos(contexto['hechos'])
     # Las reglas de documentos solo tienen sentido si hay un archivo activo.
@@ -171,13 +176,13 @@ Fuiste creada por {estado['creador']} y te ejecutas localmente en su hardware.
     return prompt_sistema
 
 
-def armar_historial_usuario(mensaje_nuevo):
-    """Arma el texto de usuario: los últimos 6 mensajes de la sesión más el
-    mensaje actual, con el rol de cada quien (L-IA o el nombre del usuario)."""
+def armar_historial_usuario(mensaje_nuevo, sesion_id="default"): # <-- 1. Agrega el parámetro
+    """Arma el texto de usuario: los últimos 6 mensajes de la sesión."""
     perfil = database.obtener_perfil()
     nombre_usuario = perfil['nombre'].upper()
 
-    historial = database.obtener_historial_reciente(limite=6)
+    # 2. Pide el historial SOLO de esta pestaña
+    historial = database.obtener_historial_reciente(limite=6, sesion_id=sesion_id)
 
     texto_historial = "[HISTORIAL DE LA SESIÓN ACTUAL]\n"
     if len(historial) == 0:

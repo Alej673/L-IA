@@ -38,6 +38,9 @@ from core.memoria_rag import MemoriaRAG
 from core import database
 from core.cerebro import charlar_con_lia, evento_interrupcion, asimilar_documento_maestro
 
+from pydantic import BaseModel
+from typing import Optional
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("lia.api")
 
@@ -54,11 +57,13 @@ TIMEOUT_COLA_STREAMING_SEGUNDOS = 180  # corta la conexión SSE si el hilo de la
 # ---------------------------------------------------------------------------
 class MensajeUsuario(BaseModel):
     texto: str
+    sesion_id: str = "default"
 
+class LimpiarWorkspaceRequest(BaseModel):
+    sesion_id: str = "default"
 
 class RespuestaSemaforo(BaseModel):
     autorizado: bool
-
 
 # ---------------------------------------------------------------------------
 # Semáforo de autorización
@@ -149,6 +154,26 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Endpoints del semáforo (usados por React)
 # ---------------------------------------------------------------------------
+
+@app.get("/sesiones")
+def listar_todas_las_sesiones():
+    """Devuelve la lista de chats para armar el sidebar en React."""
+    return database.listar_sesiones()
+
+@app.post("/sesiones/nueva")
+def crear_nueva_sesion(titulo: str = "Nueva Conversación"):
+    """Crea una pestaña en blanco y devuelve su ID único."""
+    nuevo_id = database.crear_sesion(titulo)
+    return {"sesion_id": nuevo_id}
+
+@app.get("/sesiones/{sesion_id}/contexto")
+def obtener_contexto_sesion(sesion_id: str):
+    """Carga los mensajes y el workspace activo al hacer clic en un chat anterior."""
+    return {
+        "historial": database.obtener_historial_reciente(limite=50, sesion_id=sesion_id),
+        "workspace_activo": database.obtener_workspace_activo(sesion_id=sesion_id)
+    }
+
 @app.get("/semaforo")
 async def verificar_semaforo():
     """React llama aquí cada segundo (polling) para saber si L-IA está
@@ -169,9 +194,9 @@ async def responder_semaforo(respuesta: RespuestaSemaforo):
 @app.post("/chat")
 def recibir_chat(mensaje: MensajeUsuario):
     entrada = mensaje.texto
-    logger.info("[Usuario] -> %s", entrada)
+    sesion_actual = mensaje.sesion_id  # <-- Capturamos la sesión
+    logger.info(f"[Usuario | Sesión: {sesion_actual[:8]}] -> {entrada}")
 
-    # 1. Creamos la cola por donde viajarán los fragmentos de texto
     cola_streaming = queue.Queue()
 
     def stream_consola(fragmento: str) -> None:
@@ -202,28 +227,36 @@ def recibir_chat(mensaje: MensajeUsuario):
     # 2. Envolvemos a L-IA en un hilo secundario para no congelar a FastAPI
     def hilo_ia():
         try:
+            # IMPORTANTE: Debemos pasar el sesion_id al cerebro para que no mezcle historiales
             respuesta, origen = charlar_con_lia(
                 entrada,
                 callback_ui=permiso_interfaz,
                 callback_stream=stream_consola,
                 callback_estado=estado_interfaz,
+                sesion_id=sesion_actual  # <-- Pasamos la sesión al núcleo
             )
 
-            # Recuperamos el documento activo al terminar de pensar
+            # Recuperamos el documento de esta sesión específica
             doc_activo = None
+            nombre_workspace = None
             try:
-                doc_activo = database.obtener_hecho("workspace_activo")
+                doc_activo = database.obtener_workspace_activo(sesion_id=sesion_actual)
+                if doc_activo:
+                    nombre_workspace = os.path.basename(doc_activo)
             except Exception:
                 pass
 
-            # Avisamos a React que terminamos y le pasamos las etiquetas holográficas
-            cola_streaming.put({"tipo": "fin", "origen": origen, "documento": doc_activo})
+            cola_streaming.put({
+                "tipo": "fin", 
+                "origen": origen, 
+                "documento": doc_activo,
+                "workspace": nombre_workspace
+            })
             
         except Exception as e:
             logger.exception("Error al procesar el mensaje de chat.")
             cola_streaming.put({"tipo": "error", "texto": str(e)})
 
-    # Disparamos el cerebro en segundo plano
     threading.Thread(target=hilo_ia, daemon=True).start()
 
     # 3. Generador asíncrono que "bombea" los datos hacia el frontend
@@ -284,16 +317,7 @@ async def ingestar_archivo(archivo: UploadFile = File(...)):
 # Endpoint para liberar el Workspace Activo
 # ---------------------------------------------------------------------------
 @app.post("/workspace/limpiar")
-async def limpiar_workspace_api():
-    """
-    Limpia el archivo activo en la base de datos (SQLite), 
-    desvinculando la atención a corto plazo de L-IA.
-    """
-    try:
-        # Asumiendo que tu módulo 'database' ya está importado en api.py
-        database.limpiar_workspace_activo()
-        logger.info("Workspace liberado correctamente desde el HUD.")
-        return {"status": "completado", "mensaje": "Workspace liberado exitosamente."}
-    except Exception as e:
-        logger.exception("Fallo al intentar limpiar el workspace activo.")
-        return {"status": "error", "mensaje": f"Error al limpiar: {str(e)}"}
+def limpiar_workspace(req: LimpiarWorkspaceRequest):
+    """Libera el archivo activo solo para la sesión solicitada."""
+    database.limpiar_workspace_activo(sesion_id=req.sesion_id)
+    return {"status": "ok", "mensaje": f"Workspace liberado en sesión {req.sesion_id}"}

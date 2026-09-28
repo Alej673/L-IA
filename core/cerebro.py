@@ -365,17 +365,13 @@ _REGEX_ARCHIVO_EN_VENTANA = re.compile(
     re.IGNORECASE
 )
 
-def _obtener_workspace_activo():
-    """Ruta del workspace fijado en SQLite, o None.
-
-    ⚠️ AJUSTA el nombre del getter al que exista en tu database.py (el que
-    lee lo que guarda `establecer_workspace_activo`).
-    """
+def _obtener_workspace_activo(sesion_id="default"): # <-- Agrega el parámetro
+    """Ruta del workspace fijado en SQLite, o None."""
     for nombre in ("obtener_workspace_activo", "get_workspace_activo", "leer_workspace_activo"):
         getter = getattr(database, nombre, None)
         if callable(getter):
             try:
-                ruta = getter()
+                ruta = getter(sesion_id=sesion_id) # <-- Pásalo al database.py
             except Exception as e:
                 print(f"⚠️ [Workspace] No se pudo leer el workspace activo: {e}")
                 return None
@@ -384,7 +380,6 @@ def _obtener_workspace_activo():
             return ruta or None
     print("⚠️ [Workspace] database.py no expone un getter de workspace activo.")
     return None
-
 
 def _leer_documento_completo(ruta_o_nombre):
     """Lee el archivo completo. Devuelve (contenido, nombre) o (None, None).
@@ -1739,7 +1734,7 @@ def _notificar_estado(callback_estado, info: dict):
 # ==========================================
 # 8. ENRUTADOR PRINCIPAL
 # ==========================================
-def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None, callback_estado=None):
+def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None, callback_estado=None, sesion_id="default"):
     """Punto de entrada de cada mensaje. Devuelve (texto_respuesta, ruta_usada).
 
     `callback_ui`      pide permiso al usuario para herramientas sensibles.
@@ -1766,6 +1761,7 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None, cal
             mensaje_usuario, callback_ui,
             _stream_vigilado if callback_stream else None,
             callback_estado,
+            sesion_id  
         )
     except Exception as e:
         traceback.print_exc()
@@ -1776,11 +1772,13 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None, cal
     return texto, ruta
 
 
-def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_estado):
+def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_estado, sesion_id="default"):
     """Cuerpo del enrutador (ver `charlar_con_lia` para los parámetros)."""
-    database.guardar_mensaje("user", mensaje_usuario)
+    # 1. Guardamos el mensaje en la sesión correcta
+    database.guardar_mensaje("user", mensaje_usuario, sesion_id=sesion_id)
     
-    contexto_historico = prompt_builder.armar_historial_usuario(mensaje_usuario)
+    # 2. El Prompt Builder debe armar el historial SOLO de esta sesión
+    contexto_historico = prompt_builder.armar_historial_usuario(mensaje_usuario, sesion_id=sesion_id)
     contexto_historico = _procesar_entorno_automatico(contexto_historico)
 
     mensaje_real = mensaje_usuario.split("[CONTEXTO DEL SISTEMA")[0].strip() if "[CONTEXTO" in mensaje_usuario else mensaje_usuario.strip()
@@ -1796,13 +1794,16 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     # con `return`: no debe mezclarse con el pipeline de contexto/streaming,
     # pensado para lecturas de un solo turno.
     if intenciones.get("memorizar_documento"):
-        texto_respuesta = _procesar_ingesta_documento(callback_ui=callback_ui)
-        database.guardar_mensaje("model", texto_respuesta)
+        # Asegúrate de que tu función de ingesta también reciba la sesión si ancla el workspace
+        texto_respuesta = _procesar_ingesta_documento(callback_ui=callback_ui, sesion_id=sesion_id)
+        
+        # Guardamos la respuesta del modelo en la sesión correcta
+        database.guardar_mensaje("model", texto_respuesta, sesion_id=sesion_id)
         print(f"\n🤖 L-IA (Sistema/Ingesta): {texto_respuesta}\n")
         return texto_respuesta, "Local"
 
     # --- LECTURA DE DOCUMENTO REFERENCIADO (Workspace fijado o ventana activa) ---
-    ruta_workspace = _obtener_workspace_activo()
+    ruta_workspace = _obtener_workspace_activo(sesion_id=sesion_id)
     menciona_workspace = bool(_PATRON_MENCION_WORKSPACE.search(msg_lower))
 
     archivo_detectado = _extraer_referencia_archivo(mensaje_real)
@@ -1931,7 +1932,8 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
         respuesta_sistema = _procesar_workspace_fase_7(
             mensaje_real,
             msg_lower,
-            fijar=bool(intenciones.get("fijar_workspace"))
+            fijar=bool(intenciones.get("fijar_workspace")),
+            sesion_id=sesion_id  
         )
         contexto_historico += f"\n\n{respuesta_sistema}"
 
@@ -2052,7 +2054,8 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
         )
 
     if texto_respuesta:
-        database.guardar_mensaje("model", texto_respuesta)
+        # 4. Guardamos la respuesta final en la sesión correcta
+        database.guardar_mensaje("model", texto_respuesta, sesion_id=sesion_id)
         etiqueta_modelo = f"/{modelo_nube_seleccionado}" if modelo_nube_seleccionado else ""
         print(f"\n🤖 L-IA ({ruta_elegida}{etiqueta_modelo}): {texto_respuesta}\n")
         return texto_respuesta, ruta_elegida
