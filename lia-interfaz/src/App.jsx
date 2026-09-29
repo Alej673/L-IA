@@ -987,19 +987,6 @@ const dragControls = useDragControls()
       onDragLeave={manejarDragLeave}
       onDrop={manejarDrop}
     >
-      {/* BARRA SUPERIOR ARRASTRABLE (Opcional si usas el fondo completo) */}
-      <div 
-        data-tauri-drag-region 
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          height: '40px',
-          zIndex: 9999,
-          cursor: 'grab'
-        }}
-      />
       {/* CAPA DE DRAG & DROP (pointer-events: none para no robar los eventos del arrastre) */}
       {isDragging && (
         <div className="capa-drag" style={{ pointerEvents: 'none' }}>
