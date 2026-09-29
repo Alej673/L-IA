@@ -42,21 +42,48 @@ La versión 3.2.1 marca la migración completa de Tkinter a una interfaz **Tauri
 
 ### Nueva interfaz Tauri/React (Fase 8)
 
-| HUD con avatar holográfico | Multi-sesión y pestañas |
-|:---:|:---:|
-| ![Avatar holográfico 2.5D](docs/Interfaz_Tauri_Avatar.png) | ![Panel multi-sesión](docs/Interfaz_Tauri_Sesiones.png) |
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <b>HUD con avatar holográfico</b><br>
+      <img src="docs/Interfaz_Tauri_Avatar.png" width="300" alt="Avatar holográfico 2.5D">
+    </td>
+    <td align="center" width="50%">
+      <b>Multi-sesión y pestañas</b><br>
+      <img src="docs/Interfaz_Tauri_Sesiones.png" width="300" alt="Panel multi-sesión">
+    </td>
+  </tr>
+</table>
 
-### Interfaz principal (HUD)
+### Interfaz principal (Tkinter, versión legacy)
 
-| Vista general | Streaming en vivo |
-|:---:|:---:|
-| ![Interfaz principal de L-IA](docs/Interfaz_LIA.png) | ![Streaming de respuesta](docs/Streaming_LIA.png) |
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <b>Vista general</b><br>
+      <img src="docs/Interfaz_LIA.png" width="450" alt="Interfaz principal">
+    </td>
+    <td align="center" width="50%">
+      <b>Streaming en vivo</b><br>
+      <img src="docs/Streaming_LIA.png" width="450" alt="Streaming de respuesta">
+    </td>
+  </tr>
+</table>
 
 ### Componentes del sistema
 
-| Configuración de modelos | Workspace activo |
-|:---:|:---:|
-| ![Configuración de modelos](docs/Modelos_LIA.png) | ![Workspace activo](docs/Workspace_LIA.png) |
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <b>Configuración de modelos</b><br>
+      <img src="docs/Modelos_LIA.png" width="450" alt="Configuración de modelos">
+    </td>
+    <td align="center" width="50%">
+      <b>Workspace activo</b><br>
+      <img src="docs/Workspace_LIA.png" width="450" alt="Workspace activo">
+    </td>
+  </tr>
+</table>
 
 ---
 
