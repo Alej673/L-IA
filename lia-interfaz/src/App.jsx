@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
-import { Mic, Paperclip, Terminal, Cpu, Database, Upload, AlertTriangle, Activity, ShieldAlert, MessageSquare, Plus, Folder, Menu } from 'lucide-react'
+import { motion, AnimatePresence, useDragControls } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import './App.css'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { Mic, Paperclip, Terminal, Cpu, Database, Upload, AlertTriangle, Activity, ShieldAlert, MessageSquare, Plus, Folder, Pencil, Trash2, Check, X, Menu} from 'lucide-react'
 
 const API = "http://127.0.0.1:8000";
 
@@ -523,7 +523,57 @@ function App() {
   // ---> ESTADOS MULTI-SESIÓN <---
   const [sesiones, setSesiones] = useState([])
   const [sesionActual, setSesionActual] = useState('default')
-  const [sidebarAbierto, setSidebarAbierto] = useState(false) // solo se usa en modo ventana pequeña (drawer)
+  const [sidebarAbierto, setSidebarAbierto] = useState(false)
+
+  const [editandoSesion, setEditandoSesion] = useState(null)
+  const [tituloTemp, setTituloTemp] = useState("")
+
+  const guardarNuevoTitulo = async (id, e) => {
+    if (e) e.stopPropagation();
+    if (!tituloTemp.trim()) { setEditandoSesion(null); return; }
+    try {
+      const urlDirecta = API + "/sesiones/" + id;
+      const res = await fetch(urlDirecta, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ titulo: tituloTemp })
+      });
+
+      if (!res.ok) {
+        console.error("Error renombrando. Status:", res.status);
+        return;
+      }
+
+      setEditandoSesion(null);
+      cargarSesiones();
+    } catch (err) {
+      console.error("Error renombrando", err);
+    }
+  };
+
+  const eliminarSesion = async (id, e) => {
+    e.stopPropagation();
+
+    agregarSistema("[SISTEMA] Botón de borrado presionado. Intentando eliminar ID: " + id);
+
+    try {
+      const urlDirecta = API + "/sesiones/" + id;
+      const res = await fetch(urlDirecta, { method: 'DELETE' });
+
+      agregarSistema("[SISTEMA] Respuesta del núcleo (Status): " + res.status);
+
+      if (res.ok) {
+        if (sesionActual === id) {
+          cargarContextoSesion("default");
+        }
+        cargarSesiones();
+      } else {
+        agregarSistema("[ERROR] FastAPI rechazó la orden. Status: " + res.status);
+      }
+    } catch (err) {
+      agregarSistema("[ERROR CRÍTICO] Fallo de red al borrar: " + err.message);
+    }
+  };
 
   const finalDelChatRef = useRef(null)
   const archivoInputRef = useRef(null)
@@ -537,6 +587,9 @@ function App() {
 
   const [cargando, setCargando] = useState(false);
   const abortControllerRef = useRef(null);
+
+  const overlayRef = useRef(null)
+const dragControls = useDragControls()
 
   // ---------- Helpers de estado inmutable ----------
   // Siempre se crea un objeto nuevo (evita duplicar texto en React StrictMode).
@@ -927,13 +980,26 @@ function App() {
 
   return (
     <div
+      data-tauri-drag-region
       className="hud-container"
       onDragEnter={manejarDragEnter}
       onDragOver={manejarDragOver}
       onDragLeave={manejarDragLeave}
       onDrop={manejarDrop}
     >
-
+      {/* BARRA SUPERIOR ARRASTRABLE (Opcional si usas el fondo completo) */}
+      <div 
+        data-tauri-drag-region 
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: '40px',
+          zIndex: 9999,
+          cursor: 'grab'
+        }}
+      />
       {/* CAPA DE DRAG & DROP (pointer-events: none para no robar los eventos del arrastre) */}
       {isDragging && (
         <div className="capa-drag" style={{ pointerEvents: 'none' }}>
@@ -960,38 +1026,66 @@ function App() {
         <div className="lista-sesiones custom-scrollbar" style={{ display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto', flex: 1 }}>
           {sesiones.map(s => {
             const isActiva = s.id === sesionActual;
-            const nombreArchivo = nombreDeRuta(s.workspace_activo);
-            // No se cambia de pestaña mientras L-IA está respondiendo (evita mezclar chats)
-            const bloqueada = cargando && !isActiva;
-
+            const nombreArchivo = s.workspace_activo ? s.workspace_activo.split(/[\\/]/).pop() : null;
             return (
-              <div
-                key={s.id}
-                onClick={() => { if (!isActiva && !cargando) { cargarContextoSesion(s.id); setSidebarAbierto(false) } }}
+              <div 
+                key={s.id} 
+                onClick={() => !isActiva && !editandoSesion && cargarContextoSesion(s.id)}
+                className="item-sesion"
                 style={{
                   background: isActiva ? 'rgba(0, 255, 255, 0.15)' : 'rgba(0, 0, 0, 0.4)',
                   border: `1px solid ${isActiva ? '#00ffff' : 'rgba(0,255,255,0.1)'}`,
                   padding: '10px',
                   borderRadius: '6px',
-                  cursor: isActiva ? 'default' : bloqueada ? 'not-allowed' : 'pointer',
-                  opacity: bloqueada ? 0.5 : 1,
+                  cursor: isActiva ? 'default' : 'pointer',
                   transition: 'all 0.2s ease',
                   display: 'flex',
                   flexDirection: 'column',
                   gap: '5px'
                 }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: isActiva ? '#fff' : '#88ccff', fontSize: '12px' }}>
-                  <MessageSquare size={14} />
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: isActiva ? 'bold' : 'normal' }}>
-                    {s.titulo || 'Conversación'}
-                  </span>
-                </div>
-
-                {/* Workspace activo dentro de cada sesión */}
-                {nombreArchivo && (
+                {editandoSesion === s.id ? (
+                  // --- MODO EDICIÓN ---
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px', width: '100%' }}>
+                    <input
+                      autoFocus
+                      value={tituloTemp}
+                      onChange={e => setTituloTemp(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault(); // Evita recargas indeseadas al presionar Enter
+                          guardarNuevoTitulo(s.id, e);
+                        }
+                        if (e.key === 'Escape') setEditandoSesion(null);
+                      }}
+                      style={{ flex: 1, minWidth: 0, background: '#021017', color: '#00ffff', border: '1px solid #00ffff', borderRadius: '4px', padding: '4px', fontSize: '11px', outline: 'none' }}
+                      onClick={e => e.stopPropagation()}
+                    />
+                    <button onClick={(e) => guardarNuevoTitulo(s.id, e)} className="hud-btn" style={{ padding: '4px', border: 'none', flexShrink: 0 }}><Check size={14} color="#39ff88" /></button>
+                    <button onClick={(e) => { e.stopPropagation(); setEditandoSesion(null); }} className="hud-btn" style={{ padding: '4px', border: 'none', flexShrink: 0 }}><X size={14} color="#ff0055" /></button>
+                  </div>
+                ) : (
+                  // --- MODO LECTURA NORMAL ---
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', gap: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0, color: isActiva ? '#fff' : '#88ccff', fontSize: '12px' }}>
+                      <MessageSquare size={14} style={{ flexShrink: 0 }} /> 
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: isActiva ? 'bold' : 'normal' }}>
+                        {s.titulo || 'Conversación'}
+                      </span>
+                    </div>
+                    {/* Botones de acción con flexShrink: 0 para que no se aplasten */}
+                    {s.id !== "default" && (
+                      <div className="acciones-sesion" style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                        <button onClick={(e) => { e.stopPropagation(); setEditandoSesion(s.id); setTituloTemp(s.titulo); }} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }} title="Editar Título"><Pencil size={13} color="#00ffff" /></button>
+                        <button onClick={(e) => eliminarSesion(s.id, e)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }} title="Borrar Historial"><Trash2 size={13} color="#ff0055" /></button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                
+                {nombreArchivo && !editandoSesion && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: '5px', color: '#39ff88', fontSize: '10px', paddingLeft: '22px' }}>
-                    <Folder size={12} />
+                    <Folder size={12} style={{ flexShrink: 0 }} />
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nombreArchivo}</span>
                   </div>
                 )}
@@ -1005,48 +1099,78 @@ function App() {
       <AnimatePresence>
         {semaforo.activa && (
           <motion.div
+            ref={overlayRef}
             className="modal-overlay"
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
           >
+            {/* Capa de arrastre: solo se mueve al tirar de la cabecera */}
             <motion.div
-              className="modal-semaforo"
-              initial={{ scale: 0.8, y: 50 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.8, opacity: 0 }}
-              transition={{ type: "spring", bounce: 0.5 }}
+              drag
+              dragControls={dragControls}
+              dragListener={false}
+              dragMomentum={false}
+              dragElastic={0}
+              dragConstraints={overlayRef}
+              style={{ width: '85%', maxWidth: '400px' }}
             >
-              <AlertTriangle color="#ff0055" size={50} style={{ marginBottom: '10px' }} />
-              <h3 style={{ color: '#ff0055', margin: '0 0 15px 0', letterSpacing: '2px' }}>ALERTA NIVEL 2</h3>
-              <p style={{ color: '#fff', fontSize: '14px', marginBottom: '10px' }}>L-IA requiere autorización crítica para ejecutar:</p>
+              {/* Capa de animación de entrada/salida (la tuya, sin cambios) */}
+              <motion.div
+                className="modal-semaforo"
+                style={{ width: '100%', maxWidth: 'none', boxSizing: 'border-box' }}
+                initial={{ scale: 0.8, y: 50 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.8, opacity: 0 }}
+                transition={{ type: "spring", bounce: 0.5 }}
+              >
+                {/* CABECERA = MANIJA DE ARRASTRE */}
+                <div
+                  onPointerDown={(e) => dragControls.start(e)}
+                  style={{
+                    cursor: 'grab',
+                    touchAction: 'none',
+                    userSelect: 'none',
+                    width: '100%',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center'
+                  }}
+                  title="Arrastra para mover"
+                >
+                  <AlertTriangle color="#ff0055" size={50} style={{ marginBottom: '10px' }} />
+                  <h3 style={{ color: '#ff0055', margin: '0 0 15px 0', letterSpacing: '2px' }}>ALERTA NIVEL 2</h3>
+                </div>
 
-              <div className="codigo-alerta">{semaforo.herramienta}</div>
-              <p style={{ color: '#fff', fontSize: '14px', margin: '15px 0 10px 0' }}>Argumentos detectados:</p>
+                <p style={{ color: '#fff', fontSize: '14px', marginBottom: '10px' }}>L-IA requiere autorización crítica para ejecutar:</p>
 
-              <pre className="codigo-alerta custom-scrollbar" style={{
-                whiteSpace: 'pre-wrap',
-                wordWrap: 'break-word',
-                textAlign: 'left',
-                maxHeight: '180px',
-                overflowY: 'auto',
-                fontSize: '13px',
-                lineHeight: '1.5',
-                margin: '0 0 20px 0'
-              }}>
-                {(() => {
-                  if (!semaforo.argumentos) return "Ninguno";
-                  try {
-                    const obj = typeof semaforo.argumentos === 'string'
-                      ? JSON.parse(semaforo.argumentos)
-                      : semaforo.argumentos;
-                    return JSON.stringify(obj, null, 2);
-                  } catch (e) {
-                    return semaforo.argumentos;
-                  }
-                })()}
-              </pre>
+                <div className="codigo-alerta">{semaforo.herramienta}</div>
+                <p style={{ color: '#fff', fontSize: '14px', margin: '15px 0 10px 0' }}>Argumentos detectados:</p>
 
-              <div className="botones-alerta">
-                <button className="btn-denegar" onClick={() => responderSemaforo(false)}>ABORTAR</button>
-                <button className="btn-autorizar" onClick={() => responderSemaforo(true)}>AUTORIZAR</button>
-              </div>
+                <pre className="codigo-alerta custom-scrollbar" style={{
+                  whiteSpace: 'pre-wrap',
+                  wordWrap: 'break-word',
+                  textAlign: 'left',
+                  maxHeight: '180px',
+                  overflowY: 'auto',
+                  fontSize: '13px',
+                  lineHeight: '1.5',
+                  margin: '0 0 20px 0'
+                }}>
+                  {(() => {
+                    if (!semaforo.argumentos) return "Ninguno";
+                    try {
+                      const obj = typeof semaforo.argumentos === 'string'
+                        ? JSON.parse(semaforo.argumentos)
+                        : semaforo.argumentos;
+                      return JSON.stringify(obj, null, 2);
+                    } catch (e) {
+                      return semaforo.argumentos;
+                    }
+                  })()}
+                </pre>
+
+                <div className="botones-alerta">
+                  <button className="btn-denegar" onClick={() => responderSemaforo(false)}>ABORTAR</button>
+                  <button className="btn-autorizar" onClick={() => responderSemaforo(true)}>AUTORIZAR</button>
+                </div>
+              </motion.div>
             </motion.div>
           </motion.div>
         )}

@@ -1,5 +1,5 @@
 """
-main.py — API Bridge de L-IA
+api.py — API Bridge de L-IA
 
 Expone la API REST (FastAPI) que conecta la interfaz de usuario (React/Tauri)
 con el núcleo de L-IA (core.cerebro, core.tools, etc).
@@ -138,7 +138,6 @@ semaforo = SemaforoAutorizacion()
 # ---------------------------------------------------------------------------
 # Inicialización de la app y dependencias del núcleo
 # ---------------------------------------------------------------------------
-memoria_rag = MemoriaRAG()
 
 app = FastAPI(title="L-IA API Bridge", version="3.3.0")
 
@@ -219,10 +218,31 @@ async def responder_semaforo(respuesta: RespuestaSemaforo):
     semaforo.registrar_respuesta(respuesta.autorizado)
     return {"status": "ok"}
 
+class ActualizarTituloRequest(BaseModel):
+    titulo: str
+
+@app.put("/sesiones/{sesion_id}")
+def renombrar_sesion_manual(sesion_id: str, req: ActualizarTituloRequest):
+    """Permite al usuario editar el título del chat a mano."""
+    database.actualizar_titulo_sesion(sesion_id, req.titulo)
+    return {"status": "ok"}
+
+@app.delete("/sesiones/{sesion_id}")
+def eliminar_sesion_endpoint(sesion_id: str):
+    """Borra un historial completo y en cascada."""
+    print(f"\n🗑️ [API] INICIANDO BORRADO - Petición recibida para la sesión: {sesion_id}")
+    try:
+        database.borrar_sesion(sesion_id)
+        print(f"✅ [API] Sesión {sesion_id} eliminada de SQLite con éxito.")
+        return {"status": "ok"}
+    except Exception as e:
+        print(f"❌ [API] ERROR CRÍTICO al intentar borrar en SQLite: {e}")
+        return {"status": "error", "detalle": str(e)}
 
 # ---------------------------------------------------------------------------
 # Endpoint principal de chat (Streaming SSE)
 # ---------------------------------------------------------------------------
+
 @app.post("/chat")
 def recibir_chat(mensaje: MensajeUsuario):
     entrada = mensaje.texto
@@ -296,10 +316,17 @@ def recibir_chat(mensaje: MensajeUsuario):
 
     # 3. Generador asíncrono que "bombea" los datos hacia el frontend
     def generador_sse():
+        import queue
         while True:
-            item = cola_streaming.get()
-            yield f"data: {json.dumps(item)}\n\n"
-            if item["tipo"] in ["fin", "error"]:
+            try:
+                # Agregamos el timeout para evitar que React se quede colgado
+                item = cola_streaming.get(timeout=TIMEOUT_COLA_STREAMING_SEGUNDOS)
+                yield f"data: {json.dumps(item)}\n\n"
+                if item["tipo"] in ["fin", "error"]:
+                    break
+            except queue.Empty:
+                logger.error("Timeout agotado esperando datos del hilo de IA.")
+                yield f"data: {json.dumps({'tipo': 'error', 'texto': 'Tiempo de espera agotado.'})}\n\n"
                 break
 
     # Retornamos el flujo abierto en formato Server-Sent Events

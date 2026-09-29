@@ -705,3 +705,46 @@
     z-index: 150;
   }
 }
+
+/* Oculta los botones de edición/borrado por defecto */
+.item-sesion .acciones-sesion {
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+/* Los muestra al pasar el ratón */
+.item-sesion:hover .acciones-sesion {
+  opacity: 1;
+}
+
+/* Efecto hover ligero para los propios botones */
+.acciones-sesion button:hover {
+  transform: scale(1.15);
+}
+
+/* =========================================
+   REGLAS DE ARRASTRE PARA TAURI
+   ========================================= */
+
+/* Permite que los páneles actúen como regiones de arrastre en sus espacios vacíos */
+.panel {
+  -webkit-app-region: drag;
+}
+
+/* DESACTIVAR ARRASTRE EN ELEMENTOS INTERACTIVOS:
+   Evita que Tauri bloquee clics, selecciones de texto, scroll o edición */
+button,
+input,
+textarea,
+select,
+a,
+.chat-terminal,
+.lista-sesiones,
+.item-sesion,
+.modal-semaforo,
+.burbuja-mensaje,
+.hud-btn,
+.hud-input,
+.custom-scrollbar {
+  -webkit-app-region: no-drag;
+}

@@ -223,6 +223,15 @@ def actualizar_titulo_sesion(sesion_id, nuevo_titulo):
     conexion.commit()
     conexion.close()
 
+def borrar_sesion(sesion_id):
+    """Elimina una sesión y todo su historial de mensajes (en cascada)."""
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("DELETE FROM sesiones_chat WHERE id = ?", (sesion_id,))
+    conexion.commit()
+    conexion.close()
+    print(f"🗑️ [Sesión {sesion_id[:8]}] Eliminada correctamente.")
+
 # ============================================================
 # WORKSPACE / CONTEXTO ACTIVO - AISLADO POR SESIÓN
 # ============================================================
