@@ -212,12 +212,12 @@ uvicorn api:app --reload
 
 **Frontend (Tauri + React):**
 ```bash
-cd frontend
+cd lia-interfaz
 npm install
 npm run tauri dev
 ```
 
-> Para la versión legacy (Tkinter): `python launcher.py`
+> Para la versión legacy (Tkinter): `python launcher_viejo.py`
 
 ---
 
