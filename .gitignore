@@ -26,3 +26,6 @@ credentials.json
 token.json
 *.pem
 *.key
+
+config/credentials.json
+config/token.json
