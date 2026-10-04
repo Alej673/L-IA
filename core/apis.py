@@ -17,6 +17,11 @@ from datetime import datetime, timedelta
 
 import requests
 
+# Obtiene la ruta de apis.py (.../L-IA/core)
+RUTA_ACTUAL = os.path.dirname(os.path.abspath(__file__))
+# Sube un nivel hacia la raíz del proyecto (.../L-IA)
+DIRECTORIO_RAIZ = os.path.dirname(RUTA_ACTUAL)
+
 # ==========================================
 # 1. HORA
 # ==========================================
@@ -131,9 +136,22 @@ def obtener_clima(ciudad: str = None) -> str:
 # el navegador para autorizar el acceso; después de eso, queda guardado
 # un 'token.json' local y ya no se vuelve a pedir.
 SCOPES_CALENDARIO = ["https://www.googleapis.com/auth/calendar.readonly"]
-ARCHIVO_CREDENCIALES = "credentials.json"
-ARCHIVO_TOKEN = "token.json"
 
+
+# Ahora sí junta la raíz con config y el archivo
+ARCHIVO_CREDENCIALES = os.path.join(DIRECTORIO_RAIZ, "config", "credentials.json")
+ARCHIVO_TOKEN = os.path.join(DIRECTORIO_RAIZ, "config", "token.json")
+
+# --- BLOQUE DE DEPURACIÓN TEMPORAL ---
+print("\n--- DEBUG CALENDARIO ---")
+print("Ruta que Python está buscando:", ARCHIVO_CREDENCIALES)
+print("¿Python ve que el archivo existe?:", os.path.exists(ARCHIVO_CREDENCIALES))
+try:
+    carpeta_config = os.path.dirname(ARCHIVO_CREDENCIALES)
+    print("Archivos reales dentro de esa carpeta:", os.listdir(carpeta_config))
+except Exception as e:
+    print("Error leyendo la carpeta:", e)
+print("------------------------\n")
 
 def _obtener_credenciales_calendario():
     """Maneja el flujo OAuth de Google: reutiliza el token guardado o pide
@@ -156,6 +174,7 @@ def _obtener_credenciales_calendario():
                 raise FileNotFoundError(
                     f"Falta '{ARCHIVO_CREDENCIALES}'. Sigue los pasos de configuración "
                     f"de Google Calendar antes de usar esta función."
+                    f"RUTA EXACTA BUSCADA: '{ARCHIVO_CREDENCIALES}'. El archivo no está ahí."
                 )
             flow = InstalledAppFlow.from_client_secrets_file(ARCHIVO_CREDENCIALES, SCOPES_CALENDARIO)
             creds = flow.run_local_server(port=0)
