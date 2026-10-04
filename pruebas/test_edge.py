@@ -3,7 +3,9 @@ import edge_tts
 import pygame
 import time
 
-VOZ_NEURONAL = "es-MX-DaliaNeural"
+VOZ_NEURONAL = "es-AR-ElenaNeural"
+#VOZ_NEURONAL = "es-CO-SalomeNeural"
+#VOZ_NEURONAL = "es-ES-ElviraNeural"
 TEXTO_PRUEBA = "Hola Alejandro. El error de FFmpeg ya no será un problema. Ahora puedo reproducir mi voz neuronal sin crashear."
 ARCHIVO_SALIDA = "prueba_edge.mp3"
 

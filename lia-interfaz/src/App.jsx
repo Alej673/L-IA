@@ -11,7 +11,7 @@ const API = "http://127.0.0.1:8000";
 // Extensiones que el backend sabe leer (ajústalas a tu /ingestar)
 const EXTENSIONES_VALIDAS = ['txt', 'md', 'py', 'js', 'php', 'html', 'css', 'json', 'docx', 'pdf', 'pptx', 'xlsx'];
 
-const MENSAJE_INICIAL = 'L-IA v3.2.0 inicializada. Esperando directivas...';
+const MENSAJE_INICIAL = 'L-IA v3.2.1 inicializada. Esperando directivas...';
 
 // =========================================
 // CONFIGURACIÓN VISUAL POR ESTADO DEL NÚCLEO
@@ -980,13 +980,31 @@ const dragControls = useDragControls()
 
   return (
     <div
-      data-tauri-drag-region
       className="hud-container"
       onDragEnter={manejarDragEnter}
       onDragOver={manejarDragOver}
       onDragLeave={manejarDragLeave}
       onDrop={manejarDrop}
     >
+      {/* FRANJA DE ARRASTRE INVISIBLE (Solo los primeros 35px de arriba) */}
+      <div
+        data-tauri-drag-region
+        className="franja-arrastre"
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 'calc(50% - 90px)',
+          width: '180px',
+          height: '30px',
+          zIndex: 50,
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center'
+        }}
+      >
+        <div className="franja-grip" data-tauri-drag-region />
+      </div>
+
       {/* CAPA DE DRAG & DROP (pointer-events: none para no robar los eventos del arrastre) */}
       {isDragging && (
         <div className="capa-drag" style={{ pointerEvents: 'none' }}>

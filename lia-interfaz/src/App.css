@@ -726,13 +726,10 @@
    REGLAS DE ARRASTRE PARA TAURI
    ========================================= */
 
-/* Permite que los páneles actúen como regiones de arrastre en sus espacios vacíos */
-.panel {
-  -webkit-app-region: drag;
-}
+/* ELIMINADO: .panel { -webkit-app-region: drag; } para evitar congelamientos del sistema */
 
 /* DESACTIVAR ARRASTRE EN ELEMENTOS INTERACTIVOS:
-   Evita que Tauri bloquee clics, selecciones de texto, scroll o edición */
+   (Es buena práctica dejar esto como seguridad extra para evitar bugs al seleccionar texto) */
 button,
 input,
 textarea,
@@ -747,4 +744,18 @@ a,
 .hud-input,
 .custom-scrollbar {
   -webkit-app-region: no-drag;
+}
+
+.franja-grip {
+  width: 60px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(0, 229, 255, 0.25);
+  transition: background 0.2s, box-shadow 0.2s;
+  pointer-events: none;
+}
+
+.franja-arrastre:hover .franja-grip {
+  background: rgba(0, 229, 255, 0.8);
+  box-shadow: 0 0 8px rgba(0, 229, 255, 0.6);
 }
