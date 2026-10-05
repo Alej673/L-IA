@@ -17,7 +17,7 @@ por polling (GET /semaforo cada segundo), usamos un threading.Event para
 bloquear el hilo del backend hasta que llegue la respuesta o se cumpla el
 timeout.
 """
-
+import time
 import json
 import logging
 import os
@@ -37,6 +37,7 @@ from core.tools import leer_archivo_local
 from core.memoria_rag import MemoriaRAG
 from core import database
 from core.cerebro import charlar_con_lia, evento_interrupcion, asimilar_documento_maestro
+import core.voz as voz 
 
 from pydantic import BaseModel
 from typing import Optional
@@ -53,17 +54,22 @@ TIMEOUT_COLA_STREAMING_SEGUNDOS = 180  # corta la conexión SSE si el hilo de la
 
 
 # ---------------------------------------------------------------------------
-# Modelos Pydantic (contratos de entrada/salida de la API)
+# Modelos Pydantic
 # ---------------------------------------------------------------------------
 class MensajeUsuario(BaseModel):
     texto: str
     sesion_id: str = "default"
+    usar_voz: bool = False # <--- AÑADIMOS ESTO PARA QUE REACT LE DIGA SI DEBE HABLAR
 
 class LimpiarWorkspaceRequest(BaseModel):
     sesion_id: str = "default"
 
 class RespuestaSemaforo(BaseModel):
     autorizado: bool
+
+class PeticionLector(BaseModel):
+    texto: str
+
 
 # ---------------------------------------------------------------------------
 # Semáforo de autorización
@@ -249,137 +255,147 @@ def recibir_chat(mensaje: MensajeUsuario):
     sesion_actual = mensaje.sesion_id  
     logger.info(f"[Usuario | Sesión: {sesion_actual[:8]}] -> {entrada}")
 
-    # ---> DISPARAMOS EL AUTONOMBRE EN SEGUNDO PLANO <---
     threading.Thread(target=renombrar_sesion_silenciosamente, args=(sesion_actual, entrada), daemon=True).start()
-
     cola_streaming = queue.Queue()
 
     def stream_consola(fragmento: str) -> None:
-        """Imprime en consola y envía el fragmento a React al instante."""
         print(fragmento, end="", flush=True)
         cola_streaming.put({"tipo": "chunk", "texto": fragmento})
 
     def permiso_interfaz(herramienta: str, argumentos: Any) -> bool:
-        """Delega la autorización al semáforo de tu nueva clase."""
         return semaforo.solicitar_autorizacion(herramienta, argumentos)
 
     def estado_interfaz(info: dict) -> None:
-        """
-        Recibe de core.cerebro la ficha de la ruta elegida (perfil, etiqueta,
-        motivo y mensaje_espera) ANTES de que llegue el primer token, y la
-        reenvía a React como un evento SSE propio ("estado"), separado de
-        los chunks de texto. Así el frontend puede, por ejemplo, mostrar
-        "Analizando arquitectura..." mientras Gemini Pro procesa una tarea
-        de código pesado, sin tener que adivinar el motivo a partir del
-        texto que ya llegó.
-
-        Si el frontend todavía no sabe leer este tipo de evento, simplemente
-        lo ignora (igual que cualquier `item["tipo"]` desconocido) y el chat
-        sigue funcionando exactamente igual que antes.
-        """
         cola_streaming.put({"tipo": "estado", **info})
 
-    # 2. Envolvemos a L-IA en un hilo secundario para no congelar a FastAPI
     def hilo_ia():
         try:
-            # IMPORTANTE: Debemos pasar el sesion_id al cerebro para que no mezcle historiales
+            # === AQUÍ LE PASAMOS EL PARÁMETRO DE VOZ A CEREBRO.PY ===
             respuesta, origen = charlar_con_lia(
                 entrada,
                 callback_ui=permiso_interfaz,
                 callback_stream=stream_consola,
                 callback_estado=estado_interfaz,
-                sesion_id=sesion_actual  # <-- Pasamos la sesión al núcleo
+                sesion_id=sesion_actual,
+                usar_voz=mensaje.usar_voz 
             )
 
-            # Recuperamos el documento de esta sesión específica
             doc_activo = None
             nombre_workspace = None
             try:
                 doc_activo = database.obtener_workspace_activo(sesion_id=sesion_actual)
-                if doc_activo:
-                    nombre_workspace = os.path.basename(doc_activo)
-            except Exception:
-                pass
+                if doc_activo: nombre_workspace = os.path.basename(doc_activo)
+            except Exception: pass
 
-            cola_streaming.put({
-                "tipo": "fin", 
-                "origen": origen, 
-                "documento": doc_activo,
-                "workspace": nombre_workspace
-            })
-            
+            cola_streaming.put({"tipo": "fin", "origen": origen, "documento": doc_activo, "workspace": nombre_workspace})
         except Exception as e:
-            logger.exception("Error al procesar el mensaje de chat.")
             cola_streaming.put({"tipo": "error", "texto": str(e)})
 
     threading.Thread(target=hilo_ia, daemon=True).start()
 
-    # 3. Generador asíncrono que "bombea" los datos hacia el frontend
     def generador_sse():
-        import queue
         while True:
             try:
-                # Agregamos el timeout para evitar que React se quede colgado
                 item = cola_streaming.get(timeout=TIMEOUT_COLA_STREAMING_SEGUNDOS)
                 yield f"data: {json.dumps(item)}\n\n"
-                if item["tipo"] in ["fin", "error"]:
-                    break
+                if item["tipo"] in ["fin", "error"]: break
             except queue.Empty:
-                logger.error("Timeout agotado esperando datos del hilo de IA.")
                 yield f"data: {json.dumps({'tipo': 'error', 'texto': 'Tiempo de espera agotado.'})}\n\n"
                 break
 
-    # Retornamos el flujo abierto en formato Server-Sent Events
     return StreamingResponse(generador_sse(), media_type="text/event-stream")
+# ---------------------------------------------------------------------------
+# Endpoint para el Lector de Pantalla (Edge TTS)
+# ---------------------------------------------------------------------------
+@app.post("/lector")
+def leer_pantalla(req: PeticionLector):
+    """
+    Endpoint dedicado para el botón de accesibilidad de la interfaz.
+    Usa Edge TTS para lectura rápida de bloques de texto.
+    """
+    threading.Thread(
+        target=voz.leer_pantalla_directo, 
+        args=(req.texto, "edge"), 
+        daemon=True
+    ).start()
+    
+    return {"status": "ok", "mensaje": "Lectura iniciada"}
 
 # ---------------------------------------------------------------------------
-# Endpoint para cancelar la inferencia de la GPU o el stream de la Nube
+# Endpoint para ABORTAR (El Botón de Pánico)
 # ---------------------------------------------------------------------------
 @app.post("/cancelar")
 async def cancelar_generacion():
-    """Detiene la inferencia de la GPU o el stream de la Nube al instante."""
+    """Detiene la inferencia del LLM y silencia cualquier audio en reproducción al instante."""
+    print("🛑 [API] Recibida orden de abortar. Deteniendo LLM y Audio...")
+    
+    # 1. Le decimos al Cerebro que deje de generar texto
     evento_interrupcion.set()
+    
+    # 2. Le decimos al módulo de Voz que apague los altavoces de golpe
+    try:
+        voz.detener_audio_global()
+    except Exception as e:
+        print(f"⚠️ No se pudo silenciar el audio: {e}")
+        
     return {"status": "abortado"}
 
 # ---------------------------------------------------------------------------
-# Endpoint de ingesta de archivos (RAG + Workspace)
+# Endpoint para el Botón Manual del Micrófono (React -> Whisper)
 # ---------------------------------------------------------------------------
-@app.post("/ingestar")
-async def ingestar_archivo(archivo: UploadFile = File(...)):
-    logger.info("Recibiendo archivo: %s", archivo.filename)
-
-    nombre_seguro = os.path.basename(archivo.filename or "archivo_sin_nombre")
-    if not nombre_seguro:
-        return {"status": "error", "mensaje": "Nombre de archivo inválido."}
-
-    os.makedirs(CARPETA_TEMP_RAG, exist_ok=True)
-    ruta_temporal = os.path.join(CARPETA_TEMP_RAG, nombre_seguro)
-
+@app.post("/escuchar")
+def escuchar_manual():
+    """Abre el micrófono local (Whisper) directamente desde la interfaz de React."""
+    import core.voz as voz
     try:
-        with open(ruta_temporal, "wb") as buffer:
-            shutil.copyfileobj(archivo.file, buffer)
-
-        ruta_absoluta = os.path.abspath(ruta_temporal)
-
-        # Llamada directa a la función importada
-        mensaje_resultado = asimilar_documento_maestro(ruta_absoluta)
-
-        if mensaje_resultado.startswith("Error") or "Fallo crítico" in mensaje_resultado:
-            return {"status": "error", "mensaje": mensaje_resultado}
-
-        return {"status": "completado", "mensaje": mensaje_resultado}
-
+        print("🎤 [API] Intentando abrir Whisper manualmente...")
+        texto = voz.escuchar()
+        return {"texto": texto}
     except Exception as e:
-        logger.exception("Fallo al procesar el archivo %s", nombre_seguro)
-        return {"status": "error", "mensaje": f"Fallo al procesar {nombre_seguro}: {e}"}
-    finally:
-        archivo.file.close()
+        print(f"❌ [API ERROR CRÍTICO MICROFONO]: {e}")
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ---------------------------------------------------------------------------
-# Endpoint para liberar el Workspace Activo
+# NUEVO: Cola de comunicación Radar -> React (Multifase)
 # ---------------------------------------------------------------------------
-@app.post("/workspace/limpiar")
-def limpiar_workspace(req: LimpiarWorkspaceRequest):
-    """Libera el archivo activo solo para la sesión solicitada."""
-    database.limpiar_workspace_activo(sesion_id=req.sesion_id)
-    return {"status": "ok", "mensaje": f"Workspace liberado en sesión {req.sesion_id}"}
+mensajes_radar = queue.Queue()
+
+@app.get("/radar/leer")
+def leer_radar():
+    """React consulta aquí rápidamente para ver el estado del micrófono."""
+    try:
+        mensaje = mensajes_radar.get_nowait()
+        return {"hay_mensaje": True, "datos": mensaje}
+    except queue.Empty:
+        return {"hay_mensaje": False}
+
+def daemon_escucha_activa():
+    print("🎙️ [Daemon de Voz] Iniciando radar permanente...")
+    while True:
+        try:
+            import core.voz as voz
+            activado = voz.esperar_palabra_clave()
+            
+            if activado:
+                # 1. BENGALA INMEDIATA: Le decimos a React que despierte la UI YA MISMO
+                mensajes_radar.put({"accion": "despertar"})
+                
+                # 2. Abrimos los oídos de Whisper
+                texto_usuario = voz.escuchar()
+                
+                if texto_usuario:
+                    print(f"\n🗣️ [Micrófono capturó]: '{texto_usuario}'")
+                    voz.reproducir_efecto("pensando")
+                    # 3. Mandamos el texto final
+                    mensajes_radar.put({"accion": "ejecutar", "texto": texto_usuario})
+                else:
+                    # 4. Si fue un ruido sin voz, apagamos la UI
+                    mensajes_radar.put({"accion": "cancelar"})
+                    
+        except Exception as e:
+            print(f"❌ [Error en Daemon de Voz]: {e}")
+            import time
+            time.sleep(2)
+
+threading.Thread(target=daemon_escucha_activa, daemon=True).start()

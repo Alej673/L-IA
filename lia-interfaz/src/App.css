@@ -759,3 +759,49 @@ a,
   background: rgba(0, 229, 255, 0.8);
   box-shadow: 0 0 8px rgba(0, 229, 255, 0.6);
 }
+
+/* =========================================
+   BOTÓN DE LECTURA EN VOZ ALTA
+   (ponlo al final: debe ir después de .hud-btn para ganar por orden)
+   ========================================= */
+.btn-leer {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  font-size: 10px;
+  color: #00ffff;
+  background: none;
+  border: 1px solid transparent;
+  box-shadow: none;
+  transition: all 0.2s ease;
+}
+
+.btn-leer:hover {
+  border-color: rgba(0, 255, 255, 0.4);
+}
+
+.btn-leer.leyendo {
+  color: #ff0055;
+  border-color: #ff0055;
+  background: rgba(255, 0, 85, 0.1);
+}
+
+.aureola-escucha {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.aureola-voz,
+.onda-escucha {
+  position: absolute;
+  width: 200px;   /* ajústalo al tamaño de tu .anillo-exterior */
+  height: 200px;
+  border-radius: 50%;
+  border: 2px solid;
+}
+.onda-escucha { border-width: 1px; }

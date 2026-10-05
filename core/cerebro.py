@@ -711,25 +711,25 @@ def _generar_prompt_bozal(nombre_herramienta: str, resultado: str) -> str:
 # usan, así que todas se comportan igual: acumula la respuesta completa,
 # avisa a la GUI fragmento a fragmento (callback_stream) y, si la voz está
 # activa, manda cada oración a un pipeline de síntesis + reproducción.
-HABLAR_RESPUESTA = False  # Switch maestro: el launcher lo enciende si le hablaste por micrófono.
+
+# Reemplaza tu `_generar_respuesta_con_voz` por esta versión.
+# Usa los mismos nombres que ya existen en cerebro.py: queue, threading, evento_interrupcion.
+# Requiere el voz.py nuevo (preparar_voz, reproducir_voz, descartar_audio).
+
+# --- Umbrales en CARACTERES (no palabras) ---
+MIN_CHARS_PRIMER_FRAGMENTO = 45   # el primer fragmento sale rápido -> menos silencio inicial
+MIN_CHARS_FRAGMENTO = 50          # los siguientes más largos -> voz menos entrecortada
+MAX_CHARS_FRAGMENTO = 160         # si no llega un punto, corta en la próxima coma (evita fragmentos enormes)
+
+PUNTUACION_CORTE = ['.', '?', '!', '\n']
 
 
-def _generar_respuesta_con_voz(generador_texto, callback_stream=None, texto_para_mostrar=None):
-    """Consume un generador de texto, lo transmite a la GUI y, si la voz está
-    activa, lo lee en voz alta frase por frase.
-
-    El generador puede producir tokens sueltos (streaming real) o frases ya
-    completas (ver `_dividir_en_fragmentos_hablables`); da igual para la voz.
-
-    `texto_para_mostrar`: si se pasa (un texto YA completo, con su Markdown
-    intacto), es lo que se manda a `callback_stream` en un solo golpe, en vez
-    de ir emitiendo cada fragmento del generador (que puede venir aplanado
-    para TTS). Úsalo cuando `generador_texto` sea una versión "hablable" de
-    un texto que ya tenías completo de antes.
-    """
+def _generar_respuesta_con_voz(generador_texto, motor="kokoro", nivel_distorsion=0,
+                               callback_stream=None, texto_para_mostrar=None, usar_voz=False):
     respuesta_completa = ""
     bloque_actual = ""
-    hablar = HABLAR_RESPUESTA
+    hablar = usar_voz
+    primer_fragmento = True
 
     if texto_para_mostrar and callback_stream:
         callback_stream(texto_para_mostrar)
@@ -742,43 +742,43 @@ def _generar_respuesta_con_voz(generador_texto, callback_stream=None, texto_para
             hablar = False
 
     if hablar:
-        cola_texto = queue.Queue()
-        cola_audio = queue.Queue()
+        cola_texto = queue.Queue()            # frases -> sintetizador
+        cola_audio = queue.Queue(maxsize=3)   # audios listos -> reproductor
 
         def hilo_sintetizador():
+            # Genera el audio de la frase N+1 mientras suena la N.
             while True:
                 frase = cola_texto.get()
                 if frase is None:
                     cola_audio.put(None)
-                    cola_texto.task_done()
                     break
+                if evento_interrupcion.is_set():
+                    continue
                 try:
-                    ruta = voz.sintetizar_a_archivo(frase)
+                    archivo = voz.preparar_voz(frase, motor=motor, nivel_distorsion=nivel_distorsion)
                 except Exception as e:
-                    print(f"⚠️ [TTS falló en una frase: {e}]")
-                    ruta = None
-                if ruta:
-                    cola_audio.put(ruta)
-                cola_texto.task_done()
+                    print(f"⚠️ [Fallo al sintetizar frase: {e}]")
+                    archivo = None
+                if archivo:
+                    cola_audio.put(archivo)
 
         def hilo_reproductor():
             while True:
-                ruta = cola_audio.get()
-                if ruta is None:
-                    cola_audio.task_done()
+                archivo = cola_audio.get()
+                if archivo is None:
                     break
+                if evento_interrupcion.is_set():
+                    voz.descartar_audio(archivo)
+                    continue
                 try:
-                    voz.reproducir_archivo(ruta)
+                    voz.reproducir_voz(archivo)
                 except Exception as e:
-                    print(f"⚠️ [Reproducción falló: {e}]")
-                cola_audio.task_done()
+                    print(f"⚠️ [Fallo al reproducir frase: {e}]")
 
         t_sintetizador = threading.Thread(target=hilo_sintetizador, daemon=True)
         t_reproductor = threading.Thread(target=hilo_reproductor, daemon=True)
         t_sintetizador.start()
         t_reproductor.start()
-
-    PUNTUACION_CORTE = ['.', '?', '!', '\n']
 
     for fragmento_entrante in generador_texto:
         if evento_interrupcion.is_set():
@@ -792,16 +792,20 @@ def _generar_respuesta_con_voz(generador_texto, callback_stream=None, texto_para
         bloque_actual += fragmento_entrante
 
         print(fragmento_entrante, end="", flush=True)
-        # Clave: si ya mostramos el texto completo arriba, NO volvemos a
-        # emitir cada fragmento aplanado hacia la GUI.
+
         if callback_stream and not texto_para_mostrar:
             callback_stream(fragmento_entrante)
 
-        if hablar and any(p in fragmento_entrante for p in PUNTUACION_CORTE):
-            fragmento = bloque_actual.strip()
-            if len(fragmento) > 15:
-                cola_texto.put(fragmento)
+        if hablar:
+            largo = len(bloque_actual.strip())
+            minimo = MIN_CHARS_PRIMER_FRAGMENTO if primer_fragmento else MIN_CHARS_FRAGMENTO
+            fin_de_oracion = any(p in fragmento_entrante for p in PUNTUACION_CORTE) and largo >= minimo
+            demasiado_largo = largo > MAX_CHARS_FRAGMENTO and ',' in fragmento_entrante
+
+            if fin_de_oracion or demasiado_largo:
+                cola_texto.put(bloque_actual.strip())
                 bloque_actual = ""
+                primer_fragmento = False
 
     if hablar:
         resto = bloque_actual.strip()
@@ -817,14 +821,9 @@ def _generar_respuesta_con_voz(generador_texto, callback_stream=None, texto_para
 # Corta tras . ? ! o salto de línea (usa un lookbehind, así que la puntuación se conserva).
 _PATRON_DIVISION_ORACIONES = re.compile(r'(?<=[\.\?\!\n])\s*')
 
-
 def _dividir_en_fragmentos_hablables(texto):
-    """Convierte un texto YA COMPLETO (como las respuestas sin streaming de
-    Gemini) en un generador de oraciones, para reutilizar
-    `_generar_respuesta_con_voz` también en ese caso. Sin esto, todo el texto
-    sería un único fragmento gigante y la voz lo sintetizaría de un tirón en
-    vez de hablar frase por frase.
-    """
+    """Convierte un texto YA COMPLETO en un generador de oraciones, 
+    para reutilizar el pipeline de voz y no sintetizar todo de un tirón."""
     if not texto:
         return
     for parte in _PATRON_DIVISION_ORACIONES.split(texto.strip()):
@@ -917,7 +916,7 @@ def _ejecutar_con_reintentos(accion, callback_stream, emitidos, etiqueta="Nube",
 
 def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, buscar_web=False,
                         modelo_nube=MODELO_NUBE_FLASH, callback_ui=None, callback_stream=None,
-                        usar_herramientas=True):
+                        usar_herramientas=True, motor_voz="kokoro", usar_voz=False):
     """Responde con Gemini (Flash o Pro). Hay tres caminos:
 
       CASO 1  buscar_web=True          google_search + streaming real.
@@ -968,10 +967,10 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
                 config={"tools": [{"google_search": {}}]}
             )
             generador = (chunk.text for chunk in stream if chunk.text)
-            return _generar_respuesta_con_voz(generador, callback_stream=_stream_contado)
-
+            return _generar_respuesta_con_voz(generador, motor=motor_voz, callback_stream=_stream_contado,usar_voz=usar_voz)
+        
         return _ejecutar_con_reintentos(_accion_web, callback_stream, emitidos, etiqueta)
-
+        
     # ------------------------------------------------------------
     # CASO 2: streaming directo, sin herramientas locales (Pro)
     # ------------------------------------------------------------
@@ -987,7 +986,7 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
                 contents=contenidos_api
             )
             generador = (chunk.text for chunk in stream if chunk.text)
-            return _generar_respuesta_con_voz(generador, callback_stream=_stream_contado)
+            return _generar_respuesta_con_voz(generador, motor=motor_voz, callback_stream=_stream_contado,usar_voz=usar_voz)
 
         return _ejecutar_con_reintentos(_accion_directa, callback_stream, emitidos, etiqueta)
 
@@ -1039,8 +1038,10 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
             generador = _dividir_en_fragmentos_hablables(response.text)
             return _generar_respuesta_con_voz(
                 generador,
+                motor=motor_voz,
                 callback_stream=_stream_contado,
-                texto_para_mostrar=response.text,   # <-- NUEVO: la GUI recibe el Markdown intacto
+                texto_para_mostrar=response.text,
+                usar_voz=usar_voz
             )
 
         # Sin tool-call: la llamada del PASO 1 ya trajo la respuesta completa.
@@ -1050,9 +1051,10 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
         print("\n🤖 L-IA (Nube, hablando en bloques)...")
         generador = _dividir_en_fragmentos_hablables(response.text)
         return _generar_respuesta_con_voz(
-            generador, 
+            generador,
+            motor=motor_voz,
             callback_stream=_stream_contado,
-            texto_para_mostrar=response.text  # <-- SOLUCIÓN: Envía el Markdown intacto a la GUI
+            texto_para_mostrar=response.text,
         )
 
     return _ejecutar_con_reintentos(_accion_herramientas, callback_stream, emitidos, etiqueta)
@@ -1087,7 +1089,7 @@ def _extraer_llamada_manual(texto):
     return None
 
 def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir, quiere_estado,
-                         callback_ui=None, callback_stream=None):
+                         callback_ui=None, callback_stream=None, motor_voz="kokoro",usar_voz=False):
     print(f"\n[🏠 Enrutando al Cerebro Local ({MODELO_LOCAL})...]")
 
     requiere_herramienta = quiere_abrir or quiere_estado
@@ -1195,7 +1197,7 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
                     conteo_tokens[0] += 1
                     yield token
 
-        resultado = _generar_respuesta_con_voz(generador_con_telemetria(), callback_stream=callback_stream)
+        resultado = _generar_respuesta_con_voz(generador_con_telemetria(), motor=motor_voz, callback_stream=callback_stream,usar_voz=usar_voz)
 
         t_total = time.perf_counter() - t_inicio
         t_generacion_pura = t_total - t_primer_token[0]
@@ -1222,7 +1224,7 @@ def _descargar_modelo_ollama(nombre_modelo):
         print(f"⚠️ [No se pudo liberar '{nombre_modelo}' de VRAM: {e}]")
 
 
-def responder_con_local_uncensored(instrucciones_sistema, contexto_historico, callback_stream=None):
+def responder_con_local_uncensored(instrucciones_sistema, contexto_historico, callback_stream=None, motor_voz="google",usar_voz=False):
     print(f"\n[🐬 Enrutando al Especialista Sin Censura ({MODELO_UNCENSORED})...]")
     _descargar_modelo_ollama(MODELO_LOCAL)
 
@@ -1260,7 +1262,7 @@ def responder_con_local_uncensored(instrucciones_sistema, contexto_historico, ca
             stream=True
         )
         generador = (chunk['message']['content'] for chunk in response_stream)
-        return _generar_respuesta_con_voz(generador, callback_stream=callback_stream)
+        return _generar_respuesta_con_voz(generador, motor=motor_voz, nivel_distorsion=0, callback_stream=callback_stream,usar_voz=usar_voz)
 
     except Exception as e:
         return _reportar_error(f"❌ Error en el cerebro Dolphin: {e}", callback_stream)
@@ -1430,7 +1432,7 @@ def _ejecutar_guardado_git(msg_lower, callback_ui=None):
             f"```text\n{resultado_limpio}\n```"
         )
 
-def _procesar_workspace_fase_7(mensaje_real, msg_lower, fijar: bool):
+def _procesar_workspace_fase_7(mensaje_real, msg_lower, fijar: bool, sesion_id="default"):
     if not fijar:
         database.limpiar_workspace_activo() # <-- Esta función ya se encarga de borrar el activo y el historial de golpe en tu database.py
         database.limpiar_workspace_resumen()
@@ -1596,7 +1598,7 @@ def asimilar_documento_maestro(ruta_absoluta: str, origen_texto: str = "archivo"
         f"Resumen generado: {resumen_tecnico}"
     )
 
-def _procesar_ingesta_documento(callback_ui=None):
+def _procesar_ingesta_documento(callback_ui=None, sesion_id="default"):
     """Vectoriza en el Segundo Cerebro el archivo de la ventana activa."""
     ventana_actual = contexto.obtener_ventana_activa()
     print(f"\n🧠 [Aprendizaje] Escaneando ventana para ingesta: '{ventana_actual}'")
@@ -1741,7 +1743,7 @@ def _notificar_estado(callback_estado, info: dict):
 # ==========================================
 # 8. ENRUTADOR PRINCIPAL
 # ==========================================
-def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None, callback_estado=None, sesion_id="default"):
+def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None, callback_estado=None, sesion_id="default", usar_voz=False):
     """Punto de entrada de cada mensaje. Devuelve (texto_respuesta, ruta_usada).
 
     `callback_ui`      pide permiso al usuario para herramientas sensibles.
@@ -1768,7 +1770,8 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None, cal
             mensaje_usuario, callback_ui,
             _stream_vigilado if callback_stream else None,
             callback_estado,
-            sesion_id  
+            sesion_id,
+            usar_voz=usar_voz
         )
     except Exception as e:
         traceback.print_exc()
@@ -1779,7 +1782,7 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None, cal
     return texto, ruta
 
 
-def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_estado, sesion_id="default"):
+def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_estado, sesion_id="default", usar_voz=False):
     """Cuerpo del enrutador (ver `charlar_con_lia` para los parámetros)."""
     # 1. Guardamos el mensaje en la sesión correcta
     database.guardar_mensaje("user", mensaje_usuario, sesion_id=sesion_id)
@@ -2036,6 +2039,21 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     if es_pro and (intenciones.get("codigo_pesado") or intenciones.get("codigo_bruto")):
         instrucciones_sistema += NOTA_MODO_PRO_CODIGO
 
+    # === VOZ POR INTENCIÓN ===
+    # Kokoro es el motor principal (local, rápido). Google se reserva para
+    # tareas pesadas y para el modo sin filtros.
+    motivos_pesados = {
+        "codigo_pesado", "analisis_profundo", "vision",
+        "web", "contexto_grande", "codigo_contexto_grande",
+    }
+    if (motivo_ruta in motivos_pesados
+            or tipo_intencion_principal == "rag_tecnico"
+            or intenciones.get("uncensored")):
+        motor_voz_elegido = "google"
+    else:
+        motor_voz_elegido = "kokoro"
+    print(f"🔊 [Voz] Motor elegido: {motor_voz_elegido}")
+
     if ruta_elegida == "Nube":
         texto_respuesta = responder_con_nube(
             instrucciones_sistema, contexto_historico,
@@ -2045,19 +2063,25 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
             callback_stream=callback_stream,
             # Pro solo usa herramientas locales si el usuario pidió abrir algo;
             # si no, va en streaming directo (ver CASO 2 de responder_con_nube).
-            usar_herramientas=(not es_pro) or intenciones["abrir_app"]
+            usar_herramientas=(not es_pro) or intenciones["abrir_app"],
+            motor_voz=motor_voz_elegido,
+            usar_voz=usar_voz
         )
     elif ruta_elegida == "Dolphin":
         texto_respuesta = responder_con_local_uncensored(
             instrucciones_sistema, contexto_historico,
-            callback_stream=callback_stream
+            callback_stream=callback_stream,
+            motor_voz="google",
+            usar_voz=usar_voz
         )
     else:
         texto_respuesta = responder_con_local(
             instrucciones_sistema, contexto_historico,
             intenciones["abrir_app"], intenciones["estado_pc"],
             callback_ui=callback_ui,
-            callback_stream=callback_stream
+            callback_stream=callback_stream,
+            motor_voz=motor_voz_elegido,
+            usar_voz=usar_voz
         )
 
     if texto_respuesta:
