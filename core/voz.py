@@ -104,7 +104,7 @@ print("⏳ Cargando el cerebro local de voz (Kokoro)...")
 pipeline_kokoro = _cargar("Kokoro", lambda: KPipeline(lang_code="e", device="cpu"))
 
 print("🧠 Cargando modelo auditivo Whisper (puede tardar la primera vez)...")
-_whisper_model = _cargar("Whisper", lambda: WhisperModel("medium", device="cpu", compute_type="int8"))
+_whisper_model = _cargar("Whisper", lambda: WhisperModel("small", device="cpu", compute_type="int8"))
 
 print("👂 Cargando modelo centinela Vosk...")
 _vosk_model = _cargar("Vosk", lambda: Model(str(rutas.VOSK_MODEL_PATH)))
@@ -124,19 +124,21 @@ def _obtener_efecto(nombre):
             _cache_efectos[nombre] = None
     return _cache_efectos[nombre]
 
-
 def reproducir_efecto(nombre_efecto) -> float:
-    """Reproduce un efecto en el canal de sistema. Devuelve su duración en segundos (0 si no suena)."""
+    """Reproduce un efecto. Si es 'pensando', entra en bucle hasta que se detenga."""
     global _canal_pensando
     efecto = _obtener_efecto(nombre_efecto)
     if efecto is None:
         return 0.0
     canal = pygame.mixer.Channel(CANAL_EFECTOS)
-    canal.play(efecto)
+    
     if nombre_efecto == "pensando":
+        canal.play(efecto, loops=-1)  # Bucle infinito
         _canal_pensando = canal
+    else:
+        canal.play(efecto)
+        
     return efecto.get_length()
-
 
 def detener_efecto_pensando():
     global _canal_pensando

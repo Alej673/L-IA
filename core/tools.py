@@ -759,6 +759,18 @@ def gestor_permisos(nombre_herramienta: str, callback_ui_permiso=None, **kwargs)
     if nivel_riesgo == 2:
         print(f"\n⚠️ [ALERTA DE SEGURIDAD L-IA] ⚠️")
         print(f"El modelo intentó ejecutar una herramienta PELIGROSA: '{nombre_herramienta}'")
+        # --- NUEVA ALERTA DE VOZ (Corta la música y avisa) ---
+        try:
+            import core.voz as voz
+            voz.detener_efecto_pensando() # Apagamos el sonido de fondo si seguía sonando
+            
+            # Sintetizamos la alerta al vuelo con el motor rápido
+            alerta = voz.preparar_voz("Atención. Se requiere autorización manual en pantalla para proceder.", motor="kokoro")
+            if alerta:
+                voz.reproducir_voz(alerta)
+        except Exception as e:
+            print(f"⚠️ [Aviso de voz omitido: {e}]")
+        # -----------------------------------------------------
         print(f"Argumentos detectados: {kwargs}")
         
         autorizado = False

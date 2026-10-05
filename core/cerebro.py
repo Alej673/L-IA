@@ -730,6 +730,7 @@ def _generar_respuesta_con_voz(generador_texto, motor="kokoro", nivel_distorsion
     bloque_actual = ""
     hablar = usar_voz
     primer_fragmento = True
+    en_bloque_codigo = False  # <--- NUEVO: Interruptor de censura para el TTS
 
     if texto_para_mostrar and callback_stream:
         callback_stream(texto_para_mostrar)
@@ -742,11 +743,10 @@ def _generar_respuesta_con_voz(generador_texto, motor="kokoro", nivel_distorsion
             hablar = False
 
     if hablar:
-        cola_texto = queue.Queue()            # frases -> sintetizador
-        cola_audio = queue.Queue(maxsize=3)   # audios listos -> reproductor
+        cola_texto = queue.Queue()            
+        cola_audio = queue.Queue(maxsize=3)   
 
         def hilo_sintetizador():
-            # Genera el audio de la frase N+1 mientras suena la N.
             while True:
                 frase = cola_texto.get()
                 if frase is None:
@@ -756,8 +756,7 @@ def _generar_respuesta_con_voz(generador_texto, motor="kokoro", nivel_distorsion
                     continue
                 try:
                     archivo = voz.preparar_voz(frase, motor=motor, nivel_distorsion=nivel_distorsion)
-                except Exception as e:
-                    print(f"⚠️ [Fallo al sintetizar frase: {e}]")
+                except Exception:
                     archivo = None
                 if archivo:
                     cola_audio.put(archivo)
@@ -772,8 +771,8 @@ def _generar_respuesta_con_voz(generador_texto, motor="kokoro", nivel_distorsion
                     continue
                 try:
                     voz.reproducir_voz(archivo)
-                except Exception as e:
-                    print(f"⚠️ [Fallo al reproducir frase: {e}]")
+                except Exception:
+                    pass
 
         t_sintetizador = threading.Thread(target=hilo_sintetizador, daemon=True)
         t_reproductor = threading.Thread(target=hilo_reproductor, daemon=True)
@@ -789,18 +788,33 @@ def _generar_respuesta_con_voz(generador_texto, motor="kokoro", nivel_distorsion
             continue
 
         respuesta_completa += fragmento_entrante
-        bloque_actual += fragmento_entrante
-
+        
+        # 1. SIEMPRE imprimimos a la consola y a React (Frontend)
         print(fragmento_entrante, end="", flush=True)
-
         if callback_stream and not texto_para_mostrar:
             callback_stream(fragmento_entrante)
 
+        # 2. FILTRO EXCLUSIVO PARA LA VOZ
         if hablar:
+            # Si el modelo escribe "```", cambiamos el estado del interruptor
+            conteo_comillas = fragmento_entrante.count("```")
+            if conteo_comillas > 0:
+                if conteo_comillas % 2 != 0:
+                    en_bloque_codigo = not en_bloque_codigo
+                continue  # Saltamos este trozo para que TTS no intente leer las comillas ni el "json/python"
+
+            # Si estamos dentro de un bloque de código, ignoramos el texto para la voz
+            if en_bloque_codigo:
+                continue 
+
+            # Limpiamos asteriscos sueltos que el TTS pronuncia mal
+            fragmento_limpio = fragmento_entrante.replace("*", "")
+            bloque_actual += fragmento_limpio
+            
             largo = len(bloque_actual.strip())
             minimo = MIN_CHARS_PRIMER_FRAGMENTO if primer_fragmento else MIN_CHARS_FRAGMENTO
-            fin_de_oracion = any(p in fragmento_entrante for p in PUNTUACION_CORTE) and largo >= minimo
-            demasiado_largo = largo > MAX_CHARS_FRAGMENTO and ',' in fragmento_entrante
+            fin_de_oracion = any(p in fragmento_limpio for p in PUNTUACION_CORTE) and largo >= minimo
+            demasiado_largo = largo > MAX_CHARS_FRAGMENTO and ',' in fragmento_limpio
 
             if fin_de_oracion or demasiado_largo:
                 cola_texto.put(bloque_actual.strip())
@@ -830,7 +844,6 @@ def _dividir_en_fragmentos_hablables(texto):
         parte = parte.strip()
         if parte:
             yield parte + " "
-
 
 # ==========================================
 # 4. RUTA A: LA NUBE (Gemini Flash / Pro)

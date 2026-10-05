@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import './App.css'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import { Mic, Paperclip, Terminal, Cpu, Database, Upload, AlertTriangle, Activity, ShieldAlert, MessageSquare, Plus, Folder, Pencil, Trash2, Check, X, Menu, Volume2 } from 'lucide-react'
+import { Mic, Paperclip, Terminal, Cpu, Database, Upload, AlertTriangle, Activity, ShieldAlert, MessageSquare, Plus, Folder, Pencil, Trash2, Check, X, Menu, Volume2, VolumeX } from 'lucide-react'
 import { motion, AnimatePresence, useDragControls, useMotionValue, useTransform } from 'framer-motion'
 
 const API = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000'
@@ -723,6 +723,7 @@ function App() {
   const [mensajes, setMensajes] = useState(() => [mensajeInicial()])
   const [mensajeEspera, setMensajeEspera] = useState(null)
   const [workspaceActivo, setWorkspaceActivo] = useState(null)
+  const [vozGlobal, setVozGlobal] = useState(false)
 
   // Multi-sesión
   const [sesiones, setSesiones] = useState([])
@@ -914,6 +915,7 @@ function App() {
         // Vosk detectó el nombre: activamos el HUD instantáneamente
         setEstadoLIA('escuchando')
         setEscuchando(true)
+        setVozGlobal(true)
       } 
       else if (data.datos.accion === 'ejecutar') {
         // Whisper terminó de transcribir: enviamos el texto
@@ -1056,7 +1058,7 @@ function App() {
 
   const manejarEnvio = (e) => {
     if (e) e.preventDefault()
-    enviarOrden(input, false)
+    enviarOrden(input, vozGlobal) // <--- Ahora respeta el botón global
   }
 
   const detenerGeneracion = async () => {
@@ -1073,6 +1075,7 @@ function App() {
     if (escuchando || cargando) return
     setEscuchando(true)
     setEstadoLIA('escuchando') // Cambiamos la cara de L-IA a rojo al instante
+    setVozGlobal(true)
     
     try {
       // Ordenamos a Python que abra el canal de audio
@@ -1416,9 +1419,33 @@ function App() {
       </AnimatePresence>
 
       {/* --- PANEL CENTRAL --- */}
-      <div className="panel central">
+      <div className="panel central" style={{ position: 'relative' }}>
+        
+        {/* MENÚ LATERAL (Izquierda) */}
         <button type="button" className="hud-btn btn-menu-sidebar" onClick={() => setSidebarAbierto(true)} title="Sesiones">
           <Menu size={18} />
+        </button>
+
+        {/* INTERRUPTOR GLOBAL DE VOZ (Derecha) */}
+        <button 
+          type="button" 
+          className="hud-btn" 
+          onClick={() => setVozGlobal(!vozGlobal)} 
+          style={{ 
+            position: 'absolute',
+            top: '15px',
+            right: '15px',
+            zIndex: 10,
+            color: vozGlobal ? '#39ff88' : '#00ffff', 
+            opacity: vozGlobal ? 1 : 0.5,
+            borderColor: vozGlobal ? '#39ff88' : 'transparent',
+            boxShadow: vozGlobal ? 'inset 0 0 10px rgba(57, 255, 136, 0.2)' : 'none',
+            transition: 'all 0.2s ease',
+            padding: '8px'
+          }}
+          title={vozGlobal ? "Respuestas por voz ACTIVADAS" : "Respuestas por voz DESACTIVADAS"}
+        >
+          {vozGlobal ? <Volume2 size={20} /> : <VolumeX size={20} />}
         </button>
 
         <NucleoLIA estado={estadoLIA} mensajeEspera={mensajeEspera} />
@@ -1532,7 +1559,7 @@ function App() {
           <button type="button" className="hud-btn" onClick={manejarMicrofono} style={{ color: escuchando ? '#ff0055' : '#00ffff', boxShadow: escuchando ? 'inset 0 0 10px rgba(255,0,85,0.5)' : '' }}>
             <Mic size={18} />
           </button>
-
+          
           <textarea
             ref={textareaRef}
             className="hud-input custom-scrollbar"

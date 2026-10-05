@@ -258,7 +258,16 @@ def recibir_chat(mensaje: MensajeUsuario):
     threading.Thread(target=renombrar_sesion_silenciosamente, args=(sesion_actual, entrada), daemon=True).start()
     cola_streaming = queue.Queue()
 
+    # Bandera para saber si ya le dijimos al audio que se calle
+    ya_respondio = {"estado": False}
+
     def stream_consola(fragmento: str) -> None:
+        # En el momento que suelta la primera letra, apagamos el sonido de pensando
+        if not ya_respondio["estado"]:
+            import core.voz as voz
+            voz.detener_efecto_pensando()
+            ya_respondio["estado"] = True
+            
         print(fragmento, end="", flush=True)
         cola_streaming.put({"tipo": "chunk", "texto": fragmento})
 
@@ -270,7 +279,11 @@ def recibir_chat(mensaje: MensajeUsuario):
 
     def hilo_ia():
         try:
-            # === AQUÍ LE PASAMOS EL PARÁMETRO DE VOZ A CEREBRO.PY ===
+            import core.voz as voz
+            
+            # 1. El cerebro empieza a procesar: Encendemos el sonido
+            voz.reproducir_efecto("pensando")
+            
             respuesta, origen = charlar_con_lia(
                 entrada,
                 callback_ui=permiso_interfaz,
@@ -279,6 +292,10 @@ def recibir_chat(mensaje: MensajeUsuario):
                 sesion_id=sesion_actual,
                 usar_voz=mensaje.usar_voz 
             )
+
+            # 2. Por seguridad, apagamos el sonido al terminar 
+            # (en caso de que la respuesta haya estado vacía)
+            voz.detener_efecto_pensando()
 
             doc_activo = None
             nombre_workspace = None
@@ -289,9 +306,13 @@ def recibir_chat(mensaje: MensajeUsuario):
 
             cola_streaming.put({"tipo": "fin", "origen": origen, "documento": doc_activo, "workspace": nombre_workspace})
         except Exception as e:
+            import core.voz as voz
+            voz.detener_efecto_pensando() # Apagamos si hay error
             cola_streaming.put({"tipo": "error", "texto": str(e)})
 
     threading.Thread(target=hilo_ia, daemon=True).start()
+
+    # ... (El resto de la función generador_sse sigue normal hacia abajo)
 
     def generador_sse():
         while True:
@@ -386,8 +407,6 @@ def daemon_escucha_activa():
                 
                 if texto_usuario:
                     print(f"\n🗣️ [Micrófono capturó]: '{texto_usuario}'")
-                    voz.reproducir_efecto("pensando")
-                    # 3. Mandamos el texto final
                     mensajes_radar.put({"accion": "ejecutar", "texto": texto_usuario})
                 else:
                     # 4. Si fue un ruido sin voz, apagamos la UI
