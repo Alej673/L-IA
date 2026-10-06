@@ -202,6 +202,9 @@ _RAICES = {
         "vamos a trabajar", "lleg[oó] pap[aá]", "empecemos", 
         "modo hacker", "activa el protocolo", "prepara el entorno"
     ],
+    "entorno_iot": [
+        "luz", "luces", "iluminaci", "foco", "tira"
+    ],
     "memoria_tecnica": [
         "recuerd", "bit[aá]cor", "documentaci[oó]n", "c[oó]mo resolv",
         "incidente", "segundo cerebro", "apunte", "solucionam"
@@ -249,6 +252,13 @@ PATRONES_CLAVE["estado_pc"] = re.compile(
 PATRONES_CLAVE["web"] = re.compile(
     PATRONES_CLAVE["web"].pattern
     + r'|(qui[eé]n\s+gan[oó]|acerca\s+de|busc\w*\s+en\s+(internet|la\s+web|google))',
+    re.IGNORECASE
+)
+
+# Añade esto justo debajo de los otros PATRONES_CLAVE modificados:
+PATRONES_CLAVE["entorno_iot"] = re.compile(
+    PATRONES_CLAVE["entorno_iot"].pattern + 
+    r'|\b(modo\s+gaming|modo\s+trabajo|descansar|apaga.*foco|prende.*tira|cambia.*entorno)\b',
     re.IGNORECASE
 )
 
@@ -474,6 +484,7 @@ _DESCRIPCIONES_CAPACIDADES = {
     "uncensored":        "cambiar temporalmente a un modo sin filtros para conversación más directa, si se lo pides explícitamente",
     "memoria_tecnica": "consultar tu memoria a largo plazo (segundo cerebro) sobre problemas técnicos pasados, bitácoras y documentación",
     "memorizar_documento": "leer el archivo o documento que tienes abierto en pantalla y vectorizarlo en su memoria a largo plazo, para poder consultarlo técnicamente después",
+    "entorno_iot": "controlar las luces físicas y el ambiente de tu habitación (modos: trabajo, gaming, descanso, apagado) ",
 }
 
 def _generar_nota_guia_capacidades():
@@ -488,7 +499,7 @@ def _generar_nota_guia_capacidades():
         "Dile EXACTAMENTE qué frases puede usar para pedirte las cosas. Por ejemplo: "
         "'Si quieres que revise tu código, solo dime: revisa este archivo', o 'Si quieres que guarde algo "
         "en mi memoria, dime: memoriza este documento'.\n"
-        "Haz que sienta que tienes el control total de tu entorno y estás lista para asistir."
+        "Haz que sienta que tienes el control total de tu entorno y estás lista para asistir auqnue con arrogancia frente a otras asistentes."
     )
 
 # ==========================================
@@ -857,6 +868,12 @@ def leer_repositorio_git(ruta_repo: str) -> str:
     # Cerebro intercepta la llamada y la despacha con _ejecutar_herramienta_segura.
     pass
 
+def comando_cambiar_entorno(escena: str) -> str:
+    """
+    Cambia la iluminación física de la habitación de Alejandro.
+    Opciones válidas: 'trabajo', 'gaming', 'descanso', 'apagado'.
+    """
+    pass
 
 def _reportar_error(mensaje: str, callback_stream=None) -> str:
     """Envía `mensaje` a la GUI y lo devuelve.
@@ -1014,7 +1031,7 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
     # salta el semáforo de permisos (`callback_ui` / `gestor_permisos`).
     # Desactivado, `response.function_calls` siempre llega intacto y decidimos
     # nosotros si se ejecuta.
-    herramientas_activas = [tools.abrir_aplicacion, leer_repositorio_git]
+    herramientas_activas = [tools.abrir_aplicacion, leer_repositorio_git, comando_cambiar_entorno]
     config_deteccion = types.GenerateContentConfig(
         tools=herramientas_activas,
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
@@ -1092,20 +1109,22 @@ def _extraer_llamada_manual(texto):
     # Sin este respaldo, esa llamada nunca se ejecuta ni se detecta: la app
     # no se abre y el texto crudo (con corchetes) se le muestra al usuario,
     # violando además la regla de "cero acotaciones actorales".
-    match_corchete = re.search(r'\[\s*(abrir_aplicacion|obtener_estado_sistema)\s+"([^"]+)"\s*\]', texto)
+    match_corchete = re.search(r'\[\s*(abrir_aplicacion|obtener_estado_sistema|comando_cambiar_entorno)\s+"([^"]+)"\s*\]', texto)
     if match_corchete:
         accion = match_corchete.group(1)
         if accion == "abrir_aplicacion":
             return {"accion": accion, "nombres_apps": match_corchete.group(2)}
+        elif accion == "comando_cambiar_entorno":
+            return {"accion": accion, "escena": match_corchete.group(2)}
         return {"accion": accion}
 
     return None
 
-def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir, quiere_estado,
+def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir, quiere_estado, quiere_entorno,
                          callback_ui=None, callback_stream=None, motor_voz="kokoro",usar_voz=False):
     print(f"\n[🏠 Enrutando al Cerebro Local ({MODELO_LOCAL})...]")
 
-    requiere_herramienta = quiere_abrir or quiere_estado
+    requiere_herramienta = quiere_abrir or quiere_estado or quiere_entorno
 
     mensajes = [
         {'role': 'system', 'content': instrucciones_sistema},
@@ -1133,6 +1152,10 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
                 'Formato EXACTO: {"accion": "obtener_estado_sistema"}. '
                 'Responde ÚNICAMENTE el JSON, nada más.'
             )
+        if quiere_entorno:
+            instrucciones_finales += 'Formato EXACTO: {"accion": "comando_cambiar_entorno", "escena": ""}. '
+
+        instrucciones_finales += 'Responde ÚNICAMENTE el JSON, nada más.'
 
         mensajes[0]['content'] = instrucciones_finales
 
@@ -1164,8 +1187,10 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
             kwargs_herramienta = {}
             if accion == "abrir_aplicacion":
                 kwargs_herramienta = {"nombres_apps": llamada_manual.get("nombres_apps", "")}
+            elif accion == "comando_cambiar_entorno":
+                kwargs_herramienta = {"escena": llamada_manual.get("escena", "trabajo")}
 
-            if accion in ("abrir_aplicacion", "obtener_estado_sistema"):
+            if accion in ("abrir_aplicacion", "obtener_estado_sistema", "comando_cambiar_entorno"):
                 print(f"\n⚙️ [L-IA Local solicitando ejecución de: {accion}]")
                 resultado = _ejecutar_herramienta_segura(
                     accion,
@@ -1713,6 +1738,11 @@ def _elegir_ruta(intenciones: dict, msg_lower: str, tokens_totales: int):
             return "Dolphin", None, "sin_filtros"
         return "Nube", MODELO_NUBE_FLASH, "sin_filtros_no_cabe_en_local"
 
+    # Si detecta que quieres controlar las luces, fuerza la ruta Local
+    if intenciones.get("entorno_iot"):
+        return "Local", None, "control_iot"
+    # -----------------------
+
     umbral_local = LIMITE_TOKENS_CODIGO if intenciones["codigo"] else LIMITE_TOKENS_CASUAL
 
     if tokens_totales > umbral_local:
@@ -2016,7 +2046,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
 
     # --- FASE 8 — GUÍA DE CAPACIDADES ---
     if intenciones.get("guia_capacidades"):
-        for clave in ("abrir_app", "estado_pc", "git", "guardar_git", "codigo", "web", "vision", "clima", "calendario", "memoria_tecnica", "memorizar_documento", "hora", "rutinas"):
+        for clave in ("abrir_app", "estado_pc", "git", "guardar_git", "codigo", "web", "vision", "clima", "calendario", "memoria_tecnica", "memorizar_documento", "hora", "rutinas", "codigo_pesado", "Control IOT"):
             intenciones[clave] = False
         contexto_historico += _generar_nota_guia_capacidades()
 
@@ -2090,7 +2120,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     else:
         texto_respuesta = responder_con_local(
             instrucciones_sistema, contexto_historico,
-            intenciones["abrir_app"], intenciones["estado_pc"],
+            intenciones["abrir_app"], intenciones["estado_pc"], intenciones.get("entorno_iot", False),
             callback_ui=callback_ui,
             callback_stream=callback_stream,
             motor_voz=motor_voz_elegido,

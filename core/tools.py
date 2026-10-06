@@ -8,6 +8,8 @@ import pyperclip
 import sys
 import re  # Necesario para dividir textos complejos
 import webbrowser
+import requests
+import core.control_iot as control_iot
 
 try:
     import winreg  # Solo existe en Windows; el resto del script sigue siendo Windows-only de todas formas
@@ -717,6 +719,39 @@ def hacer_commit_git(ruta_repo, titulo_commit, descripcion_commit=""):
     except Exception as e:
         return f"❌ Error inesperado: {e}"
 
+def comando_cambiar_entorno(escena: str) -> str:
+    """
+    Nivel 1. Cambia la iluminación física de la habitación de Alejandro.
+    Opciones válidas: 'trabajo', 'gaming', 'descanso', 'apagado', 'corrupcion', 'encendido'.
+    """
+    escena_normalizada = escena.lower().strip()
+    
+    # 1. Filtros de Apagado (Captura el error del string vacío '')
+    if not escena_normalizada or "apaga" in escena_normalizada or "off" in escena_normalizada:
+        escena_final = "apagado"
+        
+    # 2. Filtros de Encendido básico
+    elif "encend" in escena_normalizada or "prend" in escena_normalizada or escena_normalizada == "on":
+        escena_final = "encendido"
+        
+    # 3. Modos Específicos
+    elif "trabajo" in escena_normalizada or "estudio" in escena_normalizada:
+        escena_final = "trabajo"
+    elif "gaming" in escena_normalizada or "juego" in escena_normalizada:
+        escena_final = "gaming"
+    elif "descanso" in escena_normalizada or "dormir" in escena_normalizada:
+        escena_final = "descanso"
+    elif "corrup" in escena_normalizada or "glitch" in escena_normalizada or "hack" in escena_normalizada:
+        escena_final = "corrupcion"
+        
+    # 4. Fallback: Si manda solo la palabra "luces", las encendemos
+    elif "luz" in escena_normalizada or "luces" in escena_normalizada:
+        escena_final = "encendido"
+    else:
+        return f"Error: La escena '{escena_normalizada}' no está configurada. Intenta con: apagado, encendido, gaming, trabajo."
+    
+    control_iot.aplicar_escena(escena_final)
+    return f"Éxito: Escena física de iluminación cambiada a '{escena_final}'."
 # ==========================================
 # TOOL MANAGER (Capa de Permisos y Seguridad)
 # ==========================================
@@ -733,7 +768,8 @@ CATALOGO_HERRAMIENTAS = {
     "abrir_aplicacion": {"nivel": 1},
     "ejecutar_comando_sistema": {"nivel": 2},
     "leer_repositorio_git": {"nivel": 1},
-    "hacer_commit_git": {"nivel": 2}
+    "hacer_commit_git": {"nivel": 2},
+    "comando_cambiar_entorno": {"nivel": 1}
 }
 
 def gestor_permisos(nombre_herramienta: str, callback_ui_permiso=None, **kwargs):
@@ -827,8 +863,9 @@ def _ejecutar_dinamico(nombre_herramienta, **kwargs):
             kwargs.get("titulo_commit", "Commit sin título"), 
             kwargs.get("descripcion_commit", "")
         )
+    elif nombre_herramienta == "comando_cambiar_entorno":
+        return comando_cambiar_entorno(kwargs.get("escena", "trabajo"))
     else:
         return f"Error: No hay lógica de despacho para {nombre_herramienta}"
 # Aquí más adelante agregaremos:
 # - reproducir_musica(genero) -> Para Spotify
-# - controlar_luces() -> Para IoT (Home Assistant)

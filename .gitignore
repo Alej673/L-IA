@@ -29,3 +29,11 @@ token.json
 
 config/credentials.json
 config/token.json
+
+# ==========================================
+# Credenciales y Configuración de IoT / Tuya
+# ==========================================
+config/devices.json
+config/snapshot.json
+config/tinytuya.json
+config/tuya-raw.json
