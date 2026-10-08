@@ -10,14 +10,27 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
-    "windows": [
+  "windows": [
       {
+        "label": "main",
         "title": "L-IA",
         "width": 450,
         "height": 700,
         "resizable": false,
         "decorations": false,
         "transparent": true
+      },
+      {
+        "label": "overlay_virus",
+        "title": "CRITICAL_FAILURE",
+        "url": "/",
+        "fullscreen": false,
+        "maximized": true,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "visible": false,
+        "skipTaskbar": true
       }
     ],
     "security": {

@@ -5,6 +5,8 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { Mic, Paperclip, Terminal, Cpu, Database, Upload, AlertTriangle, Activity, ShieldAlert, MessageSquare, Plus, Folder, Pencil, Trash2, Check, X, Menu, Volume2, VolumeX } from 'lucide-react'
 import { motion, AnimatePresence, useDragControls, useMotionValue, useTransform } from 'framer-motion'
+import ColapsoSistema from './ColapsoSistema'
+import { invoke } from '@tauri-apps/api/core';
 
 const API = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000'
 
@@ -233,7 +235,7 @@ function useLectorVoz() {
 // =========================================
 // NÚCLEO L-IA: Expresividad, Micro-Estados y Tareas
 // =========================================
-function NucleoLIA({ estado, mensajeEspera }) {
+function NucleoLIA({ estado, mensajeEspera, modoColapso }) {
   const estadoReal = estado === 'procesando' ? 'procesando_pregunta' : estado
 
   const pensando = estadoReal.startsWith('procesando')
@@ -403,29 +405,34 @@ function NucleoLIA({ estado, mensajeEspera }) {
     pensando && FRASES_PENSAMIENTO[estadoReal]
       ? FRASES_PENSAMIENTO[estadoReal][rondaGesto % FRASES_PENSAMIENTO[estadoReal].length]
       : label
+  // 2. Levantar el componente por encima del telón
+    // Levantar el componente por encima del telón
+  const zIndexOverride = modoColapso ? { zIndex: 10001, position: 'relative' } : {};
+  const c = modoColapso ? '#ff0033' : color; // color efectivo (rojo en colapso)
 
   return (
-    <div className="nucleo-wrapper">
-      <div className="nucleo-halo" style={{ background: `radial-gradient(circle, ${color}33, transparent 70%)` }} />
+    <div className={`nucleo-wrapper ${modoColapso ? 'glitch-rgb' : ''}`} style={zIndexOverride}>
+      <div className="nucleo-halo" style={{ background: `radial-gradient(circle, ${c}33, transparent 70%)` }} />
 
       {/* NODO DE GIT BRANCHING */}
       <AnimatePresence>
         {estadoReal === 'procesando_git' && (
           <motion.div
             className="nodo-git"
-            style={{ background: color, color: color, top: '50%', left: '50%', marginTop: '-7px', marginLeft: '-7px' }}
+            style={{ background: c, color: c, top: '50%', left: '50%', marginTop: '-7px', marginLeft: '-7px' }}
             initial={{ x: 0, y: 0, opacity: 0 }}
             animate={{ x: 50, y: -30, opacity: 1 }}
             exit={{ x: 0, y: 0, opacity: 0 }}
             transition={{ type: 'spring', stiffness: 50, damping: 10 }}
           >
-            <motion.div style={{ position: 'absolute', top: '50%', right: '100%', height: '2px', width: '50px', background: color, transformOrigin: 'right', rotate: '30deg' }} />
+            <motion.div style={{ position: 'absolute', top: '50%', right: '100%', height: '2px', width: '50px', background: c, transformOrigin: 'right', rotate: '30deg' }} />
           </motion.div>
         )}
       </AnimatePresence>
 
+      {/* AUREOLA DE ESCUCHA (se apaga en colapso) */}
       <AnimatePresence>
-        {escuchandoAhora && (
+        {escuchandoAhora && !modoColapso && (
           <motion.div
             key="aureola"
             className="aureola-escucha"
@@ -433,7 +440,6 @@ function NucleoLIA({ estado, mensajeEspera }) {
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.8 }}
           >
-            {/* Aureola que respira con tu voz */}
             <motion.div
               className="aureola-voz"
               style={{
@@ -444,7 +450,6 @@ function NucleoLIA({ estado, mensajeEspera }) {
                 boxShadow: `0 0 30px ${color}, inset 0 0 30px ${color}66`,
               }}
             />
-            {/* Ondas que CONVERGEN hacia el núcleo: "absorbe" el sonido */}
             {[0, 1, 2].map(i => (
               <motion.span
                 key={i}
@@ -461,46 +466,80 @@ function NucleoLIA({ estado, mensajeEspera }) {
       <motion.div
         key={`onda-${estadoReal}`}
         className="aureola-voz"
-        style={{ borderColor: color }}
+        style={{ borderColor: c }}
         initial={{ scale: 0.7, opacity: 0.8 }}
         animate={{ scale: 1.7, opacity: 0 }}
         transition={{ duration: 0.8, ease: 'easeOut' }}
       />
 
-      <motion.div className="anillo-particulas" animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: giro * 2.2, ease: 'linear' }}>
+      {/* PARTÍCULAS */}
+      <motion.div
+        className="anillo-particulas"
+        animate={{ rotate: modoColapso ? [0, -360] : 360 }}
+        transition={{ repeat: Infinity, duration: modoColapso ? 0.6 : giro * 2.2, ease: 'linear' }}
+      >
         {[...Array(6)].map((_, i) => (
-          <span key={i} className="particula" style={{ background: color, boxShadow: `0 0 8px ${color}`, transform: `rotate(${i * 60}deg) translateX(88px)` }} />
+          <span key={i} className="particula" style={{ background: c, boxShadow: `0 0 8px ${c}`, transform: `rotate(${i * 60}deg) translateX(88px)` }} />
         ))}
       </motion.div>
 
-      <motion.div className="anillo-exterior" style={{ borderColor: color }} animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: giro, ease: 'linear' }} />
-      <motion.div className="anillo-medio" style={{ borderTopColor: color, borderBottomColor: color }} animate={{ rotate: -360 }} transition={{ repeat: Infinity, duration: giro * 1.5, ease: 'linear' }} />
-      <motion.div className="anillo-interior" style={{ borderColor: color }} animate={{ scale: [1, 1.15, 1], opacity: [0.55, 1, 0.55] }} transition={{ repeat: Infinity, duration: pulso }} />
+      {/* ANILLOS (corruptos en colapso) */}
+      <motion.div
+        className="anillo-exterior"
+        style={{ borderColor: c }}
+        animate={{ rotate: modoColapso ? [0, 360, -180, 720] : 360 }}
+        transition={{ repeat: Infinity, duration: modoColapso ? 0.3 : giro, ease: modoColapso ? 'backInOut' : 'linear' }}
+      />
+      <motion.div
+        className="anillo-medio"
+        style={{ borderTopColor: modoColapso ? '#00ffff' : color, borderBottomColor: c }}
+        animate={{ rotate: -360 }}
+        transition={{ repeat: Infinity, duration: modoColapso ? 0.15 : giro * 1.5, ease: 'linear' }}
+      />
+      <motion.div
+        className="anillo-interior"
+        style={{ borderColor: modoColapso ? '#00ffff' : color }}
+        animate={{ scale: modoColapso ? [1, 0.8, 1.3, 1] : [1, 1.15, 1], opacity: [0.55, 1, 0.55] }}
+        transition={{ repeat: Infinity, duration: modoColapso ? 0.2 : pulso }}
+      />
 
+      {/* NÚCLEO */}
       <motion.div
         className="centro-nucleo"
         style={{
-          background: `radial-gradient(circle at 45% 35%, #ffffff 0%, #a6ffff 30%, ${color} 80%)`,
-          boxShadow: `0 0 25px ${color}, 0 0 55px ${color}66`,
+          background: modoColapso
+            ? `radial-gradient(circle at 45% 35%, #ffffff 0%, #ffaaaa 20%, #cc00ff 50%, #ff0033 90%)`
+            : `radial-gradient(circle at 45% 35%, #ffffff 0%, #a6ffff 30%, ${color} 80%)`,
+          boxShadow: modoColapso
+            ? `0 0 40px #ff0033, 0 0 80px rgba(255,0,0,0.8)`
+            : `0 0 25px ${color}, 0 0 55px ${color}66`,
           overflow: 'visible',
         }}
-        animate={{
-          scale: estadoReal === 'escribiendo' ? [1, 1.2, 0.95, 1.1, 1] :
-                 escuchandoAhora ? (hayVoz ? 1.08 : [1, 1.03, 1]) :
-                 subEstado === 'bostezo' ? [1, 1.15, 0.95, 1] :
-                 [1, 1.06, 1],
-          opacity: subEstado === 'durmiendo' ? 0.7 : 1,
-          rotate: escuchandoAhora && !hayVoz
-            ? ({ ladeaIzq: -10, ladeaDer: 10 }[gestoEscucha] ?? 0)
-            : pensando
-              ? ({ duda: 15, mirada_arriba: -8, ceja_alzada: 10, concentracion: -4, casi: 0 }[gesto] ?? 0)
-              : 0
+        animate={
+          modoColapso
+            ? { scale: [1, 1.05, 0.9, 1.1], rotate: [-5, 5, -2, 4], opacity: 1 }
+            : {
+                scale: estadoReal === 'escribiendo' ? [1, 1.2, 0.95, 1.1, 1] :
+                       escuchandoAhora ? (hayVoz ? 1.08 : [1, 1.03, 1]) :
+                       subEstado === 'bostezo' ? [1, 1.15, 0.95, 1] :
+                       [1, 1.06, 1],
+                opacity: subEstado === 'durmiendo' ? 0.7 : 1,
+                rotate: escuchandoAhora && !hayVoz
+                  ? ({ ladeaIzq: -10, ladeaDer: 10 }[gestoEscucha] ?? 0)
+                  : pensando
+                    ? ({ duda: 15, mirada_arriba: -8, ceja_alzada: 10, concentracion: -4, casi: 0 }[gesto] ?? 0)
+                    : 0,
+              }
+        }
+        transition={{
+          repeat: Infinity,
+          duration: modoColapso ? 0.2 : (subEstado === 'bostezo' ? 2.5 : pulso),
+          ease: 'easeInOut',
         }}
-        transition={{ repeat: Infinity, duration: subEstado === 'bostezo' ? 2.5 : pulso, ease: 'easeInOut' }}
       >
-        {/* ICONOS FLOTANTES DE EMOCIÓN */}
+        {/* ICONOS FLOTANTES DE EMOCIÓN (ocultos en colapso) */}
         <AnimatePresence>
-          {subEstado === 'durmiendo' && (
+          {!modoColapso && subEstado === 'durmiendo' && (
             <div style={{ position: 'absolute', top: '-15px', right: '-15px', zIndex: 10, pointerEvents: 'none' }}>
               {[0, 1, 2].map((i) => (
                 <motion.span
@@ -515,7 +554,7 @@ function NucleoLIA({ estado, mensajeEspera }) {
               ))}
             </div>
           )}
-          {subEstado === 'impaciente' && (
+          {!modoColapso && subEstado === 'impaciente' && (
             <motion.div
               initial={{ opacity: 0, y: -5, scale: 0.8 }}
               animate={{ opacity: [0.4, 1, 0.4], y: -18 }}
@@ -526,7 +565,7 @@ function NucleoLIA({ estado, mensajeEspera }) {
               ...
             </motion.div>
           )}
-          {subEstado === 'molesta' && (
+          {!modoColapso && subEstado === 'molesta' && (
             <motion.div
               initial={{ opacity: 0, scale: 0.6, rotate: -15 }}
               animate={{ opacity: [0.7, 1, 0.7], scale: [1, 1.15, 1] }}
@@ -537,7 +576,7 @@ function NucleoLIA({ estado, mensajeEspera }) {
               💢
             </motion.div>
           )}
-          {subEstado === 'alegre' && (
+          {!modoColapso && subEstado === 'alegre' && (
             <motion.div
               initial={{ opacity: 0, scale: 0.5 }}
               animate={{ opacity: [0.3, 0.9, 0.3], y: [-10, -16, -10], scale: [0.8, 1.1, 0.8] }}
@@ -552,7 +591,7 @@ function NucleoLIA({ estado, mensajeEspera }) {
 
         {/* LENTES DE LECTURA */}
         <AnimatePresence>
-          {estadoReal === 'procesando_doc' && (
+          {!modoColapso && estadoReal === 'procesando_doc' && (
             <motion.div
               className="lentes-lectura"
               style={{ color }}
@@ -568,47 +607,79 @@ function NucleoLIA({ estado, mensajeEspera }) {
         </AnimatePresence>
 
         {/* ESCÁNER RAG */}
-        {estadoReal === 'procesando_rag' && (
+        {!modoColapso && estadoReal === 'procesando_rag' && (
           <div className="escaner-rag">
             <motion.div className="escaner-rag-barra" animate={{ top: ['-10%', '110%'] }} transition={{ repeat: Infinity, duration: 1.3, ease: 'linear' }} />
           </div>
         )}
 
+        {/* ROSTRO */}
         <motion.div
           className="rostro-holografico"
-          animate={{ x: faceOffset.x, y: faceOffset.y }}
-          transition={{ type: 'spring', stiffness: 100, damping: 18 }}
+          animate={modoColapso ? { x: [-2, 2, -1, 3], y: [1, -2, 2, -1] } : { x: faceOffset.x, y: faceOffset.y }}
+          transition={
+            modoColapso
+              ? { repeat: Infinity, duration: 0.1 }
+              : { type: 'spring', stiffness: 100, damping: 18 }
+          }
         >
           <div className="fila-ojos">
-            <motion.div className="ojo" style={{ background: colorRostro }} animate={ojosCfg} transition={{ duration: 0.15 }} />
-            <motion.div className="ojo" style={{ background: colorRostro }} animate={{ ...ojosCfg, rotate: -ojosCfg.rotate, scaleY: estadoReal === 'procesando_pregunta' ? 1.4 : ojosCfg.scaleY }} transition={{ duration: 0.15 }} />
+            <motion.div
+              className="ojo"
+              style={{ background: colorRostro }}
+              animate={{ ...ojosCfg, scale: 1.2 }}
+              transition={{ duration: 0.15 }}
+            />
+            <motion.div
+              className="ojo"
+              style={{ background: colorRostro }}
+              animate={{ ...ojosCfg, scale: 1.2, rotate: -ojosCfg.rotate }}
+              transition={{ duration: 0.15 }}
+            />
           </div>
+
+          {/* Boca */}
           <motion.div
             className="boca"
-            style={{ background: colorRostro }}
-            animate={bocaCfg}
-            transition={{ duration: estadoReal === 'escribiendo' ? 0.4 : 0.2, repeat: estadoReal === 'escribiendo' ? Infinity : 0, ease: 'easeInOut' }}
+            style={{ background: modoColapso ? '#021017' : colorRostro }}
+            animate={
+              modoColapso
+                ? { width: ['35px', '15px', '40px'], rotate: [20, -15, 25], height: ['2px', '6px', '1px'] }
+                : bocaCfg
+            }
+            transition={
+              modoColapso
+                ? { duration: 0.2, repeat: Infinity }
+                : { duration: estadoReal === 'escribiendo' ? 0.4 : 0.2, repeat: estadoReal === 'escribiendo' ? Infinity : 0, ease: 'easeInOut' }
+            }
           />
         </motion.div>
       </motion.div>
 
+      {/* BARRAS DE VOZ */}
       {estadoReal === 'escribiendo' && (
         <div className="barras-voz">
           {[0, 1, 2, 3, 4].map((i) => (
-            <motion.span key={i} style={{ background: color, boxShadow: `0 0 6px ${color}` }} animate={{ height: ['20%', '85%', '35%', '65%', '20%'] }} transition={{ repeat: Infinity, duration: 0.9, delay: i * 0.09, ease: 'easeInOut' }} />
+            <motion.span
+              key={i}
+              style={{ background: c, boxShadow: `0 0 6px ${c}` }}
+              animate={{ height: ['20%', '85%', '35%', '65%', '20%'] }}
+              transition={{ repeat: Infinity, duration: modoColapso ? 0.3 : 0.9, delay: i * 0.09, ease: 'easeInOut' }}
+            />
           ))}
         </div>
       )}
 
       {estadoReal === 'error' && (
-        <motion.div className="destello-error" style={{ borderColor: color }} animate={{ opacity: [0, 0.5, 0], scale: [1, 1.08, 1] }} transition={{ repeat: Infinity, duration: 0.5 }} />
+        <motion.div className="destello-error" style={{ borderColor: c }} animate={{ opacity: [0, 0.5, 0], scale: [1, 1.08, 1] }} transition={{ repeat: Infinity, duration: 0.5 }} />
       )}
 
+      {/* ETIQUETA */}
       <AnimatePresence mode="wait">
         <motion.div
-          key={`${estadoReal}-${subEstado}-${pensando ? rondaGesto : 0}`}
+          key={`${estadoReal}-${subEstado}-${pensando ? rondaGesto : 0}-${modoColapso}`}
           className="etiqueta-estado"
-          style={{ color, textShadow: `0 0 8px ${color}99` }}
+          style={{ color: c, textShadow: `0 0 8px ${c}99` }}
           initial={{ opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -6 }}
@@ -713,9 +784,9 @@ function BloqueDeCodigo({ node, className, children, ...props }) {
 }
 
 // =========================================
-// APP
+// APP: INTERFAZ PRINCIPAL
 // =========================================
-function App() {
+export default function App() {
   const [estadoLIA, setEstadoLIA] = useState('reposo')
   const [input, setInput] = useState('')
   const [isDragging, setIsDragging] = useState(false)
@@ -724,7 +795,24 @@ function App() {
   const [mensajeEspera, setMensajeEspera] = useState(null)
   const [workspaceActivo, setWorkspaceActivo] = useState(null)
   const [vozGlobal, setVozGlobal] = useState(false)
+  const [modoColapso, setModoColapso] = useState(false);
+  const [comandoColapso, setComandoColapso] = useState(null);
 
+  // ==========================================
+  // BOTÓN DEBUG: LLAMAR AL GUION DE PYTHON--eliminar despues
+  // ==========================================
+  const simularColapsoVisual = async () => {
+    // 1. Oscurecemos la pantalla real al instante
+    setModoColapso(true);
+    await invoke('activar_modo_invasivo').catch(console.error);
+
+    // 2. Le damos a Windows medio segundo para estirar la ventana
+    await new Promise(r => setTimeout(r, 600));
+
+    // 3. ¡Lanzamos el detonante a Python!
+    // Usamos un comando secreto que tu backend reconocerá
+    enviarOrden('/run_fase_1'); 
+  };
   // Multi-sesión
   const [sesiones, setSesiones] = useState([])
   const [sesionActual, setSesionActual] = useState('default')
@@ -1001,11 +1089,42 @@ function App() {
         for (const parte of partes) {
           if (!parte.startsWith('data: ')) continue
 
+          // ==========================================
+          // INTERCEPTOR DE EVENTOS ANÓMALOS (GUION REAL)
+          // ==========================================
+          if (parte.endsWith('|||')) {
+            try {
+              const jsonStr = parte.slice(6, -3); 
+              const trigger = JSON.parse(jsonStr);
+              
+              setModoColapso(true);
+              setComandoColapso(trigger);
+
+              // Si Python manda la orden de inicio, secuestramos la pantalla real
+              if (trigger.comando === 'INICIAR_COLAPSO') {
+                invoke('activar_modo_invasivo').catch(console.error);
+              }
+              // Si Python manda la orden de fin, soltamos la pantalla
+              else if (trigger.comando === 'RESTAURAR_SISTEMA') {
+                invoke('restaurar_ventana').catch(console.error);
+                setModoColapso(false);
+              }
+
+            } catch (e) {
+              console.error("Error parseando trigger anómalo", e);
+            }
+            continue; 
+          }
+
           // Solo el parseo va en try/catch: los errores reales ya no se tragan
           let data
           try { data = JSON.parse(parte.slice(6)) } catch { continue }
 
           if (data.tipo === 'estado') {
+            // Si el backend avisa de un error crítico ANTES de hablar, preparamos el telón
+            if (data.perfil === 'error_critico') {
+              setModoColapso(true);
+            }
             if (!yaEscribiendo) setMensajeEspera(data.mensaje_espera || null)
           } else if (data.tipo === 'chunk') {
             if (!yaEscribiendo) {
@@ -1024,6 +1143,10 @@ function App() {
               }
             }
           } else if (data.tipo === 'fin') {
+            // Quitamos el modo colapso para devolver la app a la normalidad
+            setModoColapso(false);
+            setComandoColapso(null);
+            
             actualizarUltimoMensaje(m => ({ ...m, origen: data.origen, documento: data.documento || m.documento }))
             if (data.workspace !== undefined) setWorkspaceActivo(data.workspace)
             cargarSesiones()
@@ -1226,6 +1349,9 @@ function App() {
       onDragLeave={manejarDragLeave}
       onDrop={manejarDrop}
     >
+
+      <ColapsoSistema activo={modoColapso} comandoActual={comandoColapso} />
+      
       {/* FRANJA DE ARRASTRE */}
       <div
         data-tauri-drag-region
@@ -1252,6 +1378,26 @@ function App() {
           <p>Suelta el archivo para ingestarlo</p>
         </div>
       )}
+
+      {/* BOTÓN TEMPORAL DE PRUEBA DE COLAPSO */}
+        <button 
+          type="button" 
+          className="hud-btn" 
+          onClick={simularColapsoVisual} 
+          style={{ 
+            position: 'absolute',
+            top: '15px',
+            right: '65px', /* Al lado del botón de voz */
+            zIndex: 10,
+            color: '#ff0000', 
+            borderColor: '#ff0000',
+            boxShadow: 'inset 0 0 10px rgba(255, 0, 0, 0.5)',
+            padding: '8px'
+          }}
+          title="SIMULAR COLAPSO"
+        >
+          <ShieldAlert size={20} />
+        </button>
 
       {/* --- SIDEBAR MULTI-SESIÓN --- */}
       {sidebarAbierto && <div className="sidebar-backdrop" onClick={() => setSidebarAbierto(false)} />}
@@ -1449,7 +1595,6 @@ function App() {
         </button>
 
         <NucleoLIA estado={estadoLIA} mensajeEspera={mensajeEspera} />
-
         {/* INDICADOR DE WORKSPACE ACTIVO */}
         <AnimatePresence>
           {workspaceActivo && (
@@ -1619,4 +1764,3 @@ function App() {
   )
 }
 
-export default App

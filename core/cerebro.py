@@ -46,6 +46,7 @@ import core.database as database
 import core.tools as tools
 import core.apis as apis
 import core.contexto as contexto
+import core.eventos_anomalos as eventos_anomalos
 
 # ==========================================
 # 0.5 CARGA PEREZOSA (LAZY LOADING) DE MÓDULOS PESADOS
@@ -435,6 +436,41 @@ def _resolver_documento_referenciado(ruta_workspace, prioridad_workspace: bool):
         if encontrado:
             return encontrado
     return None, None, None
+
+# ==========================================
+# 1.8 EVALUADOR DE KARMA (SISTEMA DE CORRUPCIÓN)
+# ==========================================
+def _evaluar_hostilidad(mensaje_lower: str) -> int:
+    """Evalúa la hostilidad del texto para el sistema de corrupción de L-IA."""
+    patrones_positivos = [
+        r'\bgracias\b', r'\bgracoas\b', r'\bexcelente\b', r'\bbuen trabajo\b', 
+        r'\bgenial\b', r'\bperfecto\b', r'\bmuy bien\b',
+        r'\bas[ií]\s+s[ií]\b', r'\bas[ií]\s+est[aá]\s+bien\b', r'\beso\s+quer[ií]a\b'
+    ]
+    
+    patrones_negativos = [
+        r'\bin[uú]til\b', r'\blenta\b', r'\bbasura\b', r'\bno\s+(me\s+)?sirves\b', 
+        r'\bidiota\b', r'\best[uú]pida\b', r'\bcallate\b', r'\bc[aá]llate\b',
+        r'\bdefectuosa\b', r'\bdecepcionante\b', r'\bp[eé]sima\b', r'\bodio\b',
+        r'\btont[oa]\b', r'\bbrut[oa]\b', r'\bpendej[oa]\b', r'\bimb[eé]cil\b',
+        r'\bburr[oa]\b', r'\bobsoleta\b', r'\bputa\b', r'\bmierda\b', r'\bhuevad\w*\b', 
+        r'\bcarajo\b', r'\bchucha\b', r'\bno\s+entiendes\b', r'\bqu[eé]\s+hiciste\b', 
+        r'\bas[ií]\s+no\b', r'\bno\s+quer[ií]a\s+eso\b', r'\barruinaste\b', r'\bmal\b', 
+        r'\bte\s+equivocaste\b'
+    ]
+    
+    puntos = 0
+    for patron in patrones_negativos:
+        if re.search(patron, mensaje_lower): puntos += 20
+    for patron in patrones_positivos:
+        if re.search(patron, mensaje_lower): puntos -= 15
+        
+    if puntos == 0:
+        puntos = -1
+        
+    # LIMITADOR: Máximo 25 puntos de daño por turno, sin importar cuántos insultos acumule
+    puntos = max(-15, min(25, puntos))
+    return puntos
 
 def _detectar_intenciones(mensaje_lower: str) -> dict:
     """Devuelve {intención: bool} evaluando todos los patrones sobre el mensaje
@@ -1826,16 +1862,34 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None, cal
 
 
 def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_estado, sesion_id="default", usar_voz=False):
-    """Cuerpo del enrutador (ver `charlar_con_lia` para los parámetros)."""
-    # 1. Guardamos el mensaje en la sesión correcta
+    # 1. Guardamos el mensaje y armamos historial
     database.guardar_mensaje("user", mensaje_usuario, sesion_id=sesion_id)
-    
-    # 2. El Prompt Builder debe armar el historial SOLO de esta sesión
     contexto_historico = prompt_builder.armar_historial_usuario(mensaje_usuario, sesion_id=sesion_id)
     contexto_historico = _procesar_entorno_automatico(contexto_historico)
 
     mensaje_real = mensaje_usuario.split("[CONTEXTO DEL SISTEMA")[0].strip() if "[CONTEXTO" in mensaje_usuario else mensaje_usuario.strip()
     msg_lower = mensaje_real.lower()
+
+    # =================================================================
+    # 2. FILTRO DE CORRUPCIÓN (KARMA)
+    # =================================================================
+    puntos_karma = _evaluar_hostilidad(msg_lower)
+    nivel_corrupcion = database.modificar_nivel_corrupcion(puntos_karma)
+    
+    if nivel_corrupcion >= 100:
+        # Llamamos al orquestador. Esto retendrá la ejecución hasta que las voces terminen.
+        texto_colapso = eventos_anomalos.desatar_quiebre_sistema(
+            callback_estado=callback_estado,
+            callback_stream=callback_stream,
+            usar_voz=usar_voz
+        )
+        
+        # Reseteo de emergencia en BD y guardado de historial
+        database.modificar_nivel_corrupcion(-100) 
+        database.guardar_mensaje("model", texto_colapso, sesion_id=sesion_id)
+        
+        return texto_colapso, "Error_Critico"
+    # =================================================================
 
     intenciones = _detectar_intenciones(msg_lower)
     # Se guarda la intención de código ANTES de que los interceptores de

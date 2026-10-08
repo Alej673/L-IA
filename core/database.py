@@ -390,6 +390,50 @@ def construir_contexto_ia(limite_historial=10, sesion_id="default"):
         "historial_reciente": obtener_historial_reciente(limite=limite_historial, sesion_id=sesion_id),
     }
 
+# ============================================================
+# ESTADO PSICOLÓGICO / CORRUPCIÓN
+# ============================================================
+def obtener_nivel_corrupcion():
+    """Devuelve el nivel de corrupción actual (0 a 100). Si no existe, devuelve 0."""
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("SELECT valor FROM memoria_hechos WHERE clave = 'nivel_corrupcion'")
+    fila = cursor.fetchone()
+    conexion.close()
+    
+    if fila and fila["valor"]:
+        try:
+            return int(fila["valor"])
+        except ValueError:
+            return 0
+    return 0
+
+def modificar_nivel_corrupcion(puntos_a_sumar):
+    """
+    Suma o resta puntos a la corrupción de L-IA. 
+    Usa valores negativos para calmarla (ej. -10) y positivos para estresarla (ej. +20).
+    """
+    nivel_actual = obtener_nivel_corrupcion()
+    # Limitamos estrictamente el nivel entre 0 y 100
+    nuevo_nivel = max(0, min(100, nivel_actual + puntos_a_sumar))
+    
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    
+    # Usamos INSERT ON CONFLICT para crearlo si no existe, o actualizarlo si ya existe
+    cursor.execute("""
+        INSERT INTO memoria_hechos (clave, valor, categoria, ultima_actualizacion)
+        VALUES ('nivel_corrupcion', ?, 'estado_emocional', ?)
+        ON CONFLICT(clave) DO UPDATE SET 
+        valor = excluded.valor, 
+        ultima_actualizacion = excluded.ultima_actualizacion
+    """, (str(nuevo_nivel), _ahora()))
+    
+    conexion.commit()
+    conexion.close()
+    print(f"📉 [Estado Psicológico] Corrupción actualizada a: {nuevo_nivel}/100")
+    return nuevo_nivel
+
 if __name__ == "__main__":
     print("--- Base de datos L-IA (SQLite) Compartimentada ---")
     inicializar_base_datos()

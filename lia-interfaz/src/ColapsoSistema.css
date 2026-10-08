@@ -1,0 +1,78 @@
+/* =========================================
+   EVENTO ANÓMALO: COLAPSO DEL SISTEMA
+   ========================================= */
+
+/* Capa de secuestro total */
+.overlay-colapso {
+    position: fixed;
+    top: 0; 
+    left: 0; 
+    width: 100vw; 
+    height: 100vh;
+    background: rgba(1, 10, 15, 0.75); /* Más transparente para dejar ver el fondo */
+    backdrop-filter: blur(12px);       /* Magia: desenfoca el HUD original */
+    -webkit-backdrop-filter: blur(12px);
+    z-index: 9999;
+    pointer-events: all; 
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    overflow: hidden;
+}
+  
+  /* Aberración Cromática (RGB Split) */
+  .glitch-rgb {
+    animation: rgb-split 0.15s infinite alternate;
+  }
+  
+  @keyframes rgb-split {
+    0% { text-shadow: 2px 0px 0px rgba(255,0,0,0.8), -2px 0px 0px rgba(0,255,255,0.8); }
+    50% { text-shadow: -1px 2px 0px rgba(255,0,0,0.8), 1px -1px 0px rgba(0,255,255,0.8); }
+    100% { text-shadow: 3px -1px 0px rgba(255,0,0,0.8), -3px 1px 0px rgba(0,255,255,0.8); }
+  }
+  
+  /* Temblor violento de cámara (Solo se activa con la clase .shake-pantalla) */
+  .shake-pantalla {
+    animation: shake 0.2s cubic-bezier(.36,.07,.19,.97) both infinite;
+  }
+  
+  @keyframes shake {
+    10%, 90% { transform: translate3d(-2px, 0, 0); }
+    20%, 80% { transform: translate3d(3px, 3px, 0); }
+    30%, 50%, 70% { transform: translate3d(-5px, -3px, 0) rotate(-1deg); }
+    40%, 60% { transform: translate3d(5px, 3px, 0) rotate(1deg); }
+  }
+  
+  /* Líneas de escaneo de monitor roto (CRT) */
+  .scanlines::before {
+    content: " ";
+    display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    right: 0;
+    background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.3) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+    z-index: 10000;
+    background-size: 100% 3px, 3px 100%;
+    pointer-events: none;
+    opacity: 0.7;
+  }
+  
+  /* Animación del núcleo falso */
+  .nucleo-falso {
+      animation: latido-roto 0.8s infinite;
+  }
+  
+  @keyframes latido-roto {
+      0%, 100% { transform: scale(1); box-shadow: 0 0 20px rgba(255,0,0,0.5); }
+      50% { transform: scale(1.1); box-shadow: 0 0 60px rgba(255,0,0,0.9); }
+      75% { transform: scale(0.9); box-shadow: 0 0 10px rgba(255,0,0,1); } /* Arritmia */
+  }
+
+@keyframes rgb-split {
+  0%   { filter: drop-shadow(2px 0 0 rgba(255,0,0,0.8)) drop-shadow(-2px 0 0 rgba(0,255,255,0.8)); }
+  50%  { filter: drop-shadow(-1px 2px 0 rgba(255,0,0,0.8)) drop-shadow(1px -1px 0 rgba(0,255,255,0.8)); }
+  100% { filter: drop-shadow(3px -1px 0 rgba(255,0,0,0.8)) drop-shadow(-3px 1px 0 rgba(0,255,255,0.8)); }
+}

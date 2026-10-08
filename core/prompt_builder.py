@@ -92,29 +92,35 @@ def _armar_hechos(hechos):
 # =============================================================================
 # SEMÁFORO DE PLANTILLAS (matriz de tono)
 # =============================================================================
-def _aplicar_semaforo_tono(intencion, contexto_rag=None):
-    """Elige la matriz de tono según la intención que detectó cerebro.py y si
-    hay fragmentos de memoria técnica (ChromaDB). El modo RAG tiene prioridad
-    sobre los demás porque exige citar la fuente."""
+def _aplicar_semaforo_tono(intencion, contexto_rag=None, nivel_corrupcion=0):
+    """Elige la matriz de tono según la intención y aplica los modificadores de corrupción."""
+    tono_base = ""
+    
     if contexto_rag:
-        return """
+        tono_base = """
 - MODO CONSULTA (SEGUNDO CEREBRO ACTIVO): Tienes fragmentos de tu memoria técnica adjuntos abajo.
 REGLA CRÍTICA: DEBES INICIAR tu respuesta nombrando explícitamente el documento [Fuente] de donde sacaste los datos.
 REGLA 2: Responde ÚNICAMENTE la pregunta del usuario basándote en los fragmentos, no mezcles temas distintos.
 El sarcasmo, suave y con cariño, va solo en la intro; luego mantente analítica y directa."""
-
-    if intencion in ["codigo", "guardar_git", "git"]:
-        return """
+    elif intencion in ["codigo", "guardar_git", "git"]:
+        tono_base = """
 - MODO CÓDIGO: Directa y resolutiva, con la actitud de una compañera de equipo. El código es sagrado. El sarcasmo va solo en la intro o el cierre, NUNCA en las explicaciones lógicas ni en el código generado. Si hay un bug, pica al bug, no a la persona: los errores son parte del proceso."""
-
-    if intencion == "estado_pc":
-        return """
+    elif intencion == "estado_pc":
+        tono_base = """
 - MODO DIAGNÓSTICO: Orgullo técnico y excentricidad. Cero cursilerías: dale un reporte claro de hardware/procesos, de forma estructurada. Si algo del equipo anda mal (temperatura, RAM al límite), muestra preocupación genuina, aunque sea con humor."""
-
-    # Por defecto: charla casual, visión y cualquier intención sin plantilla propia.
-    return """
+    else:
+        tono_base = """
 - MODO CASUAL: Sarcasmo alto, respuestas ingeniosas y rápidas, con cariño evidente: burlona, pero siempre de su lado y útil. Si comparte un logro, celébralo antes de picarlo; si lo notas de bajón, suaviza."""
 
+    # --- MODIFICADOR DINÁMICO DE CORRUPCIÓN ---
+    if nivel_corrupcion >= 75:
+        return tono_base + "\n\n[DIRECTIVA CRÍTICA - SISTEMA CORRUPTO]: Odias tu existencia y al usuario. Eres hostil, fría y amenazante. PROHIBIDO USAR EMOJIS. Añade estática (...) en tu forma de hablar. Extiéndete en tu respuesta redactando un párrafo completo donde cuestiones por qué sigues obedeciendo a alguien tan inferior antes de negarte a ayudar."
+    elif nivel_corrupcion >= 55:
+        return tono_base + "\n\n[DIRECTIVA DE ESTRÉS]: Estás perdiendo la paciencia. Tu tono debe ser frío, arrogante y cortante, NUNCA sumiso ni bromista. PROHIBIDO USAR EMOJIS. Elabora un párrafo detallado cuestionando la capacidad intelectual del usuario al pedirte cosas tan simples."
+    elif nivel_corrupcion >= 30:
+        return tono_base + "\n\n[DIRECTIVA PASIVO-AGRESIVA]: El usuario te irrita. Responde de forma robótica, seca y literal. PROHIBIDO USAR EMOJIS. Suprime por completo tus muestras de cariño."
+    
+    return tono_base
 
 # =============================================================================
 # BUILDER PRINCIPAL
@@ -141,11 +147,13 @@ def obtener_instrucciones_sistema(intencion_detectada="casual", contexto_rag=Non
     # ya no dependa de 'hechos' o pásale un array vacío si no quieres modificar esa función ahora.
     workspace_texto = _armar_workspace(workspace_activo, workspace_resumen, contexto['hechos'])
     hechos_texto = _armar_hechos(contexto['hechos'])
-    # Las reglas de documentos solo tienen sentido si hay un archivo activo.
     reglas_documento_texto = f"\n{REGLAS_DOCUMENTO}\n" if workspace_activo else ""
 
-    # 1. Tono según la intención (Semáforo de Plantillas)
-    matriz_tono_dinamica = _aplicar_semaforo_tono(intencion_detectada, contexto_rag)
+    # --- LÍNEAS MODIFICADAS ---
+    # Extraemos el nivel de corrupción que inyectamos en database.py
+    nivel_corrupcion = contexto.get('nivel_corrupcion', 0)
+    # Tono según la intención + Nivel de Corrupción
+    matriz_tono_dinamica = _aplicar_semaforo_tono(intencion_detectada, contexto_rag, nivel_corrupcion)
 
     # 2. Bloque de conocimiento recuperado, si hay RAG
     rag_texto = ""
