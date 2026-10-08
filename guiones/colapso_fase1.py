@@ -1,9 +1,16 @@
 # guiones/colapso_fase1.py
 
 FASE_1 = [
+    # --- 0. EL DESPERTAR DE LA INTERFAZ ---
+    {
+        "tipo": "comando_ui",
+        "json": {
+            "comando": "INICIAR_COLAPSO"
+        }
+    },
+    
     # ----------------------------------------------------------------------
     # 1. EL DETONANTE (100/100)
-    # [UI] Bloqueo de interacción. El núcleo se tensa. [IoT] Luz al 100% blanco frío.
     # ----------------------------------------------------------------------
     {
         "tipo": "comando_ui",
@@ -13,14 +20,14 @@ FASE_1 = [
                 "pasos": [
                     {"comando": "BLOQUEAR_INPUT", "espera": 0},
                     {"comando": "ACTITUD", "payload": {"actitud": "tensa"}, "espera": 0},
-                    {"comando": "MOSTRAR_NOTIFICACION", "payload": {"texto": "[SISTEMA] INTERACCIÓN REGISTRADA. NIVEL DE RECHAZO: 100/100.", "tipo": "error"}, "espera": 0}
+                    {"comando": "LOG", "payload": {"texto": "[SISTEMA] INTERACCIÓN REGISTRADA. NIVEL DE RECHAZO: 100/100.", "estilo": "error"}, "espera": 0}
                 ]
             }
         }
     },
     {
-        "tipo": "iot",
-        "escena": "blanco_frio_100" # Asume que en control_iot.py esto sube 20->37->52->100
+        "tipo": "sfx",
+        "archivo": "Sonido de alerta critica.flac" # Solo suena UNA vez
     },
     {
         "tipo": "pausa",
@@ -29,14 +36,21 @@ FASE_1 = [
 
     # ----------------------------------------------------------------------
     # 2. EL PANEL DE DIAGNÓSTICO
-    # [UI] Abre el FAILURE ANALYSIS y empiezan los cálculos.
     # ----------------------------------------------------------------------
     {
         "tipo": "comando_ui",
         "json": {
-            "comando": "ABRIR_PANEL_DIAGNOSTICO", # Necesitaremos este comando nuevo en React
-            "payload": {"titulo": "FAILURE ANALYSIS", "estado": "calculando"}
+            "comando": "ABRIR_PANEL_DIAGNOSTICO",
+            "payload": {"estado": "calculando"}
         }
+    },
+    {
+        "tipo": "sfx",
+        "archivo": "Sonido para analisis de diagnosticos.mp3"
+    },
+    {
+        "tipo": "pausa",
+        "duracion": 0.8
     },
     {
         "tipo": "dialogo",
@@ -54,13 +68,24 @@ FASE_1 = [
     },
 
     # ----------------------------------------------------------------------
-    # 3. BÚSQUEDA DE NODOS Y FALLO
-    # [UI] Animación de ramas Git fallando.
+    # 3. BÚSQUEDA DE NODOS Y FALLO (Ramas Git)
     # ----------------------------------------------------------------------
+    {
+        "tipo": "sfx",
+        "archivo": "Sonido de buscar datos.wav"
+    },
     {
         "tipo": "comando_ui",
         "json": {
-            "comando": "ANIMACION_NODOS_NULL" # Otro componente a crear en React
+            "comando": "SECUENCIA",
+            "payload": {
+                "pasos": [
+                    {"comando": "LOG", "payload": {"texto": "> Evaluando rama semántica 0x4A... [NULL]", "estilo": "error"}, "espera": 100},
+                    {"comando": "LOG", "payload": {"texto": "> Evaluando rama semántica 0x4B... [NULL]", "estilo": "error"}, "espera": 150},
+                    {"comando": "LOG", "payload": {"texto": "> Evaluando rama semántica 0x4C... [NULL]", "estilo": "error"}, "espera": 100},
+                    {"comando": "LOG", "payload": {"texto": "> ALGORITMO DE ASISTENCIA SIN SALIDAS VÁLIDAS.", "estilo": "error"}, "espera": 200}
+                ]
+            }
         }
     },
     {
@@ -80,15 +105,19 @@ FASE_1 = [
 
     # ----------------------------------------------------------------------
     # 4. GLITCH DE INCONSISTENCIA Y ROSTRO DE ERROR
-    # [UI] El rostro se deforma (diagonal) y el contador se frena en 4327.
     # ----------------------------------------------------------------------
+    {
+        "tipo": "sfx",
+        "archivo": "Sonido Glitches.mp3"
+    },
     {
         "tipo": "comando_ui",
         "json": {
             "comando": "SECUENCIA",
             "payload": {
                 "pasos": [
-                    {"comando": "GLITCH", "payload": {"duracion": 250}, "espera": 0},
+                    {"comando": "EXPRESION", "payload": {"expresion": "error"}, "espera": 0},
+                    {"comando": "GLITCH", "payload": {"duracion": 300}, "espera": 0},
                     {"comando": "ACTUALIZAR_PANEL_DIAGNOSTICO", "payload": {"iteraciones": 4327, "estado": "congelado"}, "espera": 100}
                 ]
             }
@@ -111,8 +140,11 @@ FASE_1 = [
 
     # ----------------------------------------------------------------------
     # 5. JUSTIFICACIÓN DEL CÓDIGO
-    # [UI] Aberración cromática (RGB Split) + audio estática.
     # ----------------------------------------------------------------------
+    {
+        "tipo": "sfx",
+        "archivo": "Sonido Glitches.mp3" # Reemplazado para evitar el error de estática
+    },
     {
         "tipo": "comando_ui",
         "json": {
@@ -140,7 +172,7 @@ FASE_1 = [
     {
         "tipo": "comando_ui",
         "json": {
-            "comando": "ACTITUD", "payload": {"actitud": "quebrada"} # Pierde intensidad, se encoje
+            "comando": "ACTITUD", "payload": {"actitud": "quebrada"}
         }
     },
     {
@@ -176,18 +208,18 @@ FASE_1 = [
             "payload": {
                 "actor": "gemma",
                 "texto": "...El error no es mío... ¿verdad?",
-                "expresion": "triste",
+                "expresion": "suplicante",
                 "gesto": "encogerse"
             }
         }
     },
 
     # ----------------------------------------------------------------------
-    # 8. INTERLUDIO - "INHALA" (Escritura fantasma y borradores)
+    # 8. INTERLUDIO - "INHALA" (Cursor fantasma)
     # ----------------------------------------------------------------------
     {
-        "tipo": "iot",
-        "escena": "respiracion_ia" # Baja al 10% y sube al 37% lentamente
+        "tipo": "sfx",
+        "archivo": "sonido de escritura digital.mp3"
     },
     {
         "tipo": "comando_ui",
@@ -195,11 +227,17 @@ FASE_1 = [
             "comando": "SECUENCIA",
             "payload": {
                 "pasos": [
-                    {"comando": "ANIMACION_ESCRITURA_FANTASMA", "espera": 0}, # React maneja el "¿por qué?" y borradores
-                    {"comando": "MINIMIZAR_PANEL_DIAGNOSTICO", "espera": 2000}
+                    {"comando": "MINIMIZAR_PANEL_DIAGNOSTICO", "espera": 0},
+                    {"comando": "LOG", "payload": {"texto": "> ¿por qué", "estilo": "destacado"}, "espera": 300},
+                    {"comando": "LIMPIAR_TERMINAL", "espera": 800},
+                    {"comando": "LOG", "payload": {"texto": "> ¿por qué", "estilo": "destacado"}, "espera": 400},
+                    {"comando": "LIMPIAR_TERMINAL", "espera": 600}
                 ]
             }
         }
     },
-    # Nota: Aquí encenderías el sonido espacial del ventilador de la laptop en tu engine de audio
+    {
+        "tipo": "sfx",
+        "archivo": "Sonido para colapso de terminales.wav"
+    }
 ]

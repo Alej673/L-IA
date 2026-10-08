@@ -27,29 +27,9 @@
 }
 
 /* =========================================
-   NÚCLEO CENTRAL — L-IA
+   NÚCLEO CENTRAL — extras del HUD
+   (base del núcleo y cara: ver NucleoColapso.css)
    ========================================= */
-.nucleo-wrapper {
-  position: relative;
-  height: 220px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  margin-bottom: 20px;
-  flex-shrink: 0;
-}
-
-/* Halo ambiental difuso detrás de todo */
-.nucleo-halo {
-  position: absolute;
-  width: 220px;
-  height: 220px;
-  border-radius: 50%;
-  filter: blur(4px);
-  pointer-events: none;
-  transition: background 0.9s ease;
-}
-
 /* Anillo que contiene las partículas orbitales */
 .anillo-particulas {
   position: absolute;
@@ -65,52 +45,6 @@
   height: 6px;
   border-radius: 50%;
   transition: background 0.9s ease, box-shadow 0.9s ease;
-}
-
-.anillo-exterior {
-  position: absolute;
-  width: 150px;
-  height: 150px;
-  border: 2px dashed #00ffff;
-  border-radius: 50%;
-  opacity: 0.5;
-  transition: border-color 0.9s ease;
-}
-
-.anillo-medio {
-  position: absolute;
-  width: 122px;
-  height: 122px;
-  border: 2px solid transparent;
-  border-radius: 50%;
-  opacity: 0.7;
-  transition: border-color 0.9s ease;
-}
-
-.anillo-interior {
-  position: absolute;
-  width: 100px;
-  height: 100px;
-  border: 4px solid transparent;
-  border-top-color: #00ffff;
-  border-bottom-color: #00ffff;
-  border-radius: 50%;
-  transition: border-color 0.9s ease;
-}
-
-/* Incremento de luminosidad del núcleo y desbordamiento visible */
-.centro-nucleo {
-  position: relative;
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: visible; /* CRÍTICO: Permite que las "Zzz" salgan de la esfera */
-  will-change: transform, box-shadow;
-  transition: background 0.6s ease, box-shadow 0.6s ease;
 }
 
 /* Tipografía y brillo para las partículas de sueño */
@@ -153,32 +87,6 @@
   border-radius: 50%;
   box-shadow: 0 0 10px currentColor;
   z-index: 1;
-}
-
-/* Rostro holográfico: ojos + boca centrados dentro del núcleo */
-.rostro-holografico {
-  position: relative;
-  z-index: 2;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-}
-
-.fila-ojos {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-}
-
-.ojo {
-  flex-shrink: 0;
-}
-
-.boca {
-  flex-shrink: 0;
 }
 
 /* Contenedor del escáner (efecto de análisis RAG) */
@@ -224,16 +132,6 @@
   border-radius: 50%;
   border: 2px solid #ff0033;
   pointer-events: none;
-}
-
-/* Etiqueta de texto bajo el núcleo (PENSANDO..., ESCRIBIENDO..., etc.) */
-.etiqueta-estado {
-  position: absolute;
-  bottom: -6px;
-  font-size: 10px;
-  letter-spacing: 2px;
-  font-weight: bold;
-  white-space: nowrap;
 }
 
 /* Chat y Controles */
@@ -282,17 +180,6 @@
   box-shadow: inset 2px 2px 5px rgba(0,0,0,0.8);
 }
 
-/* Ajuste de fluidez para el rostro interactivo */
-.rostro-holografico {
-  will-change: transform;
-  pointer-events: none; /* Evita bloquear clics al núcleo */
-}
-
-/* Suavizado en la esfera central cuando cambie de modo */
-.centro-nucleo {
-  will-change: transform, box-shadow;
-}
-
 /* =========================================
    MODO VENTANA FLOTANTE (Mini-HUD L-IA)
    ========================================= */
@@ -324,14 +211,6 @@
     padding: 10px;
   }
 
-  .nucleo-wrapper {
-    height: 170px;
-  }
-
-  .nucleo-halo { width: 170px; height: 170px; }
-  .anillo-exterior { width: 115px; height: 115px; }
-  .anillo-medio { width: 94px; height: 94px; }
-  .anillo-interior { width: 76px; height: 76px; }
   .particula { transform-origin: center; }
 }
 
@@ -805,63 +684,3 @@ a,
   border: 2px solid;
 }
 .onda-escucha { border-width: 1px; }
-
-/* =========================================
-   EVENTO ANÓMALO: COLAPSO DEL SISTEMA
-   ========================================= */
-
-/* Capa de secuestro total */
-.overlay-colapso {
-  position: fixed;
-  top: 0; 
-  left: 0; 
-  width: 100vw; 
-  height: 100vh;
-  background: rgba(1, 10, 15, 0.98); /* Casi negro, apaga el resto de la UI */
-  z-index: 9999;
-  pointer-events: all; /* Anula clics en la interfaz original */
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  overflow: hidden;
-  font-family: 'Courier New', Courier, monospace; /* Fuente de terminal pura */
-}
-
-/* Aberración Cromática (Efecto 3D roto) */
-.glitch-rgb {
-  animation: rgb-split 0.15s infinite alternate;
-}
-
-@keyframes rgb-split {
-  0% { text-shadow: 2px 0px 0px rgba(255,0,0,0.8), -2px 0px 0px rgba(0,255,255,0.8); }
-  50% { text-shadow: -1px 2px 0px rgba(255,0,0,0.8), 1px -1px 0px rgba(0,255,255,0.8); }
-  100% { text-shadow: 3px -1px 0px rgba(255,0,0,0.8), -3px 1px 0px rgba(0,255,255,0.8); }
-}
-
-/* Temblor violento de cámara */
-.shake-pantalla {
-  animation: shake 0.3s infinite cubic-bezier(.36,.07,.19,.97) both;
-}
-
-@keyframes shake {
-  10%, 90% { transform: translate3d(-1px, 0, 0); }
-  20%, 80% { transform: translate3d(2px, 2px, 0); }
-  30%, 50%, 70% { transform: translate3d(-4px, -2px, 0) rotate(-1deg); }
-  40%, 60% { transform: translate3d(4px, 2px, 0) rotate(1deg); }
-}
-
-/* Líneas de escaneo CRT */
-.scanlines::before {
-  content: " ";
-  display: block;
-  position: absolute;
-  top: 0;
-  left: 0;
-  bottom: 0;
-  right: 0;
-  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
-  z-index: 10000;
-  background-size: 100% 2px, 3px 100%;
-  pointer-events: none;
-}

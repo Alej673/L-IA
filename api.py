@@ -30,6 +30,7 @@ from typing import Any, Optional
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi import APIRouter
 from pydantic import BaseModel
 
 from core.cerebro import charlar_con_lia, evento_interrupcion
@@ -41,6 +42,8 @@ import core.voz as voz
 
 from pydantic import BaseModel
 from typing import Optional
+
+import core.eventos_anomalos as eventos_anomalos
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("lia.api")
@@ -251,18 +254,46 @@ def eliminar_sesion_endpoint(sesion_id: str):
 
 @app.post("/chat")
 def recibir_chat(mensaje: MensajeUsuario):
-    entrada = mensaje.texto
+    entrada = mensaje.texto.strip()
     sesion_actual = mensaje.sesion_id  
     logger.info(f"[Usuario | Sesión: {sesion_actual[:8]}] -> {entrada}")
 
+    # ==========================================
+    # 🚨 LA TRAMPA: INTERCEPTOR DE COLAPSO (FASE 1)
+    # ==========================================
+    if entrada == "/run_fase_1":
+        def stream_colapso():
+            # 1. Secuestrar pantalla (Llama a Tauri en React)
+            yield 'data: {"comando": "INICIAR_COLAPSO"}|||\n\n'
+            time.sleep(0.6) # Damos tiempo a Windows para estirar la ventana
+            
+            # 2. Cambiar actitud del núcleo (se vuelve tenso/inestable)
+            yield 'data: {"comando": "ACTITUD", "payload": {"actitud": "tensa"}}|||\n\n'
+            time.sleep(0.5)
+            
+            # 3. Desplegar el panel azul de diagnóstico
+            yield 'data: {"comando": "ABRIR_PANEL_DIAGNOSTICO", "payload": {"estado": "calculando"}}|||\n\n'
+            time.sleep(1.2) # Pausa dramática
+            
+            # 4. Primera línea del guion
+            yield 'data: {"comando": "MOSTRAR_DIALOGO", "payload": {"actor": "gemma", "texto": "Registro de interacción... negativo."}}|||\n\n'
+            time.sleep(2.0)
+            
+            # 5. Cerramos el streaming limpiamente para que React no se quede colgado
+            yield f'data: {json.dumps({"tipo": "fin", "origen": "sistema"})}\n\n'
+            
+        # Retornamos INMEDIATAMENTE. La IA (charlar_con_lia) nunca se entera.
+        return StreamingResponse(stream_colapso(), media_type="text/event-stream")
+
+    # ==========================================
+    # FLUJO NORMAL (Si NO es el detonante)
+    # ==========================================
     threading.Thread(target=renombrar_sesion_silenciosamente, args=(sesion_actual, entrada), daemon=True).start()
     cola_streaming = queue.Queue()
 
-    # Bandera para saber si ya le dijimos al audio que se calle
     ya_respondio = {"estado": False}
 
     def stream_consola(fragmento: str) -> None:
-        # En el momento que suelta la primera letra, apagamos el sonido de pensando
         if not ya_respondio["estado"]:
             import core.voz as voz
             voz.detener_efecto_pensando()
@@ -280,8 +311,6 @@ def recibir_chat(mensaje: MensajeUsuario):
     def hilo_ia():
         try:
             import core.voz as voz
-            
-            # 1. El cerebro empieza a procesar: Encendemos el sonido
             voz.reproducir_efecto("pensando")
             
             respuesta, origen = charlar_con_lia(
@@ -293,8 +322,6 @@ def recibir_chat(mensaje: MensajeUsuario):
                 usar_voz=mensaje.usar_voz 
             )
 
-            # 2. Por seguridad, apagamos el sonido al terminar 
-            # (en caso de que la respuesta haya estado vacía)
             voz.detener_efecto_pensando()
 
             doc_activo = None
@@ -307,12 +334,10 @@ def recibir_chat(mensaje: MensajeUsuario):
             cola_streaming.put({"tipo": "fin", "origen": origen, "documento": doc_activo, "workspace": nombre_workspace})
         except Exception as e:
             import core.voz as voz
-            voz.detener_efecto_pensando() # Apagamos si hay error
+            voz.detener_efecto_pensando() 
             cola_streaming.put({"tipo": "error", "texto": str(e)})
 
     threading.Thread(target=hilo_ia, daemon=True).start()
-
-    # ... (El resto de la función generador_sse sigue normal hacia abajo)
 
     def generador_sse():
         while True:
@@ -325,6 +350,7 @@ def recibir_chat(mensaje: MensajeUsuario):
                 break
 
     return StreamingResponse(generador_sse(), media_type="text/event-stream")
+
 # ---------------------------------------------------------------------------
 # Endpoint para el Lector de Pantalla (Edge TTS)
 # ---------------------------------------------------------------------------
@@ -418,3 +444,54 @@ def daemon_escucha_activa():
             time.sleep(2)
 
 threading.Thread(target=daemon_escucha_activa, daemon=True).start()
+
+# Endpoint oculto solo para tu botón de pruebas
+
+# Pon esta variable global al inicio de tu api.py
+evento_colapso_activo = False
+
+@app.post("/debug/forzar_fase_1")
+def disparar_evento_anomalo():
+    global evento_colapso_activo
+    
+    # Si ya está corriendo, ignoramos el clic
+    if evento_colapso_activo:
+        return {"status": "ignorado", "mensaje": "Ya está en curso"}
+        
+    evento_colapso_activo = True
+    cola_streaming = queue.Queue()
+
+    def enviar_a_react(comando_dict: dict):
+        if comando_dict:
+            trama = f"data: {json.dumps(comando_dict)}|||\n\n"
+            cola_streaming.put(trama)
+
+    def hilo_orquestador():
+        global evento_colapso_activo
+        try:
+            eventos_anomalos.desatar_fase_1(
+                callback_estado=None, 
+                callback_ui=enviar_a_react, 
+                usar_voz=True
+            )
+            cola_streaming.put(f"data: {json.dumps({'tipo': 'fin', 'origen': 'sistema'})}\n\n")
+        except Exception as e:
+            print(f"[Error Orquestador]: {e}")
+            cola_streaming.put(f"data: {json.dumps({'tipo': 'error', 'texto': str(e)})}\n\n")
+        finally:
+            # Liberamos el candado cuando termine o falle
+            evento_colapso_activo = False
+
+    threading.Thread(target=hilo_orquestador, daemon=True).start()
+    # ... (resto de tu generador_sse) ...
+
+    # Generador que consume la cola y la envía por red a React
+    def generador_sse():
+        while True:
+            item = cola_streaming.get()
+            yield item
+            # Si llegó el mensaje de fin o error, cortamos el streaming
+            if '"tipo": "fin"' in item or '"tipo": "error"' in item:
+                break
+
+    return StreamingResponse(generador_sse(), media_type="text/event-stream")

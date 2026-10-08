@@ -18,15 +18,15 @@
         "height": 700,
         "resizable": false,
         "decorations": false,
-        "transparent": true
+        "transparent": false  
       },
       {
         "label": "overlay_virus",
         "title": "CRITICAL_FAILURE",
         "url": "/",
-        "fullscreen": false,
+        "fullscreen": true,
         "maximized": true,
-        "transparent": true,
+        "transparent": false, 
         "decorations": false,
         "alwaysOnTop": true,
         "visible": false,

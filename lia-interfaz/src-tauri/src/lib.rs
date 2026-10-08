@@ -9,21 +9,35 @@ use std::str::FromStr;
 
 #[tauri::command]
 fn activar_modo_invasivo(app: tauri::AppHandle) {
-    // Busca la segunda ventana y la hace visible
-    if let Some(overlay) = app.get_webview_window("overlay_virus") {
-        overlay.show().unwrap();
-        overlay.set_focus().unwrap();
+    if let Some(main_window) = app.get_webview_window("main") {
+        let _ = main_window.set_resizable(true);
+        // Pequeño respiro para que Windows asimile el cambio de resizable
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let _ = main_window.set_fullscreen(true);
+        let _ = main_window.set_always_on_top(true);
     }
+
+    // 🛑 APAGAMOS EL FANTASMA TEMPORALMENTE
+    // if let Some(overlay) = app.get_webview_window("overlay_virus") {
+    //     let _ = overlay.set_resizable(true);
+    //     let _ = overlay.set_fullscreen(true);
+    //     let _ = overlay.show();
+    // }
 }
 
 #[tauri::command]
 fn restaurar_ventana(app: tauri::AppHandle) {
-    // Esconde los errores y L-IA sigue intacta en su ventana principal
-    if let Some(overlay) = app.get_webview_window("overlay_virus") {
-        overlay.hide().unwrap();
+    if let Some(main_window) = app.get_webview_window("main") {
+        let _ = main_window.set_fullscreen(false);
+        let _ = main_window.set_always_on_top(false);
+        let _ = main_window.set_resizable(false);
     }
+    
+    // 🛑 APAGAMOS EL FANTASMA TEMPORALMENTE
+    // if let Some(overlay) = app.get_webview_window("overlay_virus") {
+    //     let _ = overlay.hide();
+    // }
 }
-
 // ------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

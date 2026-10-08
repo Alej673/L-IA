@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import './App.css'
+import './NucleoColapso.css'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { Mic, Paperclip, Terminal, Cpu, Database, Upload, AlertTriangle, Activity, ShieldAlert, MessageSquare, Plus, Folder, Pencil, Trash2, Check, X, Menu, Volume2, VolumeX } from 'lucide-react'
@@ -799,20 +800,69 @@ export default function App() {
   const [comandoColapso, setComandoColapso] = useState(null);
 
   // ==========================================
-  // BOTÓN DEBUG: LLAMAR AL GUION DE PYTHON--eliminar despues
+  // BOTÓN DEBUG: LLAMAR AL GUION DE FORMA SILENCIOSA-ELIMINAR DESPUES DE PRUEBAS
   // ==========================================
   const simularColapsoVisual = async () => {
-    // 1. Oscurecemos la pantalla real al instante
-    setModoColapso(true);
-    await invoke('activar_modo_invasivo').catch(console.error);
+    // EL BOTÓN SOLO HACE LA PETICIÓN. CERO CAMBIOS VISUALES AQUÍ.
+    try {
+      const respuesta = await fetch(`${API}/debug/forzar_fase_1`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
 
-    // 2. Le damos a Windows medio segundo para estirar la ventana
-    await new Promise(r => setTimeout(r, 600));
+      if (!respuesta.ok || !respuesta.body) throw new Error(`HTTP ${respuesta.status}`);
 
-    // 3. ¡Lanzamos el detonante a Python!
-    // Usamos un comando secreto que tu backend reconocerá
-    enviarOrden('/run_fase_1'); 
+      const reader = respuesta.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const partes = buffer.split('\n\n');
+        buffer = partes.pop();
+
+        for (const parte of partes) {
+          if (!parte.startsWith('data: ')) continue;
+          
+          if (parte.endsWith('|||')) {
+            try {
+              const jsonStr = parte.slice(6, -3); 
+              const trigger = JSON.parse(jsonStr);
+              setComandoColapso(trigger);
+
+              // 👉 AQUÍ OCURRE LA MAGIA DIRIGIDA POR PYTHON
+              if (trigger.comando === 'INICIAR_COLAPSO') {
+                setModoColapso(true); // 1. Muestra el componente rojo
+                invoke('activar_modo_invasivo').catch(console.error); // 2. Secuestra el monitor
+              }
+              else if (trigger.comando === 'RESTAURAR_SISTEMA') {
+                invoke('restaurar_ventana').catch(console.error);
+                setModoColapso(false);
+              }
+            } catch (e) {
+              console.error("Error parseando trigger anómalo", e);
+            }
+          } else {
+            // Atrapamos el fin de la película para soltar la pantalla
+            try {
+              const data = JSON.parse(parte.slice(6));
+              if (data.tipo === 'fin' || data.tipo === 'error') {
+                invoke('restaurar_ventana').catch(console.error);
+                setModoColapso(false);
+                setComandoColapso({ comando: 'RESET' });
+              }
+            } catch (e) {}
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error en el canal silencioso:", error);
+    }
   };
+
   // Multi-sesión
   const [sesiones, setSesiones] = useState([])
   const [sesionActual, setSesionActual] = useState('default')
