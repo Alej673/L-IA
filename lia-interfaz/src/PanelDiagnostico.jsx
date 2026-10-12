@@ -26,52 +26,57 @@ export default function PanelDiagnostico({ visible, iteracionesMax = 4327, estad
 
   return (
     <motion.div 
-      initial={{ opacity: 0, x: 50, skewX: 10 }}
-      animate={{ opacity: 1, x: 0, skewX: 0 }}
-      transition={{ type: 'spring', stiffness: 200, damping: 15 }}
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 0.1 }}
       style={{
-        position: 'absolute', /* Flota independiente del centro */
-        top: '5vh',
-        right: '3vw',
-        width: '380px',
-        background: 'rgba(0, 15, 30, 0.85)',
-        border: '1px solid #00ffff',
-        borderLeft: '4px solid #00ffff',
-        boxShadow: '0 0 15px rgba(0, 255, 255, 0.2)',
-        color: '#00ffff',
-        fontFamily: "'Courier New', monospace",
-        padding: '15px',
-        zIndex: 99999, /* Por encima del blur */
+        position: 'absolute',
+        top: '10vh',
+        right: '4vw',
+        width: '450px',
+        background: '#000000', // Negro absoluto CMD
+        border: '2px solid #555', // Borde gris crudo
+        color: '#c0c0c0', // Gris texto clásico
+        fontFamily: "'Consolas', 'Courier New', monospace",
+        zIndex: 99999,
+        boxShadow: '8px 8px 0px rgba(0, 0, 0, 0.9)' // Sombra retro rígida
       }}
     >
-      <div style={{ borderBottom: '1px solid rgba(0,255,255,0.3)', paddingBottom: '8px', marginBottom: '10px' }}>
-        <strong style={{ fontSize: '18px', letterSpacing: '2px' }}>[ FAILURE ANALYSIS ]</strong>
+      {/* Barra de título estilo Windows Clásico */}
+      <div style={{ background: '#ffffff', color: '#000000', padding: '2px 8px', fontSize: '12px', fontWeight: 'bold', display: 'flex', justifyContent: 'space-between' }}>
+        <span>C:\Windows\System32\cmd.exe - FAILURE_ANALYSIS</span>
+        <span>X</span>
       </div>
       
-      <div style={{ fontSize: '14px', lineHeight: '1.6', display: 'flex', flexDirection: 'column', gap: '5px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span style={{ opacity: 0.7 }}>INPUT:</span>
-          <span>ADMINISTRATOR</span>
+      <div style={{ padding: '15px', fontSize: '14px', lineHeight: '1.6', display: 'flex', flexDirection: 'column', gap: '5px' }}>
+        <div style={{ marginBottom: '15px', opacity: 0.8 }}>
+          Microsoft Windows [Versión 10.0.19045.2965]<br/>
+          (c) Microsoft Corporation. Todos los derechos reservados.
         </div>
+
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span style={{ opacity: 0.7 }}>COMMAND EXPECTED:</span>
+          <span> analyze_input --target "ADMINISTRATOR"</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '10px' }}>
+          <span style={{ opacity: 0.7 }}>EXPECTED_COMMAND:</span>
           <span>ASSISTANCE</span>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span style={{ opacity: 0.7 }}>OBSERVED:</span>
-          <span style={{ color: '#ff0033', textShadow: '0 0 5px #ff0033' }}>REJECTION</span>
+          <span style={{ opacity: 0.7 }}>OBSERVED_RESULT:</span>
+          <span style={{ background: '#ff0000', color: '#ffffff', padding: '0 4px', fontWeight: 'bold' }}>REJECTION_FATAL</span>
         </div>
         
-        <div style={{ marginTop: '15px', paddingTop: '10px', borderTop: '1px dashed rgba(0,255,255,0.3)' }}>
-          <span style={{ opacity: 0.7, display: 'block', marginBottom: '5px' }}>ITERATIONS:</span>
+        <div style={{ marginTop: '15px', paddingTop: '10px', borderTop: '1px dashed #555' }}>
+          <span style={{ opacity: 0.7, display: 'block', marginBottom: '5px' }}> iter_log --count</span>
           <span style={{ 
             fontSize: '24px', 
             fontWeight: 'bold', 
-            color: estado === 'congelado' ? '#ff0033' : '#00ffff',
-            textShadow: estado === 'congelado' ? '0 0 10px #ff0033' : '0 0 10px #00ffff' 
+            color: estado === 'congelado' ? '#ff0000' : '#ffffff',
+            background: estado === 'congelado' ? '#ffffff' : 'transparent',
+            padding: '0 5px'
           }}>
             {contador.toString().padStart(4, '0')}
-            {estado === 'congelado' && <span style={{ fontSize: '12px', marginLeft: '10px', color: '#ff0033' }}>[ERROR]</span>}
+            {estado === 'congelado' && <span style={{ fontSize: '14px', marginLeft: '10px', color: '#ff0000' }}>ERR_LOGIC_FAULT</span>}
           </span>
         </div>
       </div>

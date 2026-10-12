@@ -246,6 +246,8 @@ export default function ColapsoSistema({ activo, comandoActual }) {
   const [panelVisible, setPanelVisible] = useState(false)
   const [panelEstado, setPanelEstado] = useState('calculando')
   const [panelIteraciones, setPanelIteraciones] = useState(4327)
+  const [panelFase, setPanelFase] = useState('analisis')
+  const [panelDegradacion, setPanelDegradacion] = useState(0)
 
   const controles = useAnimation()
   const terminalRef = useRef(null)
@@ -286,6 +288,7 @@ export default function ColapsoSistema({ activo, comandoActual }) {
     setEfectos({}); setFlash(null); setGrietas(0); setBsod(null)
     setToasts([]); setVentanas([]); setPaleta(null); setCopias('ninguna')
     setPanelVisible(false); setFase('inicio'); setGlitchActivo(false)
+    setPanelDegradacion(0); setPanelFase('analisis')
     if (typeof document !== 'undefined') document.title = tituloOriginal.current
   }, [])
 
@@ -456,10 +459,13 @@ export default function ColapsoSistema({ activo, comandoActual }) {
       }
       case 'LIMPIAR_TERMINAL': setLineas([]); break
       case 'ABRIR_PANEL_DIAGNOSTICO':
-        setPanelVisible(true); setPanelEstado(p.estado || 'calculando'); break
+        setPanelFase(p.fase || 'analisis'); setPanelEstado(p.estado || 'calculando')
+        setPanelVisible(true); break
       case 'ACTUALIZAR_PANEL_DIAGNOSTICO':
         if (p.iteraciones) setPanelIteraciones(p.iteraciones)
         if (p.estado) setPanelEstado(p.estado)
+        if (p.fase) setPanelFase(p.fase)
+        if (p.degradacion !== undefined) setPanelDegradacion(p.degradacion)
         break
       case 'MINIMIZAR_PANEL_DIAGNOSTICO': setPanelVisible(false); break
 
@@ -596,7 +602,8 @@ export default function ColapsoSistema({ activo, comandoActual }) {
         })}
       </div>
 
-      <PanelDiagnostico estado={panelEstado} iteracionesMax={panelIteraciones} visible={panelVisible} />
+      <PanelDiagnostico estado={panelEstado} iteracionesMax={panelIteraciones}
+      visible={panelVisible} fase={panelFase} degradacion={panelDegradacion} />
 
       {/* Ventanas falsas en cascada */}
       {ventanas.map(w => {

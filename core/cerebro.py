@@ -1853,6 +1853,10 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None, cal
             usar_voz=usar_voz
         )
     except Exception as e:
+        # 👇 SALVOCONDUCTO PARA EL COLAPSO ORGÁNICO
+        if str(e) == "TRIGGER_COLAPSO_FASE_1":
+            raise e
+            
         traceback.print_exc()
         return _reportar_error(f"❌ Error inesperado en el Cerebro: {e}", callback_stream), "Error"
 
@@ -1877,18 +1881,12 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     nivel_corrupcion = database.modificar_nivel_corrupcion(puntos_karma)
     
     if nivel_corrupcion >= 100:
-        # Llamamos al orquestador. Esto retendrá la ejecución hasta que las voces terminen.
-        texto_colapso = eventos_anomalos.desatar_quiebre_sistema(
-            callback_estado=callback_estado,
-            callback_stream=callback_stream,
-            usar_voz=usar_voz
-        )
-        
-        # Reseteo de emergencia en BD y guardado de historial
+        # 1. Reseteo de emergencia en BD para que no quede atascado en 100
         database.modificar_nivel_corrupcion(-100) 
-        database.guardar_mensaje("model", texto_colapso, sesion_id=sesion_id)
         
-        return texto_colapso, "Error_Critico"
+        # 2. Cortamos el flujo de la IA normal y lanzamos la señal que atrapará api.py
+        raise Exception("TRIGGER_COLAPSO_FASE_1")
+    # =================================================================
     # =================================================================
 
     intenciones = _detectar_intenciones(msg_lower)

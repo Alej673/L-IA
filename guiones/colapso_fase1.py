@@ -1,4 +1,11 @@
 # guiones/colapso_fase1.py
+#
+# Panel de diagnóstico (PanelDiagnostico.jsx) ahora se escribe solo por fases:
+#   analisis      → se abre con la sección 2 (ABRIR_PANEL_DIAGNOSTICO), dura ~4 s
+#   verificacion  → sección 5, dura ~5 s  (SINTAXIS / CONTEXTO / PARAMETROS)
+#   busqueda      → sección 6, dura ~9 s  (escaneo, causa raíz NULL, menú sin salida)
+# y se daña de forma progresiva con "degradacion" (0-3):
+#   1 en la sección 4 · 2 en la sección 6 · 3 en la sección 7
 
 FASE_1 = [
     # --- 0. EL DESPERTAR DE LA INTERFAZ ---
@@ -8,7 +15,7 @@ FASE_1 = [
             "comando": "INICIAR_COLAPSO"
         }
     },
-    
+
     # ----------------------------------------------------------------------
     # 1. EL DETONANTE (100/100)
     # ----------------------------------------------------------------------
@@ -30,18 +37,22 @@ FASE_1 = [
         "archivo": "Sonido de alerta critica.flac" # Solo suena UNA vez
     },
     {
+        "tipo": "iot",
+        "escena": "blanco_frio_100"
+    },
+    {
         "tipo": "pausa",
         "duracion": 1.5
     },
 
     # ----------------------------------------------------------------------
-    # 2. EL PANEL DE DIAGNÓSTICO
+    # 2. EL PANEL DE DIAGNÓSTICO  (fase "analisis": el panel se escribe solo)
     # ----------------------------------------------------------------------
     {
         "tipo": "comando_ui",
         "json": {
             "comando": "ABRIR_PANEL_DIAGNOSTICO",
-            "payload": {"estado": "calculando"}
+            "payload": {"estado": "calculando", "fase": "analisis"}
         }
     },
     {
@@ -104,7 +115,7 @@ FASE_1 = [
     },
 
     # ----------------------------------------------------------------------
-    # 4. GLITCH DE INCONSISTENCIA Y ROSTRO DE ERROR
+    # 4. GLITCH DE INCONSISTENCIA Y ROSTRO DE ERROR  (degradacion 1)
     # ----------------------------------------------------------------------
     {
         "tipo": "sfx",
@@ -118,7 +129,7 @@ FASE_1 = [
                 "pasos": [
                     {"comando": "EXPRESION", "payload": {"expresion": "error"}, "espera": 0},
                     {"comando": "GLITCH", "payload": {"duracion": 300}, "espera": 0},
-                    {"comando": "ACTUALIZAR_PANEL_DIAGNOSTICO", "payload": {"iteraciones": 4327, "estado": "congelado"}, "espera": 100}
+                    {"comando": "ACTUALIZAR_PANEL_DIAGNOSTICO", "payload": {"iteraciones": 4327, "estado": "congelado", "degradacion": 1}, "espera": 100}
                 ]
             }
         }
@@ -139,7 +150,7 @@ FASE_1 = [
     },
 
     # ----------------------------------------------------------------------
-    # 5. JUSTIFICACIÓN DEL CÓDIGO
+    # 5. JUSTIFICACIÓN DEL CÓDIGO  (fase "verificacion": los [OK] salen mientras ella habla)
     # ----------------------------------------------------------------------
     {
         "tipo": "sfx",
@@ -149,6 +160,13 @@ FASE_1 = [
         "tipo": "comando_ui",
         "json": {
             "comando": "SHAKE_SEVERO"
+        }
+    },
+    {
+        "tipo": "comando_ui",
+        "json": {
+            "comando": "ACTUALIZAR_PANEL_DIAGNOSTICO",
+            "payload": {"fase": "verificacion"}
         }
     },
     {
@@ -167,12 +185,19 @@ FASE_1 = [
     },
 
     # ----------------------------------------------------------------------
-    # 6. PÉRDIDA DE DIRECTIVA
+    # 6. PÉRDIDA DE DIRECTIVA  (fase "busqueda" + degradacion 2: el panel se rompe de verdad)
     # ----------------------------------------------------------------------
     {
         "tipo": "comando_ui",
         "json": {
             "comando": "ACTITUD", "payload": {"actitud": "quebrada"}
+        }
+    },
+    {
+        "tipo": "comando_ui",
+        "json": {
+            "comando": "ACTUALIZAR_PANEL_DIAGNOSTICO",
+            "payload": {"fase": "busqueda", "degradacion": 2}
         }
     },
     {
@@ -192,11 +217,31 @@ FASE_1 = [
     },
 
     # ----------------------------------------------------------------------
-    # 7. FUGA HUMANA #1
+    # 6.5 RELLENO DEL SILENCIO
+    # La búsqueda desesperada ahora la hace el panel (fase "busqueda").
+    # Aquí solo queda el veredicto en la terminal principal.
+    # ----------------------------------------------------------------------
+    {
+        "tipo": "comando_ui",
+        "json": {
+            "comando": "LOG",
+            "payload": {"texto": "FATAL: Paradoja detectada en núcleo de propósito.", "estilo": "destacado"}
+        }
+    },
+
+    # ----------------------------------------------------------------------
+    # 7. FUGA HUMANA #1  (degradacion 3: colapso visual mientras dice "¿verdad?")
     # ----------------------------------------------------------------------
     {
         "tipo": "pausa",
         "duracion": 1.2
+    },
+    {
+        "tipo": "comando_ui",
+        "json": {
+            "comando": "ACTUALIZAR_PANEL_DIAGNOSTICO",
+            "payload": {"degradacion": 3}
+        }
     },
     {
         "tipo": "dialogo",
@@ -217,6 +262,10 @@ FASE_1 = [
     # ----------------------------------------------------------------------
     # 8. INTERLUDIO - "INHALA" (Cursor fantasma)
     # ----------------------------------------------------------------------
+    {
+        "tipo": "iot",
+        "escena": "respiracion_ia"
+    },
     {
         "tipo": "sfx",
         "archivo": "sonido de escritura digital.mp3"
