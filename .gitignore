@@ -13,9 +13,6 @@ __pycache__/
 captura_temp.png
 captura_temp.jpg
 
-*.jpg
-*.jpeg
-*.png
 *.gif
 *.mp3
 *.wav

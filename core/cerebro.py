@@ -1443,18 +1443,25 @@ def _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=None)
 
 
 def _ejecutar_guardado_git(msg_lower, callback_ui=None):
-    # Se pasa msg_lower en ambos argumentos para no alterar la firma requerida por charlar_con_lia
     ruta = _resolver_proyecto_activo(msg_lower, msg_lower)
+    
+    # Fallback de seguridad absoluto antes de interactuar con el SO
+    if not ruta:
+        ruta = os.getcwd()
+        
     print(f"\n🧠 [L-IA analizando código en '{ruta}' para crear el commit...]")
 
     try:
-        status = subprocess.run(['git', 'status', '--short'], cwd=ruta, capture_output=True, text=True, encoding='utf-8').stdout
+        proc_status = subprocess.run(['git', 'status', '--short'], cwd=ruta, capture_output=True, text=True, encoding='utf-8')
+        status = proc_status.stdout if proc_status.stdout else ""
 
         if not status.strip():
             return f"Alejandro, revisé la carpeta {ruta} y no hay ningún cambio para guardar."
 
-        diff = subprocess.run(['git', 'diff', 'HEAD'], cwd=ruta, capture_output=True, text=True, encoding='utf-8').stdout
+        proc_diff = subprocess.run(['git', 'diff', 'HEAD'], cwd=ruta, capture_output=True, text=True, encoding='utf-8')
+        diff = proc_diff.stdout if proc_diff.stdout else ""
 
+        # Corte seguro: diff ahora siempre es un string, incluso si está vacío.
         contexto_git = f"ESTADO DE ARCHIVOS:\n{status}\n\nDIFERENCIAS DE CÓDIGO:\n{diff[:1500]}"
     except Exception as e:
         return f"Error leyendo el estado de Git: {e}"
