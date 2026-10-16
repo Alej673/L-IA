@@ -9,7 +9,7 @@ import { motion, AnimatePresence, useDragControls, useMotionValue, useTransform 
 import ColapsoSistema from './ColapsoSistema'
 import { invoke } from '@tauri-apps/api/core';
 
-const API = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000'
+const API = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:10500'
 
 // Extensiones que el backend sabe leer (ajústalas a tu /ingestar)
 const EXTENSIONES_VALIDAS = ['txt', 'md', 'py', 'js', 'php', 'html', 'css', 'json', 'docx', 'pdf', 'pptx', 'xlsx']
