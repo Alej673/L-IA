@@ -38,6 +38,7 @@ import time
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional
+import subprocess
 
 import ollama
 from fastapi import FastAPI, HTTPException
@@ -63,6 +64,18 @@ INACTIVIDAD_RAM_SEGUNDOS = 300            # 5 min sin uso -> se descarga el mode
 INTERVALO_VIGILANTE_SEGUNDOS = 30         # cada cuánto revisa el centinela
 TRIGGER_COLAPSO = "TRIGGER_COLAPSO_FASE_1"
 
+# ---------------------------------------------------------------------------
+# Ecosistema de Microservicios (Go)
+# ---------------------------------------------------------------------------
+# Diccionario maestro. Para agregar futuros microservicios, solo añádelos aquí.
+# ---------------------------------------------------------------------------
+# Ecosistema de Microservicios (Go)
+# ---------------------------------------------------------------------------
+MICROSERVICIOS_GO = {
+    "motor_go_principal": "sensor.exe",  # <- Ahora maneja Hardware y Git
+    # "buscador": "scanner.exe"          <- Solo si mañana creamos un .exe DISTINTO
+}
+procesos_activos_go = []
 
 # ---------------------------------------------------------------------------
 # Modelos Pydantic
@@ -269,6 +282,47 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------------------------------------------------------------------
+# Inicialización de la app (los daemons arrancan en el lifespan)
+# ---------------------------------------------------------------------------
+_detener_daemons = threading.Event()
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    global procesos_activos_go
+    
+    # 1. ORQUESTAR ARRANQUE DE GO
+    directorio_microservicios = os.path.join(os.path.dirname(__file__), "..", "microservicios")
+    
+    for nombre, ejecutable in MICROSERVICIOS_GO.items():
+        ruta_exe = os.path.join(directorio_microservicios, ejecutable)
+        if os.path.exists(ruta_exe):
+            try:
+                # creationflags=0x08000000 ejecuta en modo silencioso (sin ventana de terminal en Windows)
+                proc = subprocess.Popen([ruta_exe], creationflags=0x08000000)
+                procesos_activos_go.append({"nombre": nombre, "proceso": proc})
+                logger.info("[Orquestador] Microservicio Go '%s' iniciado en segundo plano.", nombre)
+            except Exception as e:
+                logger.error("[Orquestador] Falló el inicio de '%s': %s", nombre, e)
+        else:
+            logger.warning("[Orquestador] Omitiendo '%s': No se encontró el ejecutable en %s", nombre, ruta_exe)
+
+    # 2. INICIAR DAEMONS ORIGINALES DE PYTHON
+    _detener_daemons.clear()
+    threading.Thread(target=daemon_escucha_activa, args=(_detener_daemons,), daemon=True).start()
+    threading.Thread(target=vigilante_ram.correr, args=(_detener_daemons,), daemon=True).start()
+    yield
+    
+    # 3. APAGAR TODO EL ECOSISTEMA (Python y Go) AL CERRAR L-IA
+    _detener_daemons.set()
+    
+    for servicio in procesos_activos_go:
+        try:
+            servicio["proceso"].terminate()
+            logger.info("[Orquestador] Microservicio Go '%s' detenido limpiamente.", servicio["nombre"])
+        except Exception as e:
+            logger.error("[Orquestador] Error al detener '%s': %s", servicio["nombre"], e)
+    procesos_activos_go.clear()
 
 # ---------------------------------------------------------------------------
 # Utilidades compartidas

@@ -545,68 +545,53 @@ def leer_archivo_local(ruta_archivo: str, busqueda_automatica=False):
     except Exception as e:
         return {"error": f"Error de lectura: {e}"}
 
-
 def obtener_estado_sistema() -> str:
     """
-    Lee los sensores de hardware de la laptop usando psutil.
-    Cada sección se evalúa de forma independiente: si una falla,
-    las demás igual se reportan (antes, un solo error tumbaba
-    todo el reporte).
+    Herramienta de Nivel 0.
+    Consulta al microservicio en Go (puerto 10001) y tonifica la respuesta para L-IA.
     """
-    partes = []
-
-    # 1. CPU
     try:
-        cpu_percent = psutil.cpu_percent(interval=1)
-        partes.append(f"CPU Uso: {cpu_percent}%")
+        # 1. Petición ultra rápida al microservicio de Go
+        respuesta = requests.get("http://localhost:10510/sistema", timeout=2)
+        datos = respuesta.json()
+        
+        cpu = datos.get('cpu', 'Desconocido')
+        ram = datos.get('ram', 'Desconocido')
+        top_apps = datos.get('top_apps', 'Desconocido')
+        
+        # 2. Construir el reporte base frío
+        reporte = f"Uso de CPU: {cpu} | Uso de RAM: {ram} | Top Apps: {top_apps}"
+        
+        # 3. Tonificación (Inyección de contexto cognitivo)
+        # Extraemos el porcentaje de RAM de la cadena (ej. "96.0%")
+        match = re.search(r'\((\d+(\.\d+)?)%\)', ram)
+        if match:
+            porcentaje_ram = float(match.group(1))
+            
+            if porcentaje_ram > 85.0:
+                reporte += (
+                    "\n\n[DIRECTIVA INTERNA: Obligatorio: Primero dicta exactamente el % de CPU y los GB de RAM total usada. "
+                    "Segundo, menciona TODAS las aplicaciones del Top 3, no solo a ti misma (llama-server). "
+                    "Solo después de dar los datos técnicos precisos, puedes usar tu sarcasmo habitual para quejarte "
+                    "del nivel crítico de memoria y sugerir cerrar algo.]"
+                )
+            elif porcentaje_ram < 50.0:
+                reporte += (
+                    "\n\n[DIRECTIVA INTERNA PARA L-IA: El sistema está muy holgado de memoria. "
+                    "Puedes mencionar que estás relajada y tienes espacio de sobra para procesar.]"
+                )
+        
+        return reporte
+
+    except requests.exceptions.ConnectionError:
+        return (
+            "[DIRECTIVA ESTRICTA Y OBLIGATORIA: Tus sensores de hardware están APAGADOS. "
+            "Avisa a Alejandro con tu tono habitual que el microservicio en Go está desconectado "
+            "y exígele que inicie 'sensor.exe'. ESTÁ TOTALMENTE PROHIBIDO mencionar, inventar o justificar "
+            "datos de RAM, CPU o aplicaciones como llama-server. Termina tu respuesta inmediatamente.]"
+        )
     except Exception as e:
-        partes.append(f"CPU Uso: Error ({e})")
-
-    # 2. RAM
-    try:
-        ram = psutil.virtual_memory()
-        ram_total = round(ram.total / (1024**3), 2)
-        ram_usada = round(ram.used / (1024**3), 2)
-        partes.append(f"RAM Uso: {ram_usada}GB de {ram_total}GB ({ram.percent}%)")
-    except Exception as e:
-        partes.append(f"RAM Uso: Error ({e})")
-
-    # 3. Batería
-    try:
-        bateria_info = "No detectada"
-        if hasattr(psutil, "sensors_battery"):
-            bateria = psutil.sensors_battery()
-            if bateria:
-                estado_enchufe = "Conectada a la corriente" if bateria.power_plugged else "Usando batería"
-                bateria_info = f"{bateria.percent}% ({estado_enchufe})"
-        partes.append(f"Batería: {bateria_info}")
-    except Exception as e:
-        partes.append(f"Batería: Error ({e})")
-
-    # 4. Top 3 procesos que más RAM consumen
-    try:
-        procesos = []
-        for proc in psutil.process_iter(['name', 'memory_percent']):
-            try:
-                info = proc.info
-                if info.get('memory_percent'):
-                    procesos.append(info)
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-            except Exception:
-                # Cualquier otro proceso "raro" del sistema se ignora,
-                # en vez de tumbar todo el reporte.
-                continue
-
-        procesos = sorted(procesos, key=lambda p: p['memory_percent'], reverse=True)[:3]
-        top_apps = ", ".join(
-            f"{p['name']} ({round(p['memory_percent'], 1)}%)" for p in procesos
-        ) or "No disponible"
-        partes.append(f"Top Apps consumiendo RAM: {top_apps}")
-    except Exception as e:
-        partes.append(f"Top Apps consumiendo RAM: Error ({e})")
-
-    return " | ".join(partes)
+        return f"Error inesperado leyendo hardware: {e}"
 
 
 def leer_portapapeles():
@@ -633,51 +618,58 @@ def leer_portapapeles():
 
 def leer_repositorio_git(ruta_repo):
     """
-    Herramienta de Nivel 1. Ejecuta 'git status' y 'git log' en la ruta especificada
-    para que L-IA analice el estado del código sin modificar nada.
+    Herramienta de Nivel 1.
+    Delega la lectura concurrente de 'git status' y 'git log' al microservicio en Go.
     """
     if not os.path.exists(ruta_repo):
         return f"Error: La ruta '{ruta_repo}' no existe en el sistema."
 
-    if not os.path.exists(os.path.join(ruta_repo, '.git')):
-        return f"Error: La carpeta '{ruta_repo}' no está inicializada como repositorio Git."
+    try:
+        # Petición POST enviando la ruta al puerto de Go
+        respuesta = requests.post(
+            "http://localhost:10510/git/estado", 
+            json={"ruta": ruta_repo}, 
+            timeout=5
+        )
+        datos = respuesta.json()
+        
+        # Validar si Go reportó un error (ej. no es un repositorio)
+        if datos.get("error"):
+            return f"Error desde el motor Git: {datos['error']}"
+            
+        return datos.get("resultado", "Error: Respuesta vacía del servidor Git.")
+        
+    except requests.exceptions.ConnectionError:
+        return (
+            "[DIRECTIVA ESTRICTA: Tu módulo de control de versiones (Go) está desconectado. "
+            "Informa a Alejandro que no puedes auditar el código hasta que el orquestador "
+            "reinicie los microservicios.]"
+        )
+    except Exception as e:
+        return f"Error inesperado al conectar con el microservicio Git: {e}"
+
+def leer_cambios_git(ruta_repo):
+    """
+    Herramienta de Nivel 1.
+    Pide a Go que extraiga el 'git diff' masivo para que L-IA pueda leer el código que cambió.
+    """
+    if not os.path.exists(ruta_repo):
+        return f"Error: La ruta '{ruta_repo}' no existe."
 
     try:
-        status = subprocess.run(
-            ['git', 'status'],
-            cwd=ruta_repo,
-            capture_output=True,
-            text=True,
-            check=True,
-            encoding='utf-8',
-            timeout=10
+        respuesta = requests.post(
+            "http://localhost:10510/git/cambios", 
+            json={"ruta": ruta_repo}, 
+            timeout=5
         )
-
-        log = subprocess.run(
-            ['git', 'log', '-3', '--oneline'],
-            cwd=ruta_repo,
-            capture_output=True,
-            text=True,
-            check=True,
-            encoding='utf-8',
-            timeout=10
-        )
-
-        resultado = f"=== ESTADO DEL REPOSITORIO ({ruta_repo}) ===\n"
-        resultado += status.stdout + "\n"
-        resultado += "=== ÚLTIMOS COMMITS (Historial reciente) ===\n"
-        resultado += log.stdout
-
-        return resultado
-
-    except FileNotFoundError:
-        return "Error: Git no está instalado o no está disponible en el PATH del sistema."
-    except subprocess.TimeoutExpired:
-        return f"Error: git tardó demasiado en responder para '{ruta_repo}'."
-    except subprocess.CalledProcessError as e:
-        return f"Error: git falló al ejecutarse en '{ruta_repo}': {e.stderr.strip()}"
+        datos = respuesta.json()
+        
+        if datos.get("error"):
+            return f"Error desde Go: {datos['error']}"
+            
+        return datos.get("resultado", "Respuesta vacía.")
     except Exception as e:
-        return f"Error inesperado leyendo el repositorio: {e}"
+        return f"Error conectando a Go para leer diff: {e}"
 
 def hacer_commit_git(ruta_repo, titulo_commit, descripcion_commit=""):
     """Nivel 2: Añade cambios, hace commit y sube al remoto (Push)."""
@@ -768,6 +760,7 @@ CATALOGO_HERRAMIENTAS = {
     "abrir_aplicacion": {"nivel": 1},
     "ejecutar_comando_sistema": {"nivel": 2},
     "leer_repositorio_git": {"nivel": 1},
+    "leer_cambios_git": {"nivel": 1},
     "hacer_commit_git": {"nivel": 2},
     "comando_cambiar_entorno": {"nivel": 1}
 }
@@ -865,6 +858,8 @@ def _ejecutar_dinamico(nombre_herramienta, **kwargs):
         )
     elif nombre_herramienta == "comando_cambiar_entorno":
         return comando_cambiar_entorno(kwargs.get("escena", "trabajo"))
+    elif nombre_herramienta == "leer_cambios_git":
+        return leer_cambios_git(kwargs.get("ruta_repo", ""))
     else:
         return f"Error: No hay lógica de despacho para {nombre_herramienta}"
 # Aquí más adelante agregaremos:
