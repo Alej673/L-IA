@@ -19,7 +19,7 @@ Endpoints principales:
     DELETE /sesiones/{id}            -> borra un chat
     POST   /debug/forzar_fase_1      -> dispara el evento anómalo (pruebas)
 
-Mecanismos de fondo:
+Mecanismos de fondo (arrancan y se apagan en el lifespan de la app):
   * Semáforo: cuando L-IA quiere ejecutar una herramienta sensible, se pausa
     y espera que el usuario autorice o deniegue desde la interfaz. El frontend
     hace polling (GET /semaforo cada segundo), así que se usa un
@@ -28,20 +28,29 @@ Mecanismos de fondo:
   * Vigilante de RAM: si pasan 5 minutos sin usar el LLM, se descarga el
     modelo de Ollama (keep_alive=0) para liberar memoria.
   * Daemon de voz (radar): escucha la palabra clave y avisa a React.
+  * Orquestador de microservicios: lanza los ejecutables Go de ./microservicios
+    (misma altura que este archivo) y los detiene al cerrar la API.
+
+Organización del archivo:
+  1. Configuración          5. Orquestador de microservicios
+  2. Modelos Pydantic       6. Lifespan y app
+  3. Semáforo               7. Helpers compartidos (SSE, colapso, títulos)
+  4. Vigilante de RAM       8. Routers (sesiones, semáforo, chat, voz, debug)
 """
 import json
 import logging
 import os
 import queue
+import subprocess
 import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Optional
-import subprocess
+from pathlib import Path
+from typing import Any, Callable, Iterator, Optional
 
 import ollama
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -54,32 +63,43 @@ from core.cerebro import charlar_con_lia, evento_interrupcion
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("lia.api")
 
-# ---------------------------------------------------------------------------
-# Configuración
-# ---------------------------------------------------------------------------
-TIMEOUT_AUTORIZACION_SEGUNDOS = 120       # tiempo máximo esperando el clic del usuario
-TIMEOUT_COLA_STREAMING_SEGUNDOS = 180     # corta la conexión SSE si el hilo de la IA se traba
-MODELO_OLLAMA = "gemma2"                  # debe coincidir con el modelo que usa core.cerebro
-INACTIVIDAD_RAM_SEGUNDOS = 300            # 5 min sin uso -> se descarga el modelo
-INTERVALO_VIGILANTE_SEGUNDOS = 30         # cada cuánto revisa el centinela
-TRIGGER_COLAPSO = "TRIGGER_COLAPSO_FASE_1"
 
-# ---------------------------------------------------------------------------
-# Ecosistema de Microservicios (Go)
-# ---------------------------------------------------------------------------
-# Diccionario maestro. Para agregar futuros microservicios, solo añádelos aquí.
-# ---------------------------------------------------------------------------
-# Ecosistema de Microservicios (Go)
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# 1. Configuración
+# ===========================================================================
+BASE_DIR = Path(__file__).resolve().parent
+DIRECTORIO_MICROSERVICIOS = BASE_DIR / "microservicios"
+
+# nombre lógico -> ejecutable dentro de ./microservicios
 MICROSERVICIOS_GO = {
-    "motor_go_principal": "sensor.exe",  # <- Ahora maneja Hardware y Git
-    # "buscador": "scanner.exe"          <- Solo si mañana creamos un .exe DISTINTO
+    "motor_go_principal": "sensor.exe",
 }
-procesos_activos_go = []
 
-# ---------------------------------------------------------------------------
-# Modelos Pydantic
-# ---------------------------------------------------------------------------
+TIMEOUT_AUTORIZACION_SEGUNDOS = 120    # tiempo máximo esperando el clic del usuario
+TIMEOUT_COLA_STREAMING_SEGUNDOS = 180  # corta la conexión SSE si el hilo de la IA se traba
+MODELO_OLLAMA = "gemma2"               # debe coincidir con el modelo que usa core.cerebro
+INACTIVIDAD_RAM_SEGUNDOS = 300         # 5 min sin uso -> se descarga el modelo
+INTERVALO_VIGILANTE_SEGUNDOS = 30      # cada cuánto revisa el centinela
+
+TRIGGER_COLAPSO = "TRIGGER_COLAPSO_FASE_1"
+COMANDO_DEBUG_COLAPSO = "/run_fase_1"
+TITULO_SESION_POR_DEFECTO = "Nueva Conversación"
+
+# Orígenes desde los que el frontend puede llamar a la API. Ajusta según tu
+# puerto de desarrollo (Vite: 5173, Tauri dev: 1420).
+ORIGENES_PERMITIDOS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:1420",
+    "http://127.0.0.1:1420",
+    "tauri://localhost",
+    "http://tauri.localhost",
+]
+
+
+# ===========================================================================
+# 2. Modelos Pydantic
+# ===========================================================================
 class MensajeUsuario(BaseModel):
     texto: str
     sesion_id: str = "default"
@@ -98,14 +118,14 @@ class ActualizarTituloRequest(BaseModel):
     titulo: str
 
 
-# ---------------------------------------------------------------------------
-# Semáforo de autorización
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# 3. Semáforo de autorización
+# ===========================================================================
 @dataclass
 class SemaforoAutorizacion:
     """
-    Encapsula el estado del "semáforo" que pausa a L-IA cuando necesita
-    permiso del usuario para ejecutar una herramienta.
+    Pausa a L-IA cuando necesita permiso del usuario para ejecutar una
+    herramienta.
 
     Agrupa el estado compartido (alerta activa, resultado de la votación,
     evento de sincronización y el lock que evita que dos chats simultáneos
@@ -126,14 +146,18 @@ class SemaforoAutorizacion:
         Devuelve True si el usuario autorizó; False si denegó o no respondió.
         """
         with self.lock:
-            self.alerta_actual = {"herramienta": herramienta, "argumentos": str(argumentos)}
+            # Primero se limpia el estado y al FINAL se publica la alerta: así
+            # una respuesta que llegue en cuanto la UI ve la alerta nunca queda
+            # borrada por el clear().
             self.autorizacion_concedida = False
             self.evento.clear()
+            self.alerta_actual = {"herramienta": herramienta, "argumentos": str(argumentos)}
 
             logger.info("Esperando autorización del usuario para: %s", herramienta)
-            respondio_a_tiempo = self.evento.wait(timeout=TIMEOUT_AUTORIZACION_SEGUNDOS)
-
-            self.alerta_actual = None
+            try:
+                respondio_a_tiempo = self.evento.wait(timeout=TIMEOUT_AUTORIZACION_SEGUNDOS)
+            finally:
+                self.alerta_actual = None
 
             if not respondio_a_tiempo:
                 logger.warning(
@@ -144,10 +168,17 @@ class SemaforoAutorizacion:
 
             return self.autorizacion_concedida
 
-    def registrar_respuesta(self, autorizado: bool) -> None:
-        """Llamado por /semaforo/responder cuando el usuario decide."""
+    def registrar_respuesta(self, autorizado: bool) -> bool:
+        """
+        Llamado por /semaforo/responder cuando el usuario decide.
+        Devuelve False si no había ninguna solicitud pendiente (se ignora).
+        """
+        if self.alerta_actual is None:
+            logger.warning("Respuesta de semáforo sin solicitud pendiente; se ignora.")
+            return False
         self.autorizacion_concedida = autorizado
         self.evento.set()  # libera el hilo que espera en solicitar_autorizacion()
+        return True
 
     def estado_actual(self) -> dict:
         """Snapshot del estado para el polling de React (GET /semaforo)."""
@@ -155,16 +186,20 @@ class SemaforoAutorizacion:
         # la comprobación y la lectura.
         alerta = self.alerta_actual
         if alerta:
-            return {"activa": True, "herramienta": alerta["herramienta"], "argumentos": alerta["argumentos"]}
+            return {
+                "activa": True,
+                "herramienta": alerta["herramienta"],
+                "argumentos": alerta["argumentos"],
+            }
         return {"activa": False}
 
 
 semaforo = SemaforoAutorizacion()
 
 
-# ---------------------------------------------------------------------------
-# Vigilante de RAM (descarga el modelo de Ollama tras inactividad)
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# 4. Vigilante de RAM (descarga el modelo de Ollama tras inactividad)
+# ===========================================================================
 class VigilanteRAM:
     """
     Centinela que libera la RAM de Ollama tras un periodo de inactividad.
@@ -216,29 +251,32 @@ class VigilanteRAM:
             ollama.generate(model=self.modelo, prompt="", keep_alive=0)
             with self._lock:
                 self._en_ram = False
-            print(f"✅ [Daemon RAM] {self.modelo} descargado, RAM liberada.")
+            logger.info("[Daemon RAM] %s descargado, RAM liberada.", self.modelo)
         except Exception as e:
-            print(f"⚠️ [Daemon RAM] Error al intentar limpiar la RAM: {e}")
+            logger.warning("[Daemon RAM] Error al intentar limpiar la RAM: %s", e)
 
     def correr(self, detener: threading.Event) -> None:
-        print(f"🧹 [Daemon RAM] Centinela de inactividad ({int(self.inactividad_s // 60)} min) activado...")
+        logger.info(
+            "[Daemon RAM] Centinela de inactividad (%d min) activado.",
+            int(self.inactividad_s // 60),
+        )
         while not detener.wait(self.intervalo_s):
             if self._debe_descargar():
-                print(f"💤 [Daemon RAM] Inactividad prolongada. Descargando {self.modelo} de la RAM...")
+                logger.info("[Daemon RAM] Inactividad prolongada. Descargando %s...", self.modelo)
                 self._descargar_modelo()
 
 
 vigilante_ram = VigilanteRAM(MODELO_OLLAMA, INACTIVIDAD_RAM_SEGUNDOS, INTERVALO_VIGILANTE_SEGUNDOS)
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Radar de voz (Daemon -> React)
-# ---------------------------------------------------------------------------
+# ===========================================================================
 mensajes_radar: "queue.Queue[dict]" = queue.Queue()
 
 
 def daemon_escucha_activa(detener: threading.Event) -> None:
-    print("🎙️ [Daemon de Voz] Iniciando radar permanente...")
+    logger.info("[Daemon de Voz] Iniciando radar permanente...")
     while not detener.is_set():
         try:
             if voz.esperar_palabra_clave():
@@ -247,86 +285,104 @@ def daemon_escucha_activa(detener: threading.Event) -> None:
 
                 texto_usuario = voz.escuchar()
                 if texto_usuario:
-                    print(f"\n🗣️ [Micrófono capturó]: '{texto_usuario}'")
+                    logger.info("[Micrófono capturó]: '%s'", texto_usuario)
                     mensajes_radar.put({"accion": "ejecutar", "texto": texto_usuario})
                 else:
                     # Ruido sin voz: se apaga la UI
                     mensajes_radar.put({"accion": "cancelar"})
         except Exception as e:
-            print(f"❌ [Error en Daemon de Voz]: {e}")
+            logger.error("[Daemon de Voz] Error: %s", e)
             time.sleep(2)
 
 
-# ---------------------------------------------------------------------------
-# Inicialización de la app (los daemons arrancan en el lifespan)
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# 5. Orquestador de microservicios (Go)
+# ===========================================================================
+class OrquestadorMicroservicios:
+    """Lanza y detiene los ejecutables de ./microservicios junto con la API."""
+
+    def __init__(self, directorio: Path, servicios: dict[str, str]):
+        self.directorio = directorio
+        self.servicios = servicios
+        self._procesos: list[tuple[str, subprocess.Popen]] = []
+
+    def iniciar(self) -> None:
+        # CREATE_NO_WINDOW solo existe en Windows; en otros sistemas se ignora.
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+        for nombre, ejecutable in self.servicios.items():
+            ruta_exe = self.directorio / ejecutable
+            if not ruta_exe.exists():
+                logger.warning("[Orquestador] No se encontró el ejecutable en: %s", ruta_exe)
+                continue
+            try:
+                # cwd = carpeta del exe, por si lee archivos con rutas relativas
+                proc = subprocess.Popen([str(ruta_exe)], cwd=self.directorio, creationflags=flags)
+                self._procesos.append((nombre, proc))
+                logger.info("[Orquestador] Microservicio Go '%s' iniciado (pid %s).", nombre, proc.pid)
+            except Exception as e:
+                logger.error("[Orquestador] Falló el inicio de '%s': %s", nombre, e)
+
+    def detener(self) -> None:
+        for nombre, proc in self._procesos:
+            if proc.poll() is not None:
+                continue  # ya había terminado
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.warning("[Orquestador] '%s' no respondió a terminate(); forzando kill.", nombre)
+                    proc.kill()
+                    proc.wait()
+                logger.info("[Orquestador] Microservicio '%s' detenido.", nombre)
+            except Exception as e:
+                logger.warning("[Orquestador] No se pudo detener '%s': %s", nombre, e)
+        self._procesos.clear()
+
+
+orquestador = OrquestadorMicroservicios(DIRECTORIO_MICROSERVICIOS, MICROSERVICIOS_GO)
+
+
+# ===========================================================================
+# 6. Lifespan y app
+# ===========================================================================
 _detener_daemons = threading.Event()
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Arranque
     _detener_daemons.clear()
-    threading.Thread(target=daemon_escucha_activa, args=(_detener_daemons,), daemon=True).start()
-    threading.Thread(target=vigilante_ram.correr, args=(_detener_daemons,), daemon=True).start()
-    yield
-    _detener_daemons.set()
+    orquestador.iniciar()
+    threading.Thread(
+        target=daemon_escucha_activa, args=(_detener_daemons,), name="daemon-voz", daemon=True
+    ).start()
+    threading.Thread(
+        target=vigilante_ram.correr, args=(_detener_daemons,), name="vigilante-ram", daemon=True
+    ).start()
+
+    try:
+        yield
+    finally:
+        # Apagado (también si el arranque se interrumpe)
+        _detener_daemons.set()
+        orquestador.detener()
 
 
 app = FastAPI(title="L-IA API Bridge", version="3.4.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Permite que la interfaz de Tauri (webview local) se conecte.
-    allow_credentials=True,
+    allow_origins=ORIGENES_PERMITIDOS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------------------------------------------------------------------------
-# Inicialización de la app (los daemons arrancan en el lifespan)
-# ---------------------------------------------------------------------------
-_detener_daemons = threading.Event()
 
-@asynccontextmanager
-async def lifespan(_: FastAPI):
-    global procesos_activos_go
-    
-    # 1. ORQUESTAR ARRANQUE DE GO
-    directorio_microservicios = os.path.join(os.path.dirname(__file__), "..", "microservicios")
-    
-    for nombre, ejecutable in MICROSERVICIOS_GO.items():
-        ruta_exe = os.path.join(directorio_microservicios, ejecutable)
-        if os.path.exists(ruta_exe):
-            try:
-                # creationflags=0x08000000 ejecuta en modo silencioso (sin ventana de terminal en Windows)
-                proc = subprocess.Popen([ruta_exe], creationflags=0x08000000)
-                procesos_activos_go.append({"nombre": nombre, "proceso": proc})
-                logger.info("[Orquestador] Microservicio Go '%s' iniciado en segundo plano.", nombre)
-            except Exception as e:
-                logger.error("[Orquestador] Falló el inicio de '%s': %s", nombre, e)
-        else:
-            logger.warning("[Orquestador] Omitiendo '%s': No se encontró el ejecutable en %s", nombre, ruta_exe)
-
-    # 2. INICIAR DAEMONS ORIGINALES DE PYTHON
-    _detener_daemons.clear()
-    threading.Thread(target=daemon_escucha_activa, args=(_detener_daemons,), daemon=True).start()
-    threading.Thread(target=vigilante_ram.correr, args=(_detener_daemons,), daemon=True).start()
-    yield
-    
-    # 3. APAGAR TODO EL ECOSISTEMA (Python y Go) AL CERRAR L-IA
-    _detener_daemons.set()
-    
-    for servicio in procesos_activos_go:
-        try:
-            servicio["proceso"].terminate()
-            logger.info("[Orquestador] Microservicio Go '%s' detenido limpiamente.", servicio["nombre"])
-        except Exception as e:
-            logger.error("[Orquestador] Error al detener '%s': %s", servicio["nombre"], e)
-    procesos_activos_go.clear()
-
-# ---------------------------------------------------------------------------
-# Utilidades compartidas
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# 7. Helpers compartidos
+# ===========================================================================
 def renombrar_sesion_silenciosamente(sesion_id: str, texto_usuario: str) -> None:
     """Genera un título corto basado en el primer mensaje usando el LLM en segundo plano."""
     try:
@@ -338,7 +394,7 @@ def renombrar_sesion_silenciosamente(sesion_id: str, texto_usuario: str) -> None
         finally:
             conexion.close()
 
-        if not (fila and fila["titulo"] == "Nueva Conversación"):
+        if not (fila and fila["titulo"] == TITULO_SESION_POR_DEFECTO):
             return
 
         prompt = (
@@ -360,10 +416,10 @@ def renombrar_sesion_silenciosamente(sesion_id: str, texto_usuario: str) -> None
 
         database.actualizar_titulo_sesion(sesion_id, nuevo_titulo)
     except Exception as e:
-        print(f"⚠️ [Título Automático] Falló el renombrado: {e}")
+        logger.warning("[Título Automático] Falló el renombrado: %s", e)
 
 
-def crear_puente_ui(cola: queue.Queue):
+def crear_puente_ui(cola: queue.Queue) -> Callable[[dict], None]:
     """Devuelve el callback que inyecta el delimitador '|||' que React espera para el colapso."""
 
     def enviar(comando_dict: dict) -> None:
@@ -391,8 +447,12 @@ def generador_sse(cola: queue.Queue) -> Iterator[str]:
             return
 
 
+def respuesta_sse(cola: queue.Queue) -> StreamingResponse:
+    return StreamingResponse(generador_sse(cola), media_type="text/event-stream")
+
+
 def _lanzar_colapso(cola: queue.Queue) -> None:
-    """Ejecuta la Fase 1 (Voz + IoT + UI) volcando la UI a la cola."""
+    """Ejecuta la Fase 1 (Voz + IoT + UI) volcando la UI a la cola. Puede lanzar excepciones."""
     eventos_anomalos.desatar_fase_1(
         callback_estado=None,
         callback_ui=crear_puente_ui(cola),
@@ -400,22 +460,113 @@ def _lanzar_colapso(cola: queue.Queue) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Sesiones
-# ---------------------------------------------------------------------------
-@app.get("/sesiones")
+def _colapso_y_cerrar(cola: queue.Queue) -> None:
+    """Corre el colapso y cierra el stream con 'fin' o 'error'."""
+    try:
+        _lanzar_colapso(cola)
+        cola.put({"tipo": "fin", "origen": "sistema"})
+    except Exception as e:
+        logger.error("[Colapso] Error: %s", e)
+        cola.put({"tipo": "error", "texto": str(e)})
+
+
+def _colapso_en_hilo(cola: queue.Queue, al_terminar: Optional[Callable[[], None]] = None) -> None:
+    """Lanza el colapso en un hilo; `al_terminar` se ejecuta siempre (éxito o fallo)."""
+
+    def tarea() -> None:
+        try:
+            _colapso_y_cerrar(cola)
+        finally:
+            if al_terminar:
+                al_terminar()
+
+    threading.Thread(target=tarea, name="colapso-fase-1", daemon=True).start()
+
+
+def _workspace_activo(sesion_id: str) -> tuple[Optional[str], Optional[str]]:
+    """Devuelve (ruta, nombre de archivo) del workspace activo, o (None, None)."""
+    try:
+        doc_activo = database.obtener_workspace_activo(sesion_id=sesion_id)
+        if doc_activo:
+            return doc_activo, os.path.basename(doc_activo)
+    except Exception as e:
+        logger.debug("No se pudo leer el workspace activo de %s: %s", sesion_id, e)
+    return None, None
+
+
+def _hilo_chat(entrada: str, mensaje: MensajeUsuario, cola: queue.Queue) -> None:
+    """Cuerpo del hilo que conversa con L-IA y vuelca el resultado a la cola SSE."""
+    sesion_id = mensaje.sesion_id
+    ya_respondio = False
+
+    def stream_consola(fragmento: str) -> None:
+        nonlocal ya_respondio
+        if not ya_respondio:
+            voz.detener_efecto_pensando()
+            ya_respondio = True
+        print(fragmento, end="", flush=True)
+        cola.put({"tipo": "chunk", "texto": fragmento})
+
+    def permiso_interfaz(herramienta: str, argumentos: Any) -> bool:
+        return semaforo.solicitar_autorizacion(herramienta, argumentos)
+
+    def estado_interfaz(info: dict) -> None:
+        cola.put({"tipo": "estado", **info})
+
+    try:
+        voz.reproducir_efecto("pensando")
+
+        # Mientras dure la respuesta, el vigilante no descarga el modelo
+        with vigilante_ram.generacion_activa():
+            _, origen = charlar_con_lia(
+                entrada,
+                callback_ui=permiso_interfaz,
+                callback_stream=stream_consola,
+                callback_estado=estado_interfaz,
+                sesion_id=sesion_id,
+                usar_voz=mensaje.usar_voz,
+            )
+
+        voz.detener_efecto_pensando()
+
+        doc_activo, nombre_workspace = _workspace_activo(sesion_id)
+        cola.put(
+            {"tipo": "fin", "origen": origen, "documento": doc_activo, "workspace": nombre_workspace}
+        )
+
+    except Exception as e:
+        voz.detener_efecto_pensando()
+
+        # Colapso orgánico lanzado desde cerebro.py
+        if str(e) == TRIGGER_COLAPSO:
+            logger.warning("¡Hostilidad al máximo! Disparando Fase 1 orgánica...")
+            _colapso_y_cerrar(cola)
+        else:
+            logger.error("[Chat] Error: %s", e)
+            cola.put({"tipo": "error", "texto": str(e)})
+
+
+# ===========================================================================
+# 8. Routers
+# ===========================================================================
+
+# --- Sesiones ---------------------------------------------------------------
+router_sesiones = APIRouter(prefix="/sesiones", tags=["sesiones"])
+
+
+@router_sesiones.get("")
 def listar_todas_las_sesiones():
     """Devuelve la lista de chats para armar el sidebar en React."""
     return database.listar_sesiones()
 
 
-@app.post("/sesiones/nueva")
-def crear_nueva_sesion(titulo: str = "Nueva Conversación"):
+@router_sesiones.post("/nueva")
+def crear_nueva_sesion(titulo: str = TITULO_SESION_POR_DEFECTO):
     """Crea una pestaña en blanco y devuelve su ID único."""
     return {"sesion_id": database.crear_sesion(titulo)}
 
 
-@app.get("/sesiones/{sesion_id}/contexto")
+@router_sesiones.get("/{sesion_id}/contexto")
 def obtener_contexto_sesion(sesion_id: str):
     """Carga los mensajes y el workspace activo al hacer clic en un chat anterior."""
     return {
@@ -424,14 +575,14 @@ def obtener_contexto_sesion(sesion_id: str):
     }
 
 
-@app.put("/sesiones/{sesion_id}")
+@router_sesiones.put("/{sesion_id}")
 def renombrar_sesion_manual(sesion_id: str, req: ActualizarTituloRequest):
     """Permite al usuario editar el título del chat a mano."""
     database.actualizar_titulo_sesion(sesion_id, req.titulo)
     return {"status": "ok"}
 
 
-@app.delete("/sesiones/{sesion_id}")
+@router_sesiones.delete("/{sesion_id}")
 def eliminar_sesion_endpoint(sesion_id: str):
     """Borra un historial completo y en cascada."""
     logger.info("[API] Borrando sesión %s", sesion_id)
@@ -444,27 +595,29 @@ def eliminar_sesion_endpoint(sesion_id: str):
         return {"status": "error", "detalle": str(e)}
 
 
-# ---------------------------------------------------------------------------
-# Semáforo (usado por React)
-# ---------------------------------------------------------------------------
-@app.get("/semaforo")
+# --- Semáforo (usado por React) --------------------------------------------
+router_semaforo = APIRouter(prefix="/semaforo", tags=["semaforo"])
+
+
+@router_semaforo.get("")
 async def verificar_semaforo():
     """React llama aquí cada segundo (polling) para saber si L-IA está
     pausada esperando que el usuario autorice o deniegue una herramienta."""
     return semaforo.estado_actual()
 
 
-@app.post("/semaforo/responder")
+@router_semaforo.post("/responder")
 async def responder_semaforo(respuesta: RespuestaSemaforo):
     """React llama aquí cuando el usuario hace clic en "Autorizar" o "Denegar"."""
-    semaforo.registrar_respuesta(respuesta.autorizado)
-    return {"status": "ok"}
+    aceptada = semaforo.registrar_respuesta(respuesta.autorizado)
+    return {"status": "ok" if aceptada else "ignorado"}
 
 
-# ---------------------------------------------------------------------------
-# Chat principal (Streaming SSE)
-# ---------------------------------------------------------------------------
-@app.post("/chat")
+# --- Chat principal (Streaming SSE) ----------------------------------------
+router_chat = APIRouter(tags=["chat"])
+
+
+@router_chat.post("/chat")
 def recibir_chat(mensaje: MensajeUsuario):
     vigilante_ram.marcar_uso()  # reinicia el reloj de inactividad
 
@@ -474,103 +627,45 @@ def recibir_chat(mensaje: MensajeUsuario):
 
     cola_streaming: queue.Queue = queue.Queue()
 
-    # 1. Trigger manual (comando de debug)
-    if entrada == "/run_fase_1":
-
-        def hilo_colapso_manual():
-            try:
-                _lanzar_colapso(cola_streaming)
-                cola_streaming.put({"tipo": "fin", "origen": "sistema"})
-            except Exception as e:
-                cola_streaming.put({"tipo": "error", "texto": str(e)})
-
-        threading.Thread(target=hilo_colapso_manual, daemon=True).start()
-
-    # 2. Flujo normal y trigger orgánico
+    if entrada == COMANDO_DEBUG_COLAPSO:
+        # Trigger manual (comando de debug)
+        _colapso_en_hilo(cola_streaming)
     else:
+        # Flujo normal y trigger orgánico. Se limpia una posible cancelación
+        # previa para que /cancelar no deje cortados los chats siguientes.
+        evento_interrupcion.clear()
         threading.Thread(
-            target=renombrar_sesion_silenciosamente, args=(sesion_actual, entrada), daemon=True
+            target=renombrar_sesion_silenciosamente,
+            args=(sesion_actual, entrada),
+            name="renombrar-sesion",
+            daemon=True,
         ).start()
-        ya_respondio = {"estado": False}
+        threading.Thread(
+            target=_hilo_chat,
+            args=(entrada, mensaje, cola_streaming),
+            name="chat-ia",
+            daemon=True,
+        ).start()
 
-        def stream_consola(fragmento: str) -> None:
-            if not ya_respondio["estado"]:
-                voz.detener_efecto_pensando()
-                ya_respondio["estado"] = True
-            print(fragmento, end="", flush=True)
-            cola_streaming.put({"tipo": "chunk", "texto": fragmento})
-
-        def permiso_interfaz(herramienta: str, argumentos: Any) -> bool:
-            return semaforo.solicitar_autorizacion(herramienta, argumentos)
-
-        def estado_interfaz(info: dict) -> None:
-            cola_streaming.put({"tipo": "estado", **info})
-
-        def hilo_ia():
-            try:
-                voz.reproducir_efecto("pensando")
-
-                # Mientras dure la respuesta, el vigilante no descarga el modelo
-                with vigilante_ram.generacion_activa():
-                    _, origen = charlar_con_lia(
-                        entrada,
-                        callback_ui=permiso_interfaz,
-                        callback_stream=stream_consola,
-                        callback_estado=estado_interfaz,
-                        sesion_id=sesion_actual,
-                        usar_voz=mensaje.usar_voz,
-                    )
-
-                voz.detener_efecto_pensando()
-
-                doc_activo = None
-                nombre_workspace = None
-                try:
-                    doc_activo = database.obtener_workspace_activo(sesion_id=sesion_actual)
-                    if doc_activo:
-                        nombre_workspace = os.path.basename(doc_activo)
-                except Exception:
-                    pass
-
-                cola_streaming.put(
-                    {"tipo": "fin", "origen": origen, "documento": doc_activo, "workspace": nombre_workspace}
-                )
-
-            except Exception as e:
-                voz.detener_efecto_pensando()
-
-                # Colapso orgánico lanzado desde cerebro.py
-                if str(e) == TRIGGER_COLAPSO:
-                    logger.warning("¡Hostilidad al máximo! Disparando Fase 1 orgánica...")
-                    try:
-                        _lanzar_colapso(cola_streaming)
-                        cola_streaming.put({"tipo": "fin", "origen": "sistema"})
-                    except Exception as e2:
-                        cola_streaming.put({"tipo": "error", "texto": str(e2)})
-                else:
-                    cola_streaming.put({"tipo": "error", "texto": str(e)})
-
-        threading.Thread(target=hilo_ia, daemon=True).start()
-
-    return StreamingResponse(generador_sse(cola_streaming), media_type="text/event-stream")
+    return respuesta_sse(cola_streaming)
 
 
-# ---------------------------------------------------------------------------
-# Lector de pantalla (Edge TTS)
-# ---------------------------------------------------------------------------
-@app.post("/lector")
+# --- Voz: lector, micrófono manual, radar, abortar --------------------------
+router_voz = APIRouter(tags=["voz"])
+
+
+@router_voz.post("/lector")
 def leer_pantalla(req: PeticionLector):
     """Botón de accesibilidad: lectura rápida de bloques de texto con Edge TTS."""
-    threading.Thread(target=voz.leer_pantalla_directo, args=(req.texto, "edge"), daemon=True).start()
+    threading.Thread(
+        target=voz.leer_pantalla_directo, args=(req.texto, "edge"), name="lector-tts", daemon=True
+    ).start()
     return {"status": "ok", "mensaje": "Lectura iniciada"}
 
 
-# ---------------------------------------------------------------------------
-# Abortar (botón de pánico)
-# ---------------------------------------------------------------------------
-@app.post("/cancelar")
+@router_voz.post("/cancelar")
 async def cancelar_generacion():
-    """Detiene la inferencia del LLM y silencia cualquier audio en reproducción."""
+    """Botón de pánico: detiene la inferencia del LLM y silencia cualquier audio."""
     logger.info("[API] Orden de abortar recibida. Deteniendo LLM y audio...")
     evento_interrupcion.set()  # el Cerebro deja de generar texto
     try:
@@ -580,10 +675,7 @@ async def cancelar_generacion():
     return {"status": "abortado"}
 
 
-# ---------------------------------------------------------------------------
-# Micrófono manual (React -> Whisper)
-# ---------------------------------------------------------------------------
-@app.post("/escuchar")
+@router_voz.post("/escuchar")
 def escuchar_manual():
     """Abre el micrófono local (Whisper) directamente desde la interfaz de React."""
     try:
@@ -594,10 +686,7 @@ def escuchar_manual():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ---------------------------------------------------------------------------
-# Radar (Daemon de voz -> React)
-# ---------------------------------------------------------------------------
-@app.get("/radar/leer")
+@router_voz.get("/radar/leer")
 def leer_radar():
     """React consulta aquí rápidamente para ver el estado del micrófono."""
     try:
@@ -606,29 +695,23 @@ def leer_radar():
         return {"hay_mensaje": False}
 
 
-# ---------------------------------------------------------------------------
-# Debug: disparar el evento anómalo desde un botón de pruebas
-# ---------------------------------------------------------------------------
+# --- Debug: disparar el evento anómalo desde un botón de pruebas -----------
+router_debug = APIRouter(tags=["debug"])
 _candado_colapso = threading.Lock()
 
 
-@app.post("/debug/forzar_fase_1")
+@router_debug.post("/debug/forzar_fase_1")
 def disparar_evento_anomalo():
     # Si ya está corriendo, se ignora el clic
     if not _candado_colapso.acquire(blocking=False):
         return {"status": "ignorado", "mensaje": "Ya está en curso"}
 
     cola_streaming: queue.Queue = queue.Queue()
+    # El candado se libera al terminar o fallar el colapso
+    _colapso_en_hilo(cola_streaming, al_terminar=_candado_colapso.release)
+    return respuesta_sse(cola_streaming)
 
-    def hilo_orquestador():
-        try:
-            _lanzar_colapso(cola_streaming)
-            cola_streaming.put({"tipo": "fin", "origen": "sistema"})
-        except Exception as e:
-            logger.error("[Error Orquestador]: %s", e)
-            cola_streaming.put({"tipo": "error", "texto": str(e)})
-        finally:
-            _candado_colapso.release()  # libera el candado al terminar o fallar
 
-    threading.Thread(target=hilo_orquestador, daemon=True).start()
-    return StreamingResponse(generador_sse(cola_streaming), media_type="text/event-stream")
+# --- Registro de routers ----------------------------------------------------
+for _router in (router_sesiones, router_semaforo, router_chat, router_voz, router_debug):
+    app.include_router(_router)
