@@ -1,10 +1,11 @@
 # L-IA: Asistente Híbrido de Inteligencia Artificial (Local/Nube)
 
-Asistente de escritorio con arquitectura híbrida que combina modelos de lenguaje locales y en la nube. Enruta cada tarea según su complejidad, prioriza el procesamiento local y delega cargas masivas a la nube. Controla el sistema operativo bajo un modelo de permisos supervisado por el usuario y mantiene memoria técnica a largo plazo.
+Asistente de escritorio con arquitectura híbrida que combina modelos de lenguaje locales y en la nube. Enruta cada tarea según su complejidad, prioriza el procesamiento local y delega cargas masivas a la nube. Controla el sistema operativo bajo un modelo de permisos supervisado por el usuario, decide de forma autónoma qué herramientas invocar (flujo agéntico), delega las tareas de bajo nivel a microservicios locales en Go y mantiene memoria técnica a largo plazo.
 
 [![Estado](https://img.shields.io/badge/estado-funcional-4ade80)](https://github.com/Alej673/L-IA)
 [![Versión](https://img.shields.io/badge/versi%C3%B3n-3.2.1-00f2fe)](https://github.com/Alej673/L-IA)
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Go](https://img.shields.io/badge/Go-microservicios-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![Tauri](https://img.shields.io/badge/Tauri-v2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 
@@ -14,10 +15,11 @@ Asistente de escritorio con arquitectura híbrida que combina modelos de lenguaj
 
 Un asistente personal que **no es un chatbot**. Es un sistema que:
 
-- **Decide y ejecuta**: el LLM interpreta la intención, pero el código Python controla la ejecución mediante un sistema de permisos por niveles.
+- **Decide y ejecuta**: el LLM interpreta la intención y elige qué herramienta invocar (flujo agéntico con *tool calling*), pero el código Python controla la ejecución mediante un sistema de permisos por niveles.
 - **Enruta por complejidad**: tareas ligeras en local (Gemma 2 / Ollama), cargas masivas en la nube (Gemini Flash/Pro), con un umbral dinámico de tokens.
 - **Recuerda**: memoria vectorial local (RAG con ChromaDB) sobre documentación técnica, sin depender de internet.
-- **Ve tu entorno**: detecta la ventana activa en Windows, lee el archivo en foco y mantiene un workspace persistente entre turnos.
+- **Ve tu entorno**: detecta la ventana activa en Windows, lee el archivo en foco, busca archivos en el disco y mantiene un workspace persistente entre turnos.
+- **Delega lo pesado a Go**: microservicios locales compilados (telemetría del sistema, búsqueda concurrente de archivos, lectura de Git) para que Python no compita con el LLM por CPU y RAM.
 - **Habla y escucha**: wake word con Vosk, transcripción con faster-whisper, síntesis con Edge-TTS.
 
 Todo optimizado para operar en hardware de gama media (**RTX 4050, 6 GB VRAM**), preservando la GPU exclusivamente para el LLM.
@@ -94,9 +96,19 @@ Motor de decisión que cruza conteo estimado de tokens, detección de intencione
 
 ### Tool Manager (cortafuegos de seguridad)
 Capa de permisos jerárquica con tres niveles:
-- **Nivel 0**: lectura (CPU, hora, archivos de texto).
-- **Nivel 1**: entorno (abrir apps, enfocar ventanas).
+- **Nivel 0**: lectura (CPU, RAM, procesos, hora, archivos de texto).
+- **Nivel 1**: entorno (abrir apps, enfocar ventanas) y lectura profunda de cambios de Git.
 - **Nivel 2**: modificaciones críticas (`git commit`, `push`, borrado de archivos). Requieren confirmación humana explícita (`s` / `n`) en un popup asíncrono.
+
+### Flujo agéntico (tool calling)
+El LLM (Gemma 2 o Gemini Flash/Pro) decide por su propio criterio cuándo invocar herramientas como `buscar_archivo_local`, sin depender de interceptores de expresiones regulares para esa tarea. Cuando la búsqueda devuelve varias coincidencias, la interfaz toma el control y muestra una lista interactiva (modal de desambiguación); el clic del usuario devuelve la ruta exacta y el flujo continúa. Las acciones críticas siguen pasando por el Tool Manager y la confirmación humana.
+
+### Microservicios locales en Go
+Arquitectura políglota: Python queda como cerebro (RAG, LLM, voz) y gestor de seguridad, y Go se encarga de las operaciones de bajo nivel mediante un servidor REST local (puerto `10510`):
+- **Sensor del sistema**: lee RAM, CPU y procesos activos como un binario compilado de bajo consumo. `tools.py` actúa como fachada (cliente HTTP) y, según el nivel crítico de la RAM, adjunta directivas al LLM para ajustar el tono de la respuesta.
+- **Buscador concurrente** (`/archivos/buscar`): escaneo recursivo y en paralelo con *goroutines* sobre las zonas seguras y carpetas configuradas, con exclusión de `node_modules`, `.git` y temporales. Devuelve rutas, pesos y fechas en JSON.
+- **Git híbrido** (`/git/cambios`): Go ejecuta `git diff` y `git status` sin bloquear el backend; Gemma 2 redacta el mensaje de commit y Python (Nivel 2) exige la autorización visual del usuario antes de modificar el repositorio.
+- **Orquestación y resiliencia**: `api.py` despliega los ejecutables en segundo plano al iniciar y los cierra al terminar. Si un microservicio se cae, L-IA lo informa en lugar de fallar.
 
 ### Workspace Activo (caché contextual)
 Resuelve la "amnesia post-lectura": detecta la ventana activa (`pygetwindow`), extrae el texto, genera un micro-resumen de ~25 palabras con Gemma 2 y lo inyecta en el System Prompt (30–50 tokens). Permite preguntas de seguimiento sin reabrir el archivo.
@@ -114,6 +126,7 @@ Alternancia dinámica entre Gemma 2 y Dolphin-Mistral con `keep_alive=0` en Olla
 | Capa | Tecnología |
 |------|------------|
 | **Backend** | Python 3.11, FastAPI, Uvicorn, SSE (`StreamingResponse`) |
+| **Microservicios** | Go (servidor REST local: sensor del sistema, buscador concurrente, lectura de Git) |
 | **Frontend** | Tauri v2, React 18, Vite, framer-motion, CSS puro |
 | **LLMs locales** | Gemma 2 9B, Dolphin-Mistral 7B (vía Ollama) |
 | **LLMs nube** | Gemini Flash, Gemini Pro (Google AI Studio) |
@@ -129,7 +142,9 @@ Alternancia dinámica entre Gemma 2 y Dolphin-Mistral con `keep_alive=0` en Olla
 | Módulo | Responsabilidad |
 |--------|-----------------|
 | **Segundo Cerebro (RAG)** | Indexa y recupera fragmentos de documentación técnica. Inyección con bozal de consulta estricto. |
-| **Control de versiones** | Flujos completos de Git (`add`, `commit`, `push`) con commit redactado por el LLM y previsualización obligatoria. |
+| **Control de versiones** | Flujos completos de Git (`add`, `commit`, `push`): lectura de cambios en Go, commit redactado por el LLM y previsualización obligatoria en Python. |
+| **Búsqueda de archivos** | Buscador concurrente en Go invocado de forma autónoma por el LLM, con desambiguación visual en la interfaz. |
+| **Microservicios Go** | Sensor del sistema, buscador y Git como binarios compilados que Python orquesta y supervisa. |
 | **Escucha híbrida y TTS** | Canal acústico continuo con detección pasiva y streaming asíncrono de voz. |
 | **Conciencia de entorno** | Detección de ventana activa en Windows, lectura contextual y anclaje en workspace. |
 | **Multi-sesión** | Aislamiento de historial y workspace por pestaña, con autonombre de sesiones en hilo aparte. |
@@ -159,6 +174,7 @@ Alternancia dinámica entre Gemma 2 y Dolphin-Mistral con `keep_alive=0` en Olla
   - Fase 6: Memoria vectorial y RAG en CPU (ChromaDB)
   - Fase 7: Conciencia de entorno (Workspace activo)
   - Fase 8: Interfaz Tauri + React, streaming SSE, avatar, multi-sesión y kill switch
+- **Posterior a v3.2.1:** microservicios locales en Go (sensor, Git y buscador concurrente) y evolución a flujo agéntico.
 
 ---
 
@@ -203,7 +219,16 @@ Edita `.env` y añade tu clave de Google AI Studio:
 GEMINI_API_KEY=tu_clave_aqui
 ```
 
-### 4. Ejecución
+### 4. Microservicios en Go (opcional pero recomendado)
+
+Requiere [Go](https://go.dev/) instalado. Compila los microservicios del directorio `microservicios/`; `api.py` los lanza automáticamente en segundo plano al iniciar el backend.
+
+```bash
+cd microservicios
+go build
+```
+
+### 5. Ejecución
 
 **Backend (FastAPI):**
 ```bash
