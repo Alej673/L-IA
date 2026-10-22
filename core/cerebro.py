@@ -185,8 +185,10 @@ _RAICES = {
         "audit", "mejor[aá]", "prueb[ae]",
     ],
     "web": [
-        "investig", "busc", "consult", "averigu", "googl",
-        "indag", "infórmate", "informate",
+        "investig", "consult", "averigu", "googl", "indag", "infórmate", "informate"
+    ],
+    "buscar_archivo": [
+        "busc", "encuentr", "rastre", "localiz", "archivo", "documento"
     ],
     "clima": [
         "clima", "temperatur", "pronostic", "meteorolog",
@@ -551,55 +553,62 @@ def tomar_captura_en_memoria():
         img.thumbnail((1024, 576))
         return img
 
-
 def _extraer_referencia_archivo(mensaje):
-    nombre_detectado = None
-
-    # Buscar rutas entre comillas
-    match_ruta_comillas = re.search(r'"([a-zA-Z]:\\[^"]+)"', mensaje)
-    if match_ruta_comillas:
-        nombre_detectado = match_ruta_comillas.group(1).strip()
-
-    # Buscar rutas con extensiones comunes
-    elif (match_ruta := re.search(
-        r'([a-zA-Z]:\\[^\*?"<>|]+\.(?:txt|py|php|js|json|html|css|md|env|cpp|h|docx|pdf))',
-        mensaje, re.IGNORECASE
-    )):
-        nombre_detectado = match_ruta.group(1).strip()
-
-    # Buscar nombres de archivos con extensiones comunes
-    elif (match_ext := re.search(
-        r'\b([a-zA-Z0-9_\-]+\s*[a-zA-Z0-9_\-]*\.(?:txt|py|php|js|json|html|css|md|env|cpp|h|docx|pdf))\b',
-        mensaje, re.IGNORECASE
-    )):
-        nombre_detectado = match_ext.group(1).strip()
-
-    # Buscar archivos por acción
-    else:
-        patron_accion_archivo = (
-            r'\b(?:le[eráiow]*|revis[aaréiów]*|analiz[aaréiów]*|abr[iraéiów]*|'
-            r'consult[aaréiów]*|busc[aaréiów]*|extra[eráiów]*)\s+'
-            r'(?:el\s+|la\s+|del\s+|un\s+|una\s+)?'
-            r'(?:archivo|documento|nota|pdf|docx|word|script|codigo|código)\s+'
-            r'(?:llamado\s+|de\s+|titulado\s+)?'
-            r'([a-zA-Z0-9_\-\.]+(?:\s+[a-zA-Z0-9_\-\.]+){0,4}?)'
-            r'(?=\s+(?:que|para|porque|as[ií]|y)\b|\s*[\.\?!]|\Z)'
-        )
-        match_intencion = re.search(patron_accion_archivo, mensaje, re.IGNORECASE)
-        if match_intencion:
-            limpio = match_intencion.group(1).strip()
-            for palabra_extra in [" por favor", " para mi", " que tengo", " en mi pc"]:
-                # Verificamos ignorando mayúsculas/minúsculas y recortamos por longitud (slicing)
-                # en lugar de un .replace() que podría corromper el medio del nombre del archivo.
-                if limpio.lower().endswith(palabra_extra):
-                    limpio = limpio[:-len(palabra_extra)]
-            nombre_detectado = limpio.strip()
-
-    if nombre_detectado:
-        print(f"🚦 [SEMÁFORO] Archivo capturado por el Regex: '{nombre_detectado}'")
-        return nombre_detectado
-
+    """
+    [MODO AGENTE ACTIVADO]
+    Desactivamos el Regex estricto. Ahora confiamos en que el LLM
+    use la herramienta tools.buscar_archivo_local cuando lo necesite.
+    """
     return None
+
+# def _extraer_referencia_archivo(mensaje):
+#     nombre_detectado = None
+
+#     # Buscar rutas entre comillas
+#     match_ruta_comillas = re.search(r'"([a-zA-Z]:\\[^"]+)"', mensaje)
+#     if match_ruta_comillas:
+#         nombre_detectado = match_ruta_comillas.group(1).strip()
+
+#     # Buscar rutas con extensiones comunes
+#     elif (match_ruta := re.search(
+#         r'([a-zA-Z]:\\[^\*?"<>|]+\.(?:txt|py|php|js|json|html|css|md|env|cpp|h|docx|pdf))',
+#         mensaje, re.IGNORECASE
+#     )):
+#         nombre_detectado = match_ruta.group(1).strip()
+
+#     # Buscar nombres de archivos con extensiones comunes
+#     elif (match_ext := re.search(
+#         r'\b([a-zA-Z0-9_\-]+\s*[a-zA-Z0-9_\-]*\.(?:txt|py|php|js|json|html|css|md|env|cpp|h|docx|pdf))\b',
+#         mensaje, re.IGNORECASE
+#     )):
+#         nombre_detectado = match_ext.group(1).strip()
+
+#     # Buscar archivos por acción
+#     else:
+#         patron_accion_archivo = (
+#             r'\b(?:le[eráiow]*|revis[aaréiów]*|analiz[aaréiów]*|abr[iraéiów]*|'
+#             r'consult[aaréiów]*|busc[aaréiów]*|extra[eráiów]*)\s+'
+#             r'(?:el\s+|la\s+|del\s+|un\s+|una\s+)?'
+#             r'(?:archivo|documento|nota|pdf|docx|word|script|codigo|código)\s+'
+#             r'(?:llamado\s+|de\s+|titulado\s+)?'
+#             r'([a-zA-Z0-9_\-\.]+(?:\s+[a-zA-Z0-9_\-\.]+){0,4}?)'
+#             r'(?=\s+(?:que|para|porque|as[ií]|y)\b|\s*[\.\?!]|\Z)'
+#         )
+#         match_intencion = re.search(patron_accion_archivo, mensaje, re.IGNORECASE)
+#         if match_intencion:
+#             limpio = match_intencion.group(1).strip()
+#             for palabra_extra in [" por favor", " para mi", " que tengo", " en mi pc"]:
+#                 # Verificamos ignorando mayúsculas/minúsculas y recortamos por longitud (slicing)
+#                 # en lugar de un .replace() que podría corromper el medio del nombre del archivo.
+#                 if limpio.lower().endswith(palabra_extra):
+#                     limpio = limpio[:-len(palabra_extra)]
+#             nombre_detectado = limpio.strip()
+
+#     if nombre_detectado:
+#         print(f"🚦 [SEMÁFORO] Archivo capturado por el Regex: '{nombre_detectado}'")
+#         return nombre_detectado
+
+#     return None
 
 def _extraer_ciudad_clima(mensaje):
     match = re.search(
@@ -1067,7 +1076,7 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
     # salta el semáforo de permisos (`callback_ui` / `gestor_permisos`).
     # Desactivado, `response.function_calls` siempre llega intacto y decidimos
     # nosotros si se ejecuta.
-    herramientas_activas = [tools.abrir_aplicacion, leer_repositorio_git, comando_cambiar_entorno]
+    herramientas_activas = [tools.abrir_aplicacion, leer_repositorio_git, comando_cambiar_entorno, tools.buscar_archivo_local]
     config_deteccion = types.GenerateContentConfig(
         tools=herramientas_activas,
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
@@ -1145,22 +1154,22 @@ def _extraer_llamada_manual(texto):
     # Sin este respaldo, esa llamada nunca se ejecuta ni se detecta: la app
     # no se abre y el texto crudo (con corchetes) se le muestra al usuario,
     # violando además la regla de "cero acotaciones actorales".
-    match_corchete = re.search(r'\[\s*(abrir_aplicacion|obtener_estado_sistema|comando_cambiar_entorno)\s+"([^"]+)"\s*\]', texto)
+    match_corchete = re.search(r'\[\s*(abrir_aplicacion|obtener_estado_sistema|comando_cambiar_entorno|buscar_archivo_local)\s+"([^"]+)"\s*\]', texto)
     if match_corchete:
         accion = match_corchete.group(1)
-        if accion == "abrir_aplicacion":
-            return {"accion": accion, "nombres_apps": match_corchete.group(2)}
+        if accion in ("abrir_aplicacion", "buscar_archivo_local"):
+            clave = "nombres_apps" if accion == "abrir_aplicacion" else "nombre_archivo"
+            return {"accion": accion, clave: match_corchete.group(2)}
         elif accion == "comando_cambiar_entorno":
             return {"accion": accion, "escena": match_corchete.group(2)}
         return {"accion": accion}
 
     return None
 
-def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir, quiere_estado, quiere_entorno,
-                         callback_ui=None, callback_stream=None, motor_voz="kokoro",usar_voz=False):
+def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir, quiere_estado, quiere_entorno, quiere_buscar, callback_ui=None, callback_stream=None, motor_voz="kokoro", usar_voz=False):
     print(f"\n[🏠 Enrutando al Cerebro Local ({MODELO_LOCAL})...]")
 
-    requiere_herramienta = quiere_abrir or quiere_estado or quiere_entorno
+    requiere_herramienta = quiere_abrir or quiere_estado or quiere_entorno or quiere_buscar
 
     mensajes = [
         {'role': 'system', 'content': instrucciones_sistema},
@@ -1186,6 +1195,11 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
         if quiere_estado:
             instrucciones_finales += (
                 'Formato EXACTO: {"accion": "obtener_estado_sistema"}. '
+                'Responde ÚNICAMENTE el JSON, nada más.'
+            )
+        if quiere_buscar:
+            instrucciones_finales += (
+                'Formato EXACTO: {"accion": "buscar_archivo_local", "nombre_archivo": "<palabra_clave>"}. '
                 'Responde ÚNICAMENTE el JSON, nada más.'
             )
         if quiere_entorno:
@@ -1225,8 +1239,10 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
                 kwargs_herramienta = {"nombres_apps": llamada_manual.get("nombres_apps", "")}
             elif accion == "comando_cambiar_entorno":
                 kwargs_herramienta = {"escena": llamada_manual.get("escena", "trabajo")}
+            elif accion == "buscar_archivo_local":
+                kwargs_herramienta = {"nombre_archivo": llamada_manual.get("nombre_archivo", "")}
 
-            if accion in ("abrir_aplicacion", "obtener_estado_sistema", "comando_cambiar_entorno"):
+            if accion in ("abrir_aplicacion", "obtener_estado_sistema", "comando_cambiar_entorno", "buscar_archivo_local"):
                 print(f"\n⚙️ [L-IA Local solicitando ejecución de: {accion}]")
                 resultado = _ejecutar_herramienta_segura(
                     accion,
@@ -2180,6 +2196,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
         texto_respuesta = responder_con_local(
             instrucciones_sistema, contexto_historico,
             intenciones["abrir_app"], intenciones["estado_pc"], intenciones.get("entorno_iot", False),
+            intenciones.get("buscar_archivo", False),
             callback_ui=callback_ui,
             callback_stream=callback_stream,
             motor_voz=motor_voz_elegido,

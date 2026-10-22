@@ -405,85 +405,81 @@ def abrir_aplicacion(nombres_apps: str) -> str:
 
     return " | ".join(resultados)
 
-
-def buscar_archivo_local(nombre_archivo: str) -> str:
+def buscar_archivo_local(nombre_archivo: str, callback_desambiguacion=None) -> str:
     """
-    Rastrea 'Zonas Seguras' buscando un archivo por su nombre.
-    Ahora lee dinámicamente las carpetas desde config_apps.json.
+    Rastrea 'Zonas Seguras' usando el microservicio concurrente en Go.
+    Si encuentra múltiples archivos, lanza un modal en React para elegir.
     """
     nombre_archivo = nombre_archivo.lower()
     usuario_actual = os.path.expanduser("~")
     
-    # 1. Rutas base obligatorias de Windows
+    # 1. Compilar las Zonas Seguras (Rutas base + personalizadas)
     zonas_seguras = [
         os.path.join(usuario_actual, "Downloads"),
         os.path.join(usuario_actual, "Desktop"),
         os.path.join(usuario_actual, "Documents")
     ]
     
-    # 2. Leer tu JSON y agregar TODAS tus carpetas personalizadas automáticamente
     config = _cargar_config()
-    carpetas_personalizadas = config.get("carpetas_personalizadas", {})
-    
-    for nombre, ruta in carpetas_personalizadas.items():
-        # Validamos que la ruta exista y no esté duplicada
+    for nombre, ruta in config.get("carpetas_personalizadas", {}).items():
         if os.path.exists(ruta) and ruta not in zonas_seguras:
             zonas_seguras.append(ruta)
 
-    coincidencias = []
-    print(f"🕵️‍♀️ [L-IA rastreando el archivo '{nombre_archivo}' en tus Zonas Seguras...]")
-    
-    for zona in zonas_seguras:
-        if not os.path.exists(zona):
-            continue
-            
-        for raiz, carpetas, archivos in os.walk(zona):
-            # Excluir carpetas pesadas para mantener la búsqueda en milisegundos
-            carpetas[:] = [c for c in carpetas if c not in ['node_modules', 'vendor', '.git', 'AppData', 'Saved', 'Intermediate']]
-            
-            for archivo in archivos:
-                # IGNORAR ARCHIVOS TEMPORALES DE WORD/EXCEL Y ARCHIVOS OCULTOS
-                if archivo.startswith("~$") or archivo.startswith("."):
-                    continue
-                    
-                if nombre_archivo in archivo.lower():
-                    ruta_completa = os.path.join(raiz, archivo)
-                    coincidencias.append(ruta_completa)
+    print(f"🕵️‍♀️ [L-IA] Delegando búsqueda concurrente a Go para '{nombre_archivo}'...")
 
-    # Si la búsqueda exacta no encontró nada, probamos fuzzy match sobre
-    # TODOS los nombres de archivo vistos, para tolerar errores de tecleo
-    # o nombres parecidos (ej. "avances demo tecnica" vs "Avances_Demo_Tecnica.docx")
-    if len(coincidencias) == 0:
-        todos_los_archivos = []
-        for zona in zonas_seguras:
-            if not os.path.exists(zona):
-                continue
-            for raiz, carpetas, archivos in os.walk(zona):
-                carpetas[:] = [c for c in carpetas if c not in ['node_modules', 'vendor', '.git', 'AppData', 'Saved', 'Intermediate']]
-                for archivo in archivos:
-                    if archivo.startswith("~$") or archivo.startswith("."):
-                        continue
-                    todos_los_archivos.append(os.path.join(raiz, archivo))
-
-        nombres_base = [os.path.basename(p).lower() for p in todos_los_archivos]
-        cercanos = difflib.get_close_matches(nombre_archivo, nombres_base, n=5, cutoff=0.5)
-        if cercanos:
-            coincidencias = [todos_los_archivos[nombres_base.index(c)] for c in cercanos]
-
-    if len(coincidencias) == 0:
-        return f"No se encontró ningún archivo relacionado con '{nombre_archivo}' en tus Zonas Seguras."
-
-    elif len(coincidencias) == 1:
-        return leer_archivo_local(coincidencias[0], busqueda_automatica=True)
-
-    else:
-        # Añadimos i+1 para que la lista salga numerada: 1., 2., 3.
-        lista_sugerencias = "\n".join([f"{i+1}. {ruta}" for i, ruta in enumerate(coincidencias[:5])])
-        return (
-            f"Encontré múltiples coincidencias para '{nombre_archivo}'. "
-            f"Muestra esta lista NUMERADA al usuario y pregúntale cuál quiere leer:\n{lista_sugerencias}"
+    try:
+        # 2. Petición POST a Go (Escaneo multihilo de disco)
+        respuesta = requests.post(
+            "http://localhost:10510/archivos/buscar",
+            json={"palabra_clave": nombre_archivo, "carpetas": zonas_seguras},
+            timeout=10
         )
+        datos = respuesta.json()
+        
+        if datos.get("error"):
+            return f"Error en el buscador de bajo nivel: {datos['error']}"
+            
+        coincidencias = datos.get("resultados") or []
 
+        # 3. Lógica de enrutamiento de resultados
+        if len(coincidencias) == 0:
+            return f"No se encontró ningún archivo relacionado con '{nombre_archivo}' en tus Zonas Seguras."
+
+        elif len(coincidencias) == 1:
+            # Éxito instantáneo: Go encontró solo uno. Lo leemos y se lo damos a L-IA.
+            print(f"✅ Archivo único encontrado: {coincidencias[0]['ruta']}")
+            return leer_archivo_local(coincidencias[0]['ruta'], busqueda_automatica=True)
+
+        else:
+            # 4. ¡Múltiples archivos! 
+            # Hacemos una petición interna a nuestra propia API para congelar 
+            # este hilo hasta que React muestre el modal y el usuario responda.
+            print("⚠️ Múltiples opciones. Levantando modal en React...")
+            try:
+                resp_espera = requests.post(
+                    "http://127.0.0.1:10500/semaforo/interno/esperar_archivo",
+                    json={"opciones": coincidencias},
+                    timeout=130 # 10 segundos extra sobre el timeout de la API
+                ).json()
+                
+                ruta_elegida = resp_espera.get("ruta")
+                
+                if ruta_elegida:
+                    # Una vez que haces clic en React, leemos ese archivo exacto
+                    return leer_archivo_local(ruta_elegida, busqueda_automatica=True)
+                else:
+                    return "Operación cancelada: Alejandro cerró el modal sin seleccionar ningún archivo."
+            
+            except requests.exceptions.Timeout:
+                return "Tiempo de espera agotado: no seleccionaste ningún archivo en la interfaz a tiempo."
+            except Exception as e:
+                return f"Error intentando desambiguar con la interfaz: {e}"
+
+    # --- Bloques except del try principal (Go en puerto 10510) ---
+    except requests.exceptions.ConnectionError:
+        return "[DIRECTIVA ESTRICTA: El motor de búsqueda Go está offline. Pide a Alejandro que revise los microservicios.]"
+    except Exception as e:
+        return f"Error inesperado durante la búsqueda concurrente: {e}"
 
 def leer_archivo_local(ruta_archivo: str, busqueda_automatica=False):
     """

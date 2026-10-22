@@ -6,11 +6,13 @@ import (
 )
 
 func main() {
-	// Las funciones ya existen en el mismo paquete gracias a sensores.go y git.go
 	http.HandleFunc("/sistema", getSystemStatus)
 	http.HandleFunc("/git/estado", getGitStatus)
 	http.HandleFunc("/git/cambios", getGitCambios)
 
-	fmt.Println("✅ Motor Go activo en puerto 10510 (Sensores y Git)...")
+	// Nueva ruta para el escáner concurrente de archivos
+	http.HandleFunc("/archivos/buscar", buscarArchivosHandler)
+
+	fmt.Println("✅ Motor Go activo en puerto 10510 (Sensores, Git y Buscador)...")
 	http.ListenAndServe(":10510", nil)
 }

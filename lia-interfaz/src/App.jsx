@@ -872,6 +872,7 @@ export default function App() {
 
   const [semaforo, setSemaforo] = useState({ activa: false, herramienta: '', argumentos: '' })
   const [cargando, setCargando] = useState(false)
+  const [semaforoArchivos, setSemaforoArchivos] = useState({ activa: false, opciones: [] }) // NUEVO
 
   const finalDelChatRef = useRef(null)
   const archivoInputRef = useRef(null)
@@ -1067,6 +1068,27 @@ export default function App() {
       }
     }
   }, 300, !cargando)
+
+  usePolling(async () => {
+    const res = await fetch(`${API}/semaforo/archivos`)
+    if (!res.ok) return
+    const data = await res.json()
+    if (data.activa) setSemaforoArchivos(data)
+  }, 1000, piensaOEscribe && !semaforoArchivos.activa)
+
+  const responderSemaforoArchivos = async (rutaSeleccionada) => {
+    try {
+      const res = await fetch(`${API}/semaforo/archivos/responder`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ruta: rutaSeleccionada })
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      setSemaforoArchivos({ activa: false, opciones: [] })
+    } catch (e) {
+      console.error('Fallo al enviar decisión de archivo al núcleo', e)
+    }
+  }
 
   const responderSemaforo = async (autorizado) => {
     try {
@@ -1609,6 +1631,76 @@ export default function App() {
                   <button type="button" className="btn-autorizar" onClick={() => responderSemaforo(true)}>AUTORIZAR</button>
                 </div>
               </motion.div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* MODAL DE DESAMBIGUACIÓN DE ARCHIVOS */}
+      <AnimatePresence>
+        {semaforoArchivos.activa && (
+          <motion.div
+            className="modal-overlay"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            style={{ zIndex: 10000 }}
+          >
+            <motion.div
+              className="modal-semaforo"
+              style={{ width: '90%', maxWidth: '600px', boxSizing: 'border-box' }}
+              initial={{ scale: 0.8, y: 50 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.8, opacity: 0 }}
+              transition={{ type: 'spring', bounce: 0.5 }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <Folder color="#00ffff" size={40} style={{ marginBottom: '10px' }} />
+                <h3 style={{ color: '#00ffff', margin: '0 0 15px 0', letterSpacing: '2px', textAlign: 'center' }}>
+                  MÚLTIPLES ARCHIVOS ENCONTRADOS
+                </h3>
+              </div>
+
+              <p style={{ color: '#fff', fontSize: '13px', marginBottom: '15px', textAlign: 'center' }}>
+                Se encontraron {semaforoArchivos.opciones.length} coincidencias. Selecciona el archivo exacto que deseas leer:
+              </p>
+
+              <div className="custom-scrollbar" style={{ maxHeight: '300px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
+                {semaforoArchivos.opciones.map((archivo, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => responderSemaforoArchivos(archivo.ruta)}
+                    style={{
+                      background: 'rgba(0, 0, 0, 0.4)',
+                      border: '1px solid rgba(0, 255, 255, 0.3)',
+                      borderRadius: '6px',
+                      padding: '12px',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      transition: 'all 0.2s',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '4px'
+                    }}
+                    onMouseOver={(e) => e.currentTarget.style.background = 'rgba(0, 255, 255, 0.15)'}
+                    onMouseOut={(e) => e.currentTarget.style.background = 'rgba(0, 0, 0, 0.4)'}
+                  >
+                    <span style={{ color: '#00ffff', fontSize: '13px', fontWeight: 'bold', wordBreak: 'break-all' }}>
+                      {archivo.ruta.split(/[\\/]/).pop()}
+                    </span>
+                    <span style={{ color: '#88ccff', fontSize: '11px', wordBreak: 'break-all' }}>
+                      Ruta: {archivo.ruta}
+                    </span>
+                    <div style={{ display: 'flex', gap: '15px', color: '#39ff88', fontSize: '11px', marginTop: '4px' }}>
+                      <span>🗓️ {archivo.fecha}</span>
+                      <span>⚖️ {archivo.tamano_kb.toFixed(2)} KB</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+
+              <div className="botones-alerta" style={{ justifyContent: 'center' }}>
+                <button type="button" className="btn-denegar" onClick={() => responderSemaforoArchivos(null)}>
+                  CANCELAR BÚSQUEDA
+                </button>
+              </div>
             </motion.div>
           </motion.div>
         )}

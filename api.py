@@ -117,38 +117,27 @@ class PeticionLector(BaseModel):
 class ActualizarTituloRequest(BaseModel):
     titulo: str
 
+class RespuestaSeleccionArchivo(BaseModel):
+    ruta: Optional[str] = None
+
+class SolicitudDesambiguacion(BaseModel):
+    opciones: list[dict]
 
 # ===========================================================================
-# 3. Semáforo de autorización
+# 3. Semáforos de Interfaz (Autorizaciones y Desambiguación)
 # ===========================================================================
+
+# --- SEMÁFORO 1: Seguridad (Espera True/False) ---
 @dataclass
 class SemaforoAutorizacion:
-    """
-    Pausa a L-IA cuando necesita permiso del usuario para ejecutar una
-    herramienta.
-
-    Agrupa el estado compartido (alerta activa, resultado de la votación,
-    evento de sincronización y el lock que evita que dos chats simultáneos
-    se pisen) en un solo objeto en vez de variables globales sueltas.
-    """
-
+    """Pausa a L-IA cuando necesita permiso del usuario para ejecutar Nivel 2."""
     evento: threading.Event = field(default_factory=threading.Event)
     lock: threading.Lock = field(default_factory=threading.Lock)
     alerta_actual: Optional[dict] = None
     autorizacion_concedida: bool = False
 
     def solicitar_autorizacion(self, herramienta: str, argumentos: Any) -> bool:
-        """
-        Bloquea el hilo actual hasta que el usuario responda desde el frontend
-        (POST /semaforo/responder) o se cumpla el timeout. Solo una solicitud
-        puede estar activa a la vez en todo el servidor.
-
-        Devuelve True si el usuario autorizó; False si denegó o no respondió.
-        """
         with self.lock:
-            # Primero se limpia el estado y al FINAL se publica la alerta: así
-            # una respuesta que llegue en cuanto la UI ve la alerta nunca queda
-            # borrada por el clear().
             self.autorizacion_concedida = False
             self.evento.clear()
             self.alerta_actual = {"herramienta": herramienta, "argumentos": str(argumentos)}
@@ -160,42 +149,61 @@ class SemaforoAutorizacion:
                 self.alerta_actual = None
 
             if not respondio_a_tiempo:
-                logger.warning(
-                    "Tiempo agotado esperando autorización para: %s. Abortando por defecto.",
-                    herramienta,
-                )
+                logger.warning("Tiempo agotado para: %s. Abortando por defecto.", herramienta)
                 return False
 
             return self.autorizacion_concedida
 
     def registrar_respuesta(self, autorizado: bool) -> bool:
-        """
-        Llamado por /semaforo/responder cuando el usuario decide.
-        Devuelve False si no había ninguna solicitud pendiente (se ignora).
-        """
         if self.alerta_actual is None:
-            logger.warning("Respuesta de semáforo sin solicitud pendiente; se ignora.")
             return False
         self.autorizacion_concedida = autorizado
-        self.evento.set()  # libera el hilo que espera en solicitar_autorizacion()
+        self.evento.set()
         return True
 
     def estado_actual(self) -> dict:
-        """Snapshot del estado para el polling de React (GET /semaforo)."""
-        # Copia local: otro hilo podría poner alerta_actual en None entre
-        # la comprobación y la lectura.
         alerta = self.alerta_actual
         if alerta:
-            return {
-                "activa": True,
-                "herramienta": alerta["herramienta"],
-                "argumentos": alerta["argumentos"],
-            }
+            return {"activa": True, "herramienta": alerta["herramienta"], "argumentos": alerta["argumentos"]}
         return {"activa": False}
-
 
 semaforo = SemaforoAutorizacion()
 
+
+# --- SEMÁFORO 2: Buscador de Archivos (Espera una ruta de texto) ---
+@dataclass
+class SemaforoArchivos:
+    """Pausa a L-IA para que el usuario elija entre múltiples archivos en la UI."""
+    evento: threading.Event = field(default_factory=threading.Event)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    opciones_actuales: Optional[list] = None
+    ruta_seleccionada: Optional[str] = None
+
+    def solicitar_seleccion(self, opciones: list) -> Optional[str]:
+        with self.lock:
+            self.ruta_seleccionada = None
+            self.opciones_actuales = opciones
+            self.evento.clear()
+
+            logger.info("Esperando selección de archivo desde React...")
+            self.evento.wait(timeout=TIMEOUT_AUTORIZACION_SEGUNDOS)
+            
+            self.opciones_actuales = None
+            return self.ruta_seleccionada
+
+    def registrar_respuesta(self, ruta: Optional[str]) -> bool:
+        if self.opciones_actuales is None:
+            return False
+        self.ruta_seleccionada = ruta
+        self.evento.set()
+        return True
+
+    def estado_actual(self) -> dict:
+        if self.opciones_actuales:
+            return {"activa": True, "opciones": self.opciones_actuales}
+        return {"activa": False}
+
+semaforo_archivos = SemaforoArchivos()
 
 # ===========================================================================
 # 4. Vigilante de RAM (descarga el modelo de Ollama tras inactividad)
@@ -715,3 +723,20 @@ def disparar_evento_anomalo():
 # --- Registro de routers ----------------------------------------------------
 for _router in (router_sesiones, router_semaforo, router_chat, router_voz, router_debug):
     app.include_router(_router)
+
+@router_semaforo.get("/archivos")
+async def verificar_semaforo_archivos():
+    """React hace polling aquí para saber si debe mostrar el modal de archivos."""
+    return semaforo_archivos.estado_actual()
+
+@router_semaforo.post("/archivos/responder")
+async def responder_semaforo_archivos(respuesta: RespuestaSeleccionArchivo):
+    """React envía la ruta exacta que el usuario clickeó en el modal."""
+    aceptada = semaforo_archivos.registrar_respuesta(respuesta.ruta)
+    return {"status": "ok" if aceptada else "ignorado"}
+
+@router_semaforo.post("/interno/esperar_archivo")
+def esperar_archivo_interno(req: SolicitudDesambiguacion):
+    """tools.py llama a este endpoint interno y se queda congelado esperando a React."""
+    ruta = semaforo_archivos.solicitar_seleccion(req.opciones)
+    return {"ruta": ruta}
