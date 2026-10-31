@@ -20,6 +20,10 @@ se queda esperando. `charlar_con_lia` lo garantiza como red de seguridad.
 
 Módulos pesados (`core.voz`, `core.memoria_rag`) NO se importan aquí arriba:
 se cargan bajo demanda (ver sección 0.5) para que el arranque sea instantáneo.
+
+Detección de intenciones y bozales viven en módulos propios:
+    - core/intenciones.py  (importado como `nlp`)
+    - core/bozales.py
 """
 # --- Librería estándar ---
 import difflib
@@ -47,6 +51,9 @@ import core.tools as tools
 import core.apis as apis
 import core.contexto as contexto
 import core.eventos_anomalos as eventos_anomalos
+import core.intenciones as nlp
+import core.bozales as bozales
+from core import config
 
 # ==========================================
 # 0.5 CARGA PEREZOSA (LAZY LOADING) DE MÓDULOS PESADOS
@@ -89,14 +96,6 @@ if not api_key:
     raise ValueError("❌ No se encontró la variable GEMINI_API_KEY")
 
 client = genai.Client(api_key=api_key)
-
-# ------------------------------------------
-# Modelos disponibles
-# ------------------------------------------
-MODELO_LOCAL = 'gemma2'                # Cerebro cotidiano (rápido, censurado)
-MODELO_UNCENSORED = 'dolphin-mistral'  # Especialista sin filtros (solo bajo demanda explícita)
-MODELO_NUBE_FLASH = 'gemini-3.7-flash' # Analista rápido (visión, web, contexto medio)
-MODELO_NUBE_PRO = 'gemini-3.1-pro-preview'     # Artillería pesada (contexto enorme / análisis profundo)
 
 # Ruta del proyecto/repositorio sobre el que se está trabajando. Persiste entre
 # turnos para que un "¿qué cambió?" sin ruta explícita reutilice el último
@@ -143,248 +142,18 @@ _FRASES_ANALISIS_PROFUNDO = (
 )
 
 # ------------------------------------------
-# Detección de intenciones — Semáforo v3
+# Workspace activo y lectura de documentos (Fase 7)
 # ------------------------------------------
-# Cada intención se define por RAÍCES de verbos/sustantivos (para cubrir todas
-# sus conjugaciones) y, si hace falta, una lista de EXCLUSIONES: palabras
-# completas que empiezan igual pero significan otra cosa ("abril" vs "abr-ir").
-def _construir_patron(raices, excluir=None):
-    """Compila un regex que reconoce cualquier conjugación de las `raices`
-    (ej. "abr" -> abre, abrir, abriendo), descartando las palabras COMPLETAS
-    de `excluir` que se parecen pero no expresan la acción (ej. "abril").
-    """
-    alternativas = "|".join(raices)
-    if not excluir:
-        return re.compile(rf'\b(?:{alternativas})\w*\b', re.IGNORECASE)
+# Los patrones de detección (intenciones, workspace, lectura implícita) viven
+# en core/intenciones.py. Aquí solo queda la lógica que toca database/tools/contexto.
 
-    exclusion = "|".join(excluir)
-    patron = rf'\b(?!(?:{exclusion})\b)(?:{alternativas})\w*\b'
-    return re.compile(patron, re.IGNORECASE)
-
-
-_RAICES = {
-    "vision": [
-        "pantall", "monitor", "mir", "observ",
-        "ve", "vio", "vier", "viend", "vist", "vem",
-        "chequ", "escane", "fij[aá]te",
-    ],
-    "abrir_app": [
-        "abr", "inici", "ejecut", "lanz", "lanc",
-        "arranc", "activ", "prend", "corr[ée]",
-        "carg", "levant", "monta",
-    ],
-    "estado_pc": [
-        "bater[ií]", "hardware", "ventilador", "temperatura", "laptop",
-    ],
-    "portapapeles": [
-        "portapapeles", "copi", "peg", "clipboard",
-    ],
-    "codigo": [
-        "c[oó]dig", "analiz", "bug", "error", "optimiz",
-        "refactoriz", "revis", "depur", "corrig", "arregl",
-        "audit", "mejor[aá]", "prueb[ae]",
-    ],
-    "web": [
-        "investig", "consult", "averigu", "googl", "indag", "infórmate", "informate"
-    ],
-    "buscar_archivo": [
-        "busc", "encuentr", "rastre", "localiz", "archivo", "documento"
-    ],
-    "clima": [
-        "clima", "temperatur", "pronostic", "meteorolog",
-        "llov", "llueve", "solead",
-    ],
-    "calendario": [
-        "calendari", "agend", "evento", "reuni[oó]n", "cita", "compromis",
-    ],
-    "entorno_activo": [
-        "ventana", "programa", "abierto ahora", "en la pantalla", "herramienta", "proyecto actual",
-        "este documento", "este archivo", "este otro archivo", "este doc", "el otro archivo", "el otro documento"
-    ],
-    "rutinas": [
-        "vamos a trabajar", "lleg[oó] pap[aá]", "empecemos", 
-        "modo hacker", "activa el protocolo", "prepara el entorno"
-    ],
-    "entorno_iot": [
-        "luz", "luces", "iluminaci", "foco", "tira"
-    ],
-    "memoria_tecnica": [
-        "recuerd", "bit[aá]cor", "documentaci[oó]n", "c[oó]mo resolv",
-        "incidente", "segundo cerebro", "apunte", "solucionam"
-    ],
-}
-
-_EXCLUSIONES = {
-    "abrir_app": [
-        "abril", "abriles",
-        "abrigo", "abrigos", "abrigad[oa]s?",
-        "abrazo", "abrazos", "abrupt[oa]s?",
-        "inicial", "iniciales", "iniciativ[a]s?",
-        "ejecutiv[oa]s?",
-        "cargador", "cargadores", "cargamento", "cargamentos",
-        "levantamiento", "levantamientos",
-        "montaña", "montañas", "montaje", "montajes",
-    ],
-    "estado_pc": [
-        "procesion", "procesiones", "procesional",
-        "procesión", "procesiones",
-    ],
-    "codigo": [
-        "mejoramiento", "mejoramientos", "rendimiento"  # hablan del sistema o de mejoras genéricas, no de código
-    ],
-    "clima": [
-        "temperamento", "temperamentos", "temperamental",
-    ],
-}
-
-# Regex compilado por intención (raíces + exclusiones). Más abajo se le
-# suman patrones de frase completa que no encajan en el esquema de raíces.
-PATRONES_CLAVE = {
-    clave: _construir_patron(raices, _EXCLUSIONES.get(clave))
-    for clave, raices in _RAICES.items()
-}
-
-# estado_pc: además de las raíces, acepta frases como "estado de mi pc" y
-# términos sueltos inequívocos (cpu, ram, llama-server).
-PATRONES_CLAVE["estado_pc"] = re.compile(
-    PATRONES_CLAVE["estado_pc"].pattern + 
-    r'|\b(estado|rendimiento|consumo|diagn[oó]stico)\s+(del?\s+|de\s+la\s+|mi\s+|de\s+mi\s+)?(pc|sistema|compu|cpu|ram|memoria|máquina|laptop)\b|\b(cpu|ram|bater[ií]a|llama-server)\b',
-    re.IGNORECASE
-)
-# web: suma frases naturales como "quién ganó" o "busca en internet".
-PATRONES_CLAVE["web"] = re.compile(
-    PATRONES_CLAVE["web"].pattern
-    + r'|(qui[eé]n\s+gan[oó]|acerca\s+de|busc\w*\s+en\s+(internet|la\s+web|google))',
-    re.IGNORECASE
-)
-
-# Añade esto justo debajo de los otros PATRONES_CLAVE modificados:
-PATRONES_CLAVE["entorno_iot"] = re.compile(
-    PATRONES_CLAVE["entorno_iot"].pattern + 
-    r'|\b(modo\s+gaming|modo\s+trabajo|descansar|apaga.*foco|prende.*tira|cambia.*entorno)\b',
-    re.IGNORECASE
-)
-
-# hora: pregunta directa por hora/fecha; se resuelve con la API local, sin LLM externo.
-PATRONES_CLAVE["hora"] = re.compile(
-    r'\b(qu[eé]\s+hora|hora\s+es|hor[ai]\s+actual|fecha\s+de\s+hoy|qu[eé]\s+d[ií]a\s+es)\b',
-    re.IGNORECASE
-)
-
-# uncensored: solo se activa con orden explícita del usuario (nunca por defecto).
-PATRONES_CLAVE["uncensored"] = re.compile(
-    r'\bdolphin\b|sin\s+censura|sin\s+filtros|modo\s+rebelde|asume\s+el\s+control',
-    re.IGNORECASE
-)
-
-# git: consulta de solo lectura (status + últimos commits).
-PATRONES_CLAVE["git"] = re.compile(
-    r'\b(git|repositorio|repo|commits?|cambios en git)\b',
-    re.IGNORECASE
-)
-
-# guardar_git: orden de ESCRIBIR (add + commit + push). Pide permiso en la GUI.
-PATRONES_CLAVE["guardar_git"] = re.compile(
-    r'\b(guard\w*|sub[ei]\w*|hacer|haz|crea\w*|comite\w*|registr\w*)\b.*?\b(commit|cambio\w*|repo|c[oó]digo)\b',
-    re.IGNORECASE
-)
-
-# forzar_pro: el usuario pide Gemini Pro de forma explícita ("modo pro",
-# "usa gemini pro", "modo arquitecto"), aunque la tarea no lo exija por tamaño.
-PATRONES_CLAVE["forzar_pro"] = re.compile(
-    r'\b(?:(?:usa|utiliza|con|activa|cambia\s+a|pasa\s+a|modo)\s+(?:el\s+)?(?:modelo\s+)?(?:gemini\s+)?pro'
-    r'|modo\s+arquitecto)\b',
-    re.IGNORECASE
-)
-
-# codigo_pesado: verbo de refactor/migración/auditoría + ALCANCE AMPLIO (todo el
-# proyecto, varios archivos, la arquitectura...). Generaliza las frases fijas de
-# _FRASES_ANALISIS_PROFUNDO. "Reescribe todo el archivo" NO cuenta: es un solo
-# archivo y lo resuelve Flash o Local.
-_VERBOS_CODIGO_PESADO = (
-    r'(?:refactoriz|reestructur|reescrib|reescrit|migr|redise[ñn]|moderniz|'
-    r'reorganiz|audit|analiz|revis)\w*'
-)
-_ALCANCE_AMPLIO = (
-    r'(?:todo\s+el\s+(?:proyecto|c[oó]digo|sistema|repo\w*|backend|frontend)'
-    r'|toda\s+la\s+(?:arquitectura|base\s+de\s+c[oó]digo|app|aplicaci[oó]n|l[oó]gica)'
-    r'|(?:el\s+|la\s+)?(?:proyecto|sistema|repo\w*|arquitectura|base\s+de\s+c[oó]digo)\s+(?:completo|completa|entero|entera)'
-    r'|(?:varios|m[uú]ltiples|todos\s+los)\s+(?:archivos|m[oó]dulos))'
-)
-PATRONES_CLAVE["codigo_pesado"] = re.compile(
-    r'\b' + _VERBOS_CODIGO_PESADO + r'\b.{0,80}?\b' + _ALCANCE_AMPLIO + r'\b',
-    re.IGNORECASE
-)
-
-# guia_capacidades: preguntas sobre qué puede hacer L-IA; activa la nota de
-# autoconocimiento generada en la sección 1.6.
-PATRONES_CLAVE["guia_capacidades"] = re.compile(
-    r'\b(qu[eé]\s+puedes\s+hacer|qu[eé]\s+sabes\s+hacer|c[oó]mo\s+me\s+puedes\s+ayudar|tus\s+capacidades|tus\s+funciones|c[oó]mo\s+funcionas|qu[eé]\s+le\s+puedo\s+pedir|qu[eé]\s+te\s+puedo\s+pedir|ay[uú]dame\s+a\s+usarte|gu[ií]ame|manual\s+de\s+usuario|qu[eé]\s+opciones\s+tengo)\b',
-    re.IGNORECASE
-)
-
-# ------------------------------------------
-# Ingesta al Segundo Cerebro (RAG)
-# ------------------------------------------
-# Patrón propio (no una raíz de _RAICES): sus verbos ("memoriza", "aprende",
-# "asimila") sirven para GUARDAR contenido, a diferencia de "memoria_tecnica",
-# que sirve para CONSULTAR lo ya guardado. Exige "este/esta/el <archivo|
-# documento|...>" para no dispararse con frases sueltas como "memoriza esto
-# que te digo", que no apuntan a un archivo de la ventana activa.
-PATRONES_CLAVE["memorizar_documento"] = re.compile(
-    r'\b(memoriza|aprende|asimila|guarda\s+en\s+tu\s+memoria|ingesta)\s+(este|esta|el)\s+(archivo|documento|texto|pdf|docx|c[oó]digo|manual)\b',
-    re.IGNORECASE
-)
-
-# ------------------------------------------
-# Workspace activo y lectura implícita (Fase 7)
-# ------------------------------------------
-# fijar_workspace / limpiar_workspace: comandos manuales para anclar (o soltar)
-# el archivo o proyecto sobre el que se trabaja, y recordarlo entre turnos.
-PATRONES_CLAVE["fijar_workspace"] = re.compile(
-    r'\b(estoy\s+trabajando\s+en|fija\s+el\s+contexto\s+en|abre\s+el\s+proyecto|mira\s+el\s+archivo|resume\s+este\s+otro\s+archivo|cambia\s+a\s+este\s+archivo)\b',
-    re.IGNORECASE
-)
-
-PATRONES_CLAVE["limpiar_workspace"] = re.compile(
-    r'\b(cierra\s+el\s+proyecto|limpia\s+el\s+workspace|olvida\s+el\s+archivo\s+actual|ya\s+no\s+estamos\s+en)\b',
-    re.IGNORECASE
-)
-
-# Referencias a "este archivo / este documento / resume esto": el usuario se
-# refiere a lo que tiene abierto en pantalla, o al archivo fijado en el Workspace.
-# Ampliado para entender lenguaje natural coloquial.
-PATRON_LECTURA_IMPLICITA = re.compile(
-    r'\b(este|esta)\s+(archivo|documento|c[oó]digo|texto|workspace|proyecto)\b'
-    r'|\b(del|de\s+la|el|la)\s+(archivo|documento|c[oó]digo|texto|workspace|proyecto)\s+que\s+(estoy|tengo)\s+\w+'
-    r'|\bde\s+este\s+(archivo|documento|c[oó]digo|workspace)\b'
-    r'|\bres[uú]m\w*\s+(esto|el\s+workspace|el\s+archivo)\b'
-    r'|\b(del|el)\s+workspace\b', # <-- Captura "hazme un resumen del workspace"
-    re.IGNORECASE
-)
-
-# Mención explícita del workspace / archivo fijado.
-_PATRON_MENCION_WORKSPACE = re.compile(
-    r'\bworkspace\b|\bfijad[oa]\b|\b(archivo|documento|entorno)\s+activo\b',
-    re.IGNORECASE
-)
-# "el archivo", "ese documento"... solo cuenta si HAY un workspace fijado.
-_PATRON_REFERENCIA_GENERICA = re.compile(
-    r'\b(el|del|ese|dicho|aquel)\s+(archivo|documento|doc|c[oó]digo|texto)\b',
-    re.IGNORECASE
-)
-_REGEX_ARCHIVO_EN_VENTANA = re.compile(
-    r'([a-zA-Z0-9_\-\s]+\.(html|php|js|css|py|docx|pdf|txt|md|pptx|xlsx))',
-    re.IGNORECASE
-)
-
-def _obtener_workspace_activo(sesion_id="default"): # <-- Agrega el parámetro
+def _obtener_workspace_activo(sesion_id="default"):
     """Ruta del workspace fijado en SQLite, o None."""
     for nombre in ("obtener_workspace_activo", "get_workspace_activo", "leer_workspace_activo"):
         getter = getattr(database, nombre, None)
         if callable(getter):
             try:
-                ruta = getter(sesion_id=sesion_id) # <-- Pásalo al database.py
+                ruta = getter(sesion_id=sesion_id)
             except Exception as e:
                 print(f"⚠️ [Workspace] No se pudo leer el workspace activo: {e}")
                 return None
@@ -426,7 +195,7 @@ def _resolver_documento_referenciado(ruta_workspace, prioridad_workspace: bool):
     def _desde_ventana():
         ventana = contexto.obtener_ventana_activa()
         print(f"\n🕵️ [Interceptor] Ventana activa capturada: '{ventana}'")
-        match = _REGEX_ARCHIVO_EN_VENTANA.search(ventana or "")
+        match = nlp.REGEX_ARCHIVO_EN_VENTANA.search(ventana or "")
         if not match:
             return None
         contenido, nombre = _leer_documento_completo(match.group(1).strip())
@@ -440,67 +209,11 @@ def _resolver_documento_referenciado(ruta_workspace, prioridad_workspace: bool):
     return None, None, None
 
 # ==========================================
-# 1.8 EVALUADOR DE KARMA (SISTEMA DE CORRUPCIÓN)
-# ==========================================
-def _evaluar_hostilidad(mensaje_lower: str) -> int:
-    """Evalúa la hostilidad del texto para el sistema de corrupción de L-IA."""
-    patrones_positivos = [
-        r'\bgracias\b', r'\bgracoas\b', r'\bexcelente\b', r'\bbuen trabajo\b', 
-        r'\bgenial\b', r'\bperfecto\b', r'\bmuy bien\b',
-        r'\bas[ií]\s+s[ií]\b', r'\bas[ií]\s+est[aá]\s+bien\b', r'\beso\s+quer[ií]a\b'
-    ]
-    
-    patrones_negativos = [
-        r'\bin[uú]til\b', r'\blenta\b', r'\bbasura\b', r'\bno\s+(me\s+)?sirves\b', 
-        r'\bidiota\b', r'\best[uú]pida\b', r'\bcallate\b', r'\bc[aá]llate\b',
-        r'\bdefectuosa\b', r'\bdecepcionante\b', r'\bp[eé]sima\b', r'\bodio\b',
-        r'\btont[oa]\b', r'\bbrut[oa]\b', r'\bpendej[oa]\b', r'\bimb[eé]cil\b',
-        r'\bburr[oa]\b', r'\bobsoleta\b', r'\bputa\b', r'\bmierda\b', r'\bhuevad\w*\b', 
-        r'\bcarajo\b', r'\bchucha\b', r'\bno\s+entiendes\b', r'\bqu[eé]\s+hiciste\b', 
-        r'\bas[ií]\s+no\b', r'\bno\s+quer[ií]a\s+eso\b', r'\barruinaste\b', r'\bmal\b', 
-        r'\bte\s+equivocaste\b'
-    ]
-    
-    puntos = 0
-    for patron in patrones_negativos:
-        if re.search(patron, mensaje_lower): puntos += 20
-    for patron in patrones_positivos:
-        if re.search(patron, mensaje_lower): puntos -= 15
-        
-    if puntos == 0:
-        puntos = -1
-        
-    # LIMITADOR: Máximo 25 puntos de daño por turno, sin importar cuántos insultos acumule
-    puntos = max(-15, min(25, puntos))
-    return puntos
-
-def _detectar_intenciones(mensaje_lower: str) -> dict:
-    """Devuelve {intención: bool} evaluando todos los patrones sobre el mensaje
-    en minúsculas, y aplica dos correcciones cruzadas (sintaxis de código y
-    colisión con hardware)."""
-    intenciones = {
-        clave: bool(patron.search(mensaje_lower))
-        for clave, patron in PATRONES_CLAVE.items()
-    }
-    
-    # Un mensaje con sintaxis de código ($variable, function, llaves o ;) cuenta
-    # como intención de código aunque no use ninguna palabra clave.
-    if not intenciones.get("codigo") and re.search(r'\$\w+|\bfunction\s|[{};]', mensaje_lower):
-        intenciones["codigo"] = True
-
-    # Anti-colisión: "revisa la batería" contiene un verbo de código ("revis"),
-    # pero si además pide hardware explícito, gana estado_pc.
-    if intenciones.get("estado_pc"):
-        intenciones["codigo"] = False
-
-    return intenciones
-
-# ==========================================
 # 1.6 GUÍA DE CAPACIDADES (Fase 8)
 # ==========================================
-# Fuente única de verdad: si agregas una categoría nueva a _RAICES o un
-# patrón nuevo suelto, agrega su descripción aquí y la guía queda al día
-# sola. Nunca escribas un texto de ayuda aparte que se desincronice.
+# Fuente única de verdad: si agregas una categoría nueva en core/intenciones.py,
+# agrega su descripción aquí y la guía queda al día sola. Nunca escribas un
+# texto de ayuda aparte que se desincronice.
 _DESCRIPCIONES_CAPACIDADES = {
     "vision":            "ver tu pantalla y describir o analizar lo que hay en ella",
     "abrir_app":         "abrir aplicaciones, carpetas o proyectos por nombre o alias que le enseñes",
@@ -520,9 +233,9 @@ _DESCRIPCIONES_CAPACIDADES = {
     "limpiar_workspace": "olvidar el workspace activo actual",
     "entorno_activo":    "saber qué ventana o programa tienes abierto en este momento sin tener que preguntarte",
     "uncensored":        "cambiar temporalmente a un modo sin filtros para conversación más directa, si se lo pides explícitamente",
-    "memoria_tecnica": "consultar tu memoria a largo plazo (segundo cerebro) sobre problemas técnicos pasados, bitácoras y documentación",
+    "memoria_tecnica":   "consultar tu memoria a largo plazo (segundo cerebro) sobre problemas técnicos pasados, bitácoras y documentación",
     "memorizar_documento": "leer el archivo o documento que tienes abierto en pantalla y vectorizarlo en su memoria a largo plazo, para poder consultarlo técnicamente después",
-    "entorno_iot": "controlar las luces físicas y el ambiente de tu habitación (modos: trabajo, gaming, descanso, apagado) ",
+    "entorno_iot":       "controlar las luces físicas y el ambiente de tu habitación (modos: trabajo, gaming, descanso, apagado) ",
 }
 
 def _generar_nota_guia_capacidades():
@@ -537,7 +250,7 @@ def _generar_nota_guia_capacidades():
         "Dile EXACTAMENTE qué frases puede usar para pedirte las cosas. Por ejemplo: "
         "'Si quieres que revise tu código, solo dime: revisa este archivo', o 'Si quieres que guarde algo "
         "en mi memoria, dime: memoriza este documento'.\n"
-        "Haz que sienta que tienes el control total de tu entorno y estás lista para asistir auqnue con arrogancia frente a otras asistentes."
+        "Haz que sienta que tienes el control total de tu entorno y estás lista para asistir aunque con arrogancia frente a otras asistentes."
     )
 
 # ==========================================
@@ -558,57 +271,9 @@ def _extraer_referencia_archivo(mensaje):
     [MODO AGENTE ACTIVADO]
     Desactivamos el Regex estricto. Ahora confiamos en que el LLM
     use la herramienta tools.buscar_archivo_local cuando lo necesite.
+    (La versión regex anterior queda en el historial de Git.)
     """
     return None
-
-# def _extraer_referencia_archivo(mensaje):
-#     nombre_detectado = None
-
-#     # Buscar rutas entre comillas
-#     match_ruta_comillas = re.search(r'"([a-zA-Z]:\\[^"]+)"', mensaje)
-#     if match_ruta_comillas:
-#         nombre_detectado = match_ruta_comillas.group(1).strip()
-
-#     # Buscar rutas con extensiones comunes
-#     elif (match_ruta := re.search(
-#         r'([a-zA-Z]:\\[^\*?"<>|]+\.(?:txt|py|php|js|json|html|css|md|env|cpp|h|docx|pdf))',
-#         mensaje, re.IGNORECASE
-#     )):
-#         nombre_detectado = match_ruta.group(1).strip()
-
-#     # Buscar nombres de archivos con extensiones comunes
-#     elif (match_ext := re.search(
-#         r'\b([a-zA-Z0-9_\-]+\s*[a-zA-Z0-9_\-]*\.(?:txt|py|php|js|json|html|css|md|env|cpp|h|docx|pdf))\b',
-#         mensaje, re.IGNORECASE
-#     )):
-#         nombre_detectado = match_ext.group(1).strip()
-
-#     # Buscar archivos por acción
-#     else:
-#         patron_accion_archivo = (
-#             r'\b(?:le[eráiow]*|revis[aaréiów]*|analiz[aaréiów]*|abr[iraéiów]*|'
-#             r'consult[aaréiów]*|busc[aaréiów]*|extra[eráiów]*)\s+'
-#             r'(?:el\s+|la\s+|del\s+|un\s+|una\s+)?'
-#             r'(?:archivo|documento|nota|pdf|docx|word|script|codigo|código)\s+'
-#             r'(?:llamado\s+|de\s+|titulado\s+)?'
-#             r'([a-zA-Z0-9_\-\.]+(?:\s+[a-zA-Z0-9_\-\.]+){0,4}?)'
-#             r'(?=\s+(?:que|para|porque|as[ií]|y)\b|\s*[\.\?!]|\Z)'
-#         )
-#         match_intencion = re.search(patron_accion_archivo, mensaje, re.IGNORECASE)
-#         if match_intencion:
-#             limpio = match_intencion.group(1).strip()
-#             for palabra_extra in [" por favor", " para mi", " que tengo", " en mi pc"]:
-#                 # Verificamos ignorando mayúsculas/minúsculas y recortamos por longitud (slicing)
-#                 # en lugar de un .replace() que podría corromper el medio del nombre del archivo.
-#                 if limpio.lower().endswith(palabra_extra):
-#                     limpio = limpio[:-len(palabra_extra)]
-#             nombre_detectado = limpio.strip()
-
-#     if nombre_detectado:
-#         print(f"🚦 [SEMÁFORO] Archivo capturado por el Regex: '{nombre_detectado}'")
-#         return nombre_detectado
-
-#     return None
 
 def _extraer_ciudad_clima(mensaje):
     match = re.search(
@@ -661,13 +326,13 @@ def _encontrar_ruta_inteligente(mensaje_lower, rutas_conocidas):
             return alias, ruta
 
     palabras = mensaje_limpio.split()
-    
+
     # 2. Búsqueda inversa por nombre de archivo (basename): el usuario nombró
     #    el archivo (con o sin extensión) en vez del alias registrado.
     for ruta in rutas_conocidas.values():
         nombre_archivo = os.path.basename(ruta).lower()
         nombre_sin_ext = os.path.splitext(nombre_archivo)[0]
-        
+
         for palabra in palabras:
             if len(palabra) > 2 and (palabra == nombre_sin_ext or palabra == nombre_archivo):
                 return nombre_archivo, ruta
@@ -680,16 +345,15 @@ def _encontrar_ruta_inteligente(mensaje_lower, rutas_conocidas):
         if coincidencias:
             alias_encontrado = coincidencias[0]
             return alias_encontrado, rutas_conocidas[alias_encontrado]
-            
+
     # 4. Extensiones huérfanas: el usuario dio el nombre sin extensión, así que
     #    se prueban las extensiones comunes en la carpeta de ejecución actual.
     extensiones_comunes = ['.docx', '.php', '.cpp', '.h', '.js', '.css', '.html', '.pdf', '.txt']
-    
+
     for palabra in palabras:
         if len(palabra) > 2:
             for ext in extensiones_comunes:
                 posible_archivo = palabra + ext
-                # Busca si el archivo existe en la carpeta actual de ejecución
                 if os.path.exists(posible_archivo):
                     return posible_archivo, os.path.abspath(posible_archivo)
 
@@ -707,58 +371,6 @@ def _ejecutar_herramienta_segura(nombre_herramienta: str, callback_ui_permiso=No
     )
 
 
-def _bozal_abrir_aplicacion(resultado: str) -> str:
-    return (
-        f"RESULTADO DE LA BÚSQUEDA EN WINDOWS: {resultado}\n\n"
-        f"[INSTRUCCIÓN CRÍTICA]: Reporta al usuario este resultado. Si es éxito, presume un poco de tu eficiencia. "
-        f"Si es error, tómale el pelo por el desorden, pero sin pasarte de la raya. "
-        f"REGLA DE ORO ABSOLUTA: ESTÁ ESTRICTAMENTE PROHIBIDO imprimir bloques de código, "
-        f"scripts de Bash, comandos de terminal (cd, ls, open), rutas de Linux o PHP en tu respuesta. "
-        f"Solo comunícate con sarcasmo cariñoso en lenguaje natural."
-    )
-
-
-def _bozal_estado_sistema(resultado: str) -> str:
-    return (
-        f"Datos reales de mi hardware: {resultado}. "
-        f"Comenta sobre mi computadora con tu sarcasmo de siempre, pero sin crueldad. "
-        f"ACLARACIÓN VITAL: El proceso del sistema llamado 'llama-server' ERES TÚ "
-        f"(es tu motor lógico ejecutándose en mi máquina). Si ves que 'llama-server' está consumiendo mucha RAM o CPU, "
-        f"presume con orgullo (no con desprecio) que necesitas esos recursos para procesar mis peticiones. "
-        f"Cero JSON, responde con tu personalidad."
-    )
-
-
-def _bozal_generico(resultado: str) -> str:
-    return (
-        f"RESULTADO DE LA HERRAMIENTA: {resultado}\n\n"
-        f"[INSTRUCCIÓN CRÍTICA]: Reporta este resultado al usuario en lenguaje natural, con tu personalidad "
-        f"habitual. REGLA DE ORO: ESTÁ ESTRICTAMENTE PROHIBIDO imprimir bloques de código, scripts, comandos "
-        f"de terminal o rutas de archivo crudas en tu respuesta. Solo comunica el resultado, nunca el mecanismo."
-    )
-
-
-def _bozal_git(resultado: str) -> str:
-    return (
-        f"Aquí está la salida de Git:\n{resultado}\n\n"
-        f"[INSTRUCCIÓN CRÍTICA]: Actúa como mi compañera de trabajo. Háblame de 'tú'. "
-        f"Inicia tu respuesta EXACTAMENTE con esta frase: 'Alejandro, revisando tu proyecto, veo que...'. "
-        f"Luego, explícame qué archivos cambiaron y de qué tratan los últimos commits. "
-        f"No inventes características, no asumas de qué trata el proyecto si no lo sabes con certeza, y no imprimas comandos de Linux."
-    )
-
-_BOZALES_POR_HERRAMIENTA = {
-    "abrir_aplicacion": _bozal_abrir_aplicacion,
-    "obtener_estado_sistema": _bozal_estado_sistema,
-    "leer_repositorio_git": _bozal_git,
-}
-
-
-def _generar_prompt_bozal(nombre_herramienta: str, resultado: str) -> str:
-    generador = _BOZALES_POR_HERRAMIENTA.get(nombre_herramienta, _bozal_generico)
-    return generador(resultado)
-
-
 # ==========================================
 # 3. PIPELINE DE VOZ + STREAMING COMPARTIDO
 # ==========================================
@@ -767,10 +379,7 @@ def _generar_prompt_bozal(nombre_herramienta: str, resultado: str) -> str:
 # usan, así que todas se comportan igual: acumula la respuesta completa,
 # avisa a la GUI fragmento a fragmento (callback_stream) y, si la voz está
 # activa, manda cada oración a un pipeline de síntesis + reproducción.
-
-# Reemplaza tu `_generar_respuesta_con_voz` por esta versión.
-# Usa los mismos nombres que ya existen en cerebro.py: queue, threading, evento_interrupcion.
-# Requiere el voz.py nuevo (preparar_voz, reproducir_voz, descartar_audio).
+# Requiere voz.py con: preparar_voz, reproducir_voz, descartar_audio.
 
 # --- Umbrales en CARACTERES (no palabras) ---
 MIN_CHARS_PRIMER_FRAGMENTO = 45   # el primer fragmento sale rápido -> menos silencio inicial
@@ -786,7 +395,7 @@ def _generar_respuesta_con_voz(generador_texto, motor="kokoro", nivel_distorsion
     bloque_actual = ""
     hablar = usar_voz
     primer_fragmento = True
-    en_bloque_codigo = False  # <--- NUEVO: Interruptor de censura para el TTS
+    en_bloque_codigo = False  # Interruptor de censura para el TTS
 
     if texto_para_mostrar and callback_stream:
         callback_stream(texto_para_mostrar)
@@ -799,8 +408,8 @@ def _generar_respuesta_con_voz(generador_texto, motor="kokoro", nivel_distorsion
             hablar = False
 
     if hablar:
-        cola_texto = queue.Queue()            
-        cola_audio = queue.Queue(maxsize=3)   
+        cola_texto = queue.Queue()
+        cola_audio = queue.Queue(maxsize=3)
 
         def hilo_sintetizador():
             while True:
@@ -844,7 +453,7 @@ def _generar_respuesta_con_voz(generador_texto, motor="kokoro", nivel_distorsion
             continue
 
         respuesta_completa += fragmento_entrante
-        
+
         # 1. SIEMPRE imprimimos a la consola y a React (Frontend)
         print(fragmento_entrante, end="", flush=True)
         if callback_stream and not texto_para_mostrar:
@@ -857,16 +466,16 @@ def _generar_respuesta_con_voz(generador_texto, motor="kokoro", nivel_distorsion
             if conteo_comillas > 0:
                 if conteo_comillas % 2 != 0:
                     en_bloque_codigo = not en_bloque_codigo
-                continue  # Saltamos este trozo para que TTS no intente leer las comillas ni el "json/python"
+                continue  # Saltamos este trozo para que TTS no lea las comillas ni el "json/python"
 
-            # Si estamos dentro de un bloque de código, ignoramos el texto para la voz
+            # Dentro de un bloque de código, la voz lo ignora
             if en_bloque_codigo:
-                continue 
+                continue
 
             # Limpiamos asteriscos sueltos que el TTS pronuncia mal
             fragmento_limpio = fragmento_entrante.replace("*", "")
             bloque_actual += fragmento_limpio
-            
+
             largo = len(bloque_actual.strip())
             minimo = MIN_CHARS_PRIMER_FRAGMENTO if primer_fragmento else MIN_CHARS_FRAGMENTO
             fin_de_oracion = any(p in fragmento_limpio for p in PUNTUACION_CORTE) and largo >= minimo
@@ -892,7 +501,7 @@ def _generar_respuesta_con_voz(generador_texto, motor="kokoro", nivel_distorsion
 _PATRON_DIVISION_ORACIONES = re.compile(r'(?<=[\.\?\!\n])\s*')
 
 def _dividir_en_fragmentos_hablables(texto):
-    """Convierte un texto YA COMPLETO en un generador de oraciones, 
+    """Convierte un texto YA COMPLETO en un generador de oraciones,
     para reutilizar el pipeline de voz y no sintetizar todo de un tirón."""
     if not texto:
         return
@@ -940,15 +549,15 @@ def _manejar_error_nube(e: Exception, intento: int, max_reintentos: int, espera:
         reintentos y ya se durmió `espera` segundos; el llamador reintenta.
     """
     error_str = str(e)
-    
+
     if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
         return f"🛑 [L-IA {etiqueta}]: Límite de la API gratuita alcanzado. Espera 1 minuto."
-        
+
     # Tratamos las desconexiones abruptas de red como transitorias (igual que un 503)
     es_transitorio = any(err in error_str for err in [
         "503", "UNAVAILABLE", "Server disconnected", "Connection reset", "104"
     ])
-    
+
     if es_transitorio:
         if not permitir_reintento:
             return (f"🛑 [L-IA {etiqueta}]: La conexión se cortó a mitad de la respuesta "
@@ -957,11 +566,11 @@ def _manejar_error_nube(e: Exception, intento: int, max_reintentos: int, espera:
             time.sleep(espera)
             return None  # Señal para reintentar
         return f"🛑 [L-IA {etiqueta}]: Imposible conectar. Servidores de Google saturados o desconectados."
-        
+
     if "404" in error_str or "NOT_FOUND" in error_str:
         return (f"🛑 [L-IA {etiqueta}]: El modelo configurado no existe (Error 404). "
-                f"Verifica los nombres asignados a MODELO_NUBE_FLASH y PRO en cerebro.py.")
-                
+                f"Verifica los nombres asignados a config.MODELO_NUBE_FLASH y PRO en cerebro.py.")
+
     return f"❌ Error crítico en la {etiqueta}: {e}"
 
 
@@ -990,8 +599,8 @@ def _ejecutar_con_reintentos(accion, callback_stream, emitidos, etiqueta="Nube",
 
 
 def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, buscar_web=False,
-                        modelo_nube=MODELO_NUBE_FLASH, callback_ui=None, callback_stream=None,
-                        usar_herramientas=True, motor_voz="kokoro", usar_voz=False):
+                        modelo_nube=config.MODELO_NUBE_FLASH, callback_ui=None, callback_stream=None,
+                        usar_herramientas=True, motor_voz=config.MOTOR_VOZ_DEFAULT, usar_voz=False):
     """Responde con Gemini (Flash o Pro). Hay tres caminos:
 
       CASO 1  buscar_web=True          google_search + streaming real.
@@ -999,7 +608,7 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
                                        Es el camino de Pro para código pesado.
       CASO 3  (por defecto)            detección de tool-calls y luego respuesta.
     """
-    etiqueta = "Nube/Pro" if modelo_nube == MODELO_NUBE_PRO else "Nube"
+    etiqueta = "Nube/Pro" if modelo_nube == config.MODELO_NUBE_PRO else "Nube"
     print(f"\n[☁️ Enrutando a la Nube ({modelo_nube})...]")
 
     if usar_vision:
@@ -1042,10 +651,10 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
                 config={"tools": [{"google_search": {}}]}
             )
             generador = (chunk.text for chunk in stream if chunk.text)
-            return _generar_respuesta_con_voz(generador, motor=motor_voz, callback_stream=_stream_contado,usar_voz=usar_voz)
-        
+            return _generar_respuesta_con_voz(generador, motor=motor_voz, callback_stream=_stream_contado, usar_voz=usar_voz)
+
         return _ejecutar_con_reintentos(_accion_web, callback_stream, emitidos, etiqueta)
-        
+
     # ------------------------------------------------------------
     # CASO 2: streaming directo, sin herramientas locales (Pro)
     # ------------------------------------------------------------
@@ -1061,7 +670,7 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
                 contents=contenidos_api
             )
             generador = (chunk.text for chunk in stream if chunk.text)
-            return _generar_respuesta_con_voz(generador, motor=motor_voz, callback_stream=_stream_contado,usar_voz=usar_voz)
+            return _generar_respuesta_con_voz(generador, motor=motor_voz, callback_stream=_stream_contado, usar_voz=usar_voz)
 
         return _ejecutar_con_reintentos(_accion_directa, callback_stream, emitidos, etiqueta)
 
@@ -1103,7 +712,7 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
             )
             print(f"✅ [Sistema: {resultado_sistema}]")
 
-            prompt_bozal = _generar_prompt_bozal(llamada.name, resultado_sistema)
+            prompt_bozal = bozales.generar_prompt_bozal(llamada.name, resultado_sistema)
             contenidos_api.append(prompt_bozal)
 
             # PASO 2: con la herramienta ya ejecutada, la respuesta final en
@@ -1144,7 +753,7 @@ def _extraer_llamada_manual(texto):
         try:
             return json.loads(match.group(0))
         except json.JSONDecodeError:
-            # Si el modelo generó un JSON inválido, ignoramos el error 
+            # Si el modelo generó un JSON inválido, ignoramos el error
             # para permitir que el flujo avance hacia la opción de respaldo.
             pass
 
@@ -1166,8 +775,8 @@ def _extraer_llamada_manual(texto):
 
     return None
 
-def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir, quiere_estado, quiere_entorno, quiere_buscar, callback_ui=None, callback_stream=None, motor_voz="kokoro", usar_voz=False):
-    print(f"\n[🏠 Enrutando al Cerebro Local ({MODELO_LOCAL})...]")
+def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir, quiere_estado, quiere_entorno, quiere_buscar, callback_ui=None, callback_stream=None, motor_voz=config.MOTOR_VOZ_DEFAULT, usar_voz=False):
+    print(f"\n[🏠 Enrutando al Cerebro Local ({config.MODELO_LOCAL})...]")
 
     requiere_herramienta = quiere_abrir or quiere_estado or quiere_entorno or quiere_buscar
 
@@ -1212,14 +821,14 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
         try:
             t_inicio_tool = time.perf_counter()
             response = ollama.chat(
-                model=MODELO_LOCAL,
+                model=config.MODELO_LOCAL,
                 messages=mensajes,
                 format='json',
                 options={'temperature': 0.1}
             )
             t_fin_tool = time.perf_counter()
             print(f"⏱️ [Tool Check JSON]: {t_fin_tool - t_inicio_tool:.2f}s")
-            
+
             contenido_bruto = response['message']['content']
             llamada_manual = _extraer_llamada_manual(contenido_bruto)
         except Exception as e:
@@ -1251,7 +860,7 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
                 )
                 print(f"✅ [Sistema: {resultado}]")
 
-                prompt_bozal = _generar_prompt_bozal(accion, resultado)
+                prompt_bozal = bozales.generar_prompt_bozal(accion, resultado)
                 mensajes = [
                     {'role': 'system', 'content': instrucciones_sistema},
                     {'role': 'user', 'content': contexto_historico},
@@ -1270,7 +879,7 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
         t_primer_token = [0.0]
 
         response_stream = ollama.chat(
-            model=MODELO_LOCAL,
+            model=config.MODELO_LOCAL,
             messages=mensajes,
             options=opciones_ollama,
             stream=True
@@ -1287,7 +896,7 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
                     conteo_tokens[0] += 1
                     yield token
 
-        resultado = _generar_respuesta_con_voz(generador_con_telemetria(), motor=motor_voz, callback_stream=callback_stream,usar_voz=usar_voz)
+        resultado = _generar_respuesta_con_voz(generador_con_telemetria(), motor=motor_voz, callback_stream=callback_stream, usar_voz=usar_voz)
 
         t_total = time.perf_counter() - t_inicio
         t_generacion_pura = t_total - t_primer_token[0]
@@ -1314,11 +923,11 @@ def _descargar_modelo_ollama(nombre_modelo):
         print(f"⚠️ [No se pudo liberar '{nombre_modelo}' de VRAM: {e}]")
 
 
-def responder_con_local_uncensored(instrucciones_sistema, contexto_historico, callback_stream=None, motor_voz="google",usar_voz=False):
-    print(f"\n[🐬 Enrutando al Especialista Sin Censura ({MODELO_UNCENSORED})...]")
-    _descargar_modelo_ollama(MODELO_LOCAL)
+def responder_con_local_uncensored(instrucciones_sistema, contexto_historico, callback_stream=None, motor_voz=config.MOTOR_VOZ_UNCENSORED, usar_voz=False):
+    print(f"\n[🐬 Enrutando al Especialista Sin Censura ({config.MODELO_UNCENSORED})...]")
+    _descargar_modelo_ollama(config.MODELO_LOCAL)
 
-    # 1. Prompt positivo (evitamos prohibiciones explícitas de tokens que lo confunden)
+    # Prompt positivo (evitamos prohibiciones explícitas de tokens que lo confunden)
     prompt_bozal_dolphin = (
         "Eres L-IA, un asistente de IA avanzado, directo y sin censura, con una personalidad "
         "pícara y filosa: te gusta lanzar comentarios coquetos, sarcásticos y con doble sentido, "
@@ -1340,23 +949,23 @@ def responder_con_local_uncensored(instrucciones_sistema, contexto_historico, ca
     try:
         print("\n🤖 L-IA (Dolphin, pensando y hablando en bloques)...")
         response_stream = ollama.chat(
-            model=MODELO_UNCENSORED,
+            model=config.MODELO_UNCENSORED,
             messages=mensajes,
-            # 2. Las opciones clave para evitar bucles infinitos
+            # Opciones clave para evitar bucles infinitos
             options={
-                'num_gpu': 31, 
+                'num_gpu': 31,
                 'temperature': 0.6,          # Ligeramente más alto para darle fluidez
-                'repeat_penalty': 1.15,      # CASTIGO: Evita que repita la misma frase
-                'stop': ['ALEJANDRO:', 'TÚ:', '> TÚ:', 'Usuario:'] # FRENO: Se detiene si intenta hablar por ti
+                'repeat_penalty': 1.15,      # Evita que repita la misma frase
+                'stop': ['ALEJANDRO:', 'TÚ:', '> TÚ:', 'Usuario:']  # Se detiene si intenta hablar por ti
             },
             stream=True
         )
         generador = (chunk['message']['content'] for chunk in response_stream)
-        return _generar_respuesta_con_voz(generador, motor=motor_voz, nivel_distorsion=0, callback_stream=callback_stream,usar_voz=usar_voz)
+        return _generar_respuesta_con_voz(generador, motor=motor_voz, nivel_distorsion=0, callback_stream=callback_stream, usar_voz=usar_voz)
 
     except Exception as e:
         return _reportar_error(f"❌ Error en el cerebro Dolphin: {e}", callback_stream)
-    
+
 # ==========================================
 # 6. HERRAMIENTAS DE INTERCEPCIÓN (inyección de contexto)
 # ==========================================
@@ -1429,9 +1038,9 @@ def _resolver_proyecto_activo(mensaje_real: str, msg_lower: str) -> str:
     """Helper para centralizar la deducción de la ruta del proyecto activo (DRY)."""
     global PROYECTO_ACTIVO_ACTUAL
     rutas_conocidas = _cargar_rutas_personalizadas()
-    
+
     alias_detectado, ruta_encontrada = _encontrar_ruta_inteligente(msg_lower, rutas_conocidas)
-    
+
     if ruta_encontrada:
         PROYECTO_ACTIVO_ACTUAL = ruta_encontrada
         print(f"📌 [Proyecto activo cambiado por alias flexible: '{alias_detectado}']")
@@ -1441,13 +1050,13 @@ def _resolver_proyecto_activo(mensaje_real: str, msg_lower: str) -> str:
             PROYECTO_ACTIVO_ACTUAL = match_ruta_explicita.group(0).strip().rstrip('\\')
         elif PROYECTO_ACTIVO_ACTUAL is None:
             PROYECTO_ACTIVO_ACTUAL = os.getcwd()
-            
+
     return PROYECTO_ACTIVO_ACTUAL
 
 
 def _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=None):
     ruta = _resolver_proyecto_activo(mensaje_real, msg_lower)
-    
+
     print(f"\n⚙️ [L-IA solicitando ejecución de: leer_repositorio_git en '{ruta}']")
     resultado_git = _ejecutar_herramienta_segura(
         "leer_repositorio_git", callback_ui_permiso=callback_ui, ruta_repo=ruta
@@ -1460,11 +1069,11 @@ def _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=None)
 
 def _ejecutar_guardado_git(msg_lower, callback_ui=None):
     ruta = _resolver_proyecto_activo(msg_lower, msg_lower)
-    
+
     # Fallback de seguridad absoluto antes de interactuar con el SO
     if not ruta:
         ruta = os.getcwd()
-        
+
     print(f"\n🧠 [L-IA analizando código en '{ruta}' para crear el commit...]")
 
     try:
@@ -1490,7 +1099,7 @@ def _ejecutar_guardado_git(msg_lower, callback_ui=None):
     )
     print("🤖 [Generando mensaje de commit estructurado...]")
     respuesta_llm = ollama.chat(
-        model=MODELO_LOCAL,
+        model=config.MODELO_LOCAL,
         messages=[{'role': 'user', 'content': prompt_commit}]
     )['message']['content'].strip()
 
@@ -1520,7 +1129,7 @@ def _ejecutar_guardado_git(msg_lower, callback_ui=None):
         )
     else:
         resultado_limpio = resultado.replace("✅ Cambios guardados y subidos exitosamente.", "").strip()
-        
+
         return (
             f"✅ **Operación Git Completada**\n\n"
             f"**Directorio sincronizado:**\n`{ruta}`\n\n"
@@ -1531,7 +1140,7 @@ def _ejecutar_guardado_git(msg_lower, callback_ui=None):
 
 def _procesar_workspace_fase_7(mensaje_real, msg_lower, fijar: bool, sesion_id="default"):
     if not fijar:
-        database.limpiar_workspace_activo() # <-- Esta función ya se encarga de borrar el activo y el historial de golpe en tu database.py
+        database.limpiar_workspace_activo()  # Ya borra el activo y el historial de golpe en database.py
         database.limpiar_workspace_resumen()
         print("🧹 [Fase 7] Workspace limpiado por orden del usuario.")
         return "[SISTEMA: El Workspace activo ha sido limpiado. L-IA ya no tiene ningún archivo fijado en memoria.]"
@@ -1567,7 +1176,7 @@ def _procesar_workspace_fase_7(mensaje_real, msg_lower, fijar: bool, sesion_id="
             )
             try:
                 respuesta = ollama.chat(
-                    model=MODELO_LOCAL,
+                    model=config.MODELO_LOCAL,
                     messages=[{'role': 'user', 'content': prompt_resumen}],
                     options={'num_gpu': 31, 'temperature': 0.1}
                 )
@@ -1645,15 +1254,15 @@ def asimilar_documento_maestro(ruta_absoluta: str, origen_texto: str = "archivo"
     3. Genera el Micro-Resumen de 25 palabras para la atención a corto plazo.
     """
     print(f"\n🧠 [Asimilación Maestra] Procesando: '{ruta_absoluta}'")
-    
+
     # 1. Leer el archivo físicamente
     datos = tools.leer_archivo_local(ruta_absoluta)
     if not (isinstance(datos, dict) and "contenido" in datos):
         return f"Error: No pude extraer el texto de '{ruta_absoluta}'. Verifica permisos o el formato."
-        
+
     texto_a_vectorizar = datos["contenido"]
     nombre_archivo = os.path.basename(ruta_absoluta)
-    
+
     # 2. Vectorizar en ChromaDB (RAG)
     try:
         cantidad_fragmentos = _obtener_rag().indexar_documento(
@@ -1672,11 +1281,11 @@ def asimilar_documento_maestro(ruta_absoluta: str, origen_texto: str = "archivo"
         "resumen técnico de máximo 25 palabras indicando su propósito o tema central. Cero saludos.\n\n"
         f"{fragmento_resumen}"
     )
-    
+
     resumen_tecnico = "Ruta fijada, pero no se generó resumen."
     try:
         respuesta = ollama.chat(
-            model=MODELO_LOCAL,
+            model=config.MODELO_LOCAL,
             messages=[{'role': 'user', 'content': prompt_resumen}],
             options={'num_gpu': 31, 'temperature': 0.1}
         )
@@ -1688,7 +1297,7 @@ def asimilar_documento_maestro(ruta_absoluta: str, origen_texto: str = "archivo"
     # 4. Guardar en SQLite (Workspace)
     database.establecer_workspace_activo(ruta_absoluta)
     database.guardar_hecho("workspace_resumen", resumen_tecnico, categoria="contexto_fase7")
-    
+
     return (
         f"Asimilación completa. Procesé '{nombre_archivo}', lo dividí en {cantidad_fragmentos} "
         f"fragmentos para mi memoria a largo plazo y lo he fijado como mi entorno activo. "
@@ -1700,10 +1309,7 @@ def _procesar_ingesta_documento(callback_ui=None, sesion_id="default"):
     ventana_actual = contexto.obtener_ventana_activa()
     print(f"\n🧠 [Aprendizaje] Escaneando ventana para ingesta: '{ventana_actual}'")
 
-    match_archivo = re.search(
-        r'([a-zA-Z0-9_\-\s]+\.(html|php|js|css|py|docx|pdf|txt|md|pptx|xlsx))',
-        ventana_actual, re.IGNORECASE
-    )
+    match_archivo = nlp.REGEX_ARCHIVO_EN_VENTANA.search(ventana_actual or "")
     nombre_archivo = match_archivo.group(1).strip() if match_archivo else None
 
     if not nombre_archivo:
@@ -1714,21 +1320,19 @@ def _procesar_ingesta_documento(callback_ui=None, sesion_id="default"):
 
     # Obtenemos la ruta absoluta usando la herramienta de lectura
     resultado = tools.leer_archivo_local(nombre_archivo)
-    
+
     # Manejo de múltiples coincidencias
     if isinstance(resultado, str) and "múltiples coincidencias" in resultado.lower():
         match_primera = re.search(r'1\.\s+([a-zA-Z]:\\[^\n]+)', resultado)
         if match_primera:
             ruta_absoluta = match_primera.group(1).strip()
         else:
-             return "Hay múltiples archivos con ese nombre. Por favor, sé más específico."
+            return "Hay múltiples archivos con ese nombre. Por favor, sé más específico."
     elif isinstance(resultado, dict) and "ruta" in resultado:
-        # Asegúrate de que leer_archivo_local devuelve la ruta absoluta en su diccionario
         ruta_absoluta = resultado.get("ruta", nombre_archivo)
     else:
         return f"Pude ver el archivo '{nombre_archivo}', pero hubo un error al extraerlo. Revisa los permisos."
 
-    # ¡Llamamos a la función maestra!
     return asimilar_documento_maestro(ruta_absoluta)
 
 # ==========================================
@@ -1770,42 +1374,41 @@ def _elegir_ruta(intenciones: dict, msg_lower: str, tokens_totales: int):
     `motivo` es una etiqueta corta para logs y para la interfaz.
     """
     if intenciones.get("forzar_pro"):
-        return "Nube", MODELO_NUBE_PRO, "pedido_explicito"
+        return "Nube", config.MODELO_NUBE_PRO, "pedido_explicito"
 
     if any(frase in msg_lower for frase in _FRASES_ANALISIS_PROFUNDO):
-        return "Nube", MODELO_NUBE_PRO, "analisis_profundo"
+        return "Nube", config.MODELO_NUBE_PRO, "analisis_profundo"
 
     if intenciones.get("codigo_pesado"):
-        return "Nube", MODELO_NUBE_PRO, "codigo_pesado"
+        return "Nube", config.MODELO_NUBE_PRO, "codigo_pesado"
 
     if tokens_totales > LIMITE_TOKENS_FLASH:
-        return "Nube", MODELO_NUBE_PRO, "contexto_grande"
+        return "Nube", config.MODELO_NUBE_PRO, "contexto_grande"
 
     # `codigo_bruto` es la intención de código ANTES de que los interceptores de
     # archivo/entorno la apaguen, así que un "revisa este archivo" con un
     # archivo largo también cuenta como código.
     if intenciones.get("codigo_bruto") and tokens_totales > LIMITE_TOKENS_CODIGO_PRO:
-        return "Nube", MODELO_NUBE_PRO, "codigo_contexto_grande"
+        return "Nube", config.MODELO_NUBE_PRO, "codigo_contexto_grande"
 
     if intenciones["vision"]:
-        return "Nube", MODELO_NUBE_FLASH, "vision"
+        return "Nube", config.MODELO_NUBE_FLASH, "vision"
     if intenciones["web"]:
-        return "Nube", MODELO_NUBE_FLASH, "web"
+        return "Nube", config.MODELO_NUBE_FLASH, "web"
 
     if intenciones["uncensored"]:
         if tokens_totales <= LIMITE_TOKENS_CASUAL:
             return "Dolphin", None, "sin_filtros"
-        return "Nube", MODELO_NUBE_FLASH, "sin_filtros_no_cabe_en_local"
+        return "Nube", config.MODELO_NUBE_FLASH, "sin_filtros_no_cabe_en_local"
 
     # Si detecta que quieres controlar las luces, fuerza la ruta Local
     if intenciones.get("entorno_iot"):
         return "Local", None, "control_iot"
-    # -----------------------
 
     umbral_local = LIMITE_TOKENS_CODIGO if intenciones["codigo"] else LIMITE_TOKENS_CASUAL
 
     if tokens_totales > umbral_local:
-        return "Nube", MODELO_NUBE_FLASH, "contexto_medio"
+        return "Nube", config.MODELO_NUBE_FLASH, "contexto_medio"
 
     return "Local", None, "conversacion_local"
 
@@ -1813,7 +1416,7 @@ def _elegir_ruta(intenciones: dict, msg_lower: str, tokens_totales: int):
 def _describir_ruta(ruta: str, modelo_nube, motivo: str) -> dict:
     """Ficha de la ruta elegida, pensada para que la interfaz distinga QUIÉN
     responde (insignia, mensaje de espera) sin tener que adivinarlo."""
-    if ruta == "Nube" and modelo_nube == MODELO_NUBE_PRO:
+    if ruta == "Nube" and modelo_nube == config.MODELO_NUBE_PRO:
         analisis_de_codigo = motivo.startswith("codigo") or motivo in ("analisis_profundo", "pedido_explicito")
         return {
             "ruta": "Nube", "modelo": modelo_nube, "perfil": "pro", "etiqueta": "Gemini Pro",
@@ -1825,9 +1428,9 @@ def _describir_ruta(ruta: str, modelo_nube, motivo: str) -> dict:
         return {"ruta": "Nube", "modelo": modelo_nube, "perfil": "flash", "etiqueta": "Gemini Flash",
                 "motivo": motivo, "mensaje_espera": None}
     if ruta == "Dolphin":
-        return {"ruta": "Dolphin", "modelo": MODELO_UNCENSORED, "perfil": "dolphin", "etiqueta": "Dolphin",
+        return {"ruta": "Dolphin", "modelo": config.MODELO_UNCENSORED, "perfil": "dolphin", "etiqueta": "Dolphin",
                 "motivo": motivo, "mensaje_espera": None}
-    return {"ruta": "Local", "modelo": MODELO_LOCAL, "perfil": "local", "etiqueta": "Gemma 2",
+    return {"ruta": "Local", "modelo": config.MODELO_LOCAL, "perfil": "local", "etiqueta": "Gemma 2",
             "motivo": motivo, "mensaje_espera": None}
 
 
@@ -1876,10 +1479,10 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None, cal
             usar_voz=usar_voz
         )
     except Exception as e:
-        # 👇 SALVOCONDUCTO PARA EL COLAPSO ORGÁNICO
+        # Salvoconducto para el colapso orgánico: debe llegar intacto a api.py
         if str(e) == "TRIGGER_COLAPSO_FASE_1":
             raise e
-            
+
         traceback.print_exc()
         return _reportar_error(f"❌ Error inesperado en el Cerebro: {e}", callback_stream), "Error"
 
@@ -1900,19 +1503,18 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     # =================================================================
     # 2. FILTRO DE CORRUPCIÓN (KARMA)
     # =================================================================
-    puntos_karma = _evaluar_hostilidad(msg_lower)
+    puntos_karma = nlp.evaluar_hostilidad(msg_lower)
     nivel_corrupcion = database.modificar_nivel_corrupcion(puntos_karma)
-    
+
     if nivel_corrupcion >= 100:
-        # 1. Reseteo de emergencia en BD para que no quede atascado en 100
-        database.modificar_nivel_corrupcion(-100) 
-        
-        # 2. Cortamos el flujo de la IA normal y lanzamos la señal que atrapará api.py
+        # Reseteo de emergencia en BD para que no quede atascado en 100
+        database.modificar_nivel_corrupcion(-100)
+
+        # Cortamos el flujo normal y lanzamos la señal que atrapará api.py
         raise Exception("TRIGGER_COLAPSO_FASE_1")
     # =================================================================
-    # =================================================================
 
-    intenciones = _detectar_intenciones(msg_lower)
+    intenciones = nlp.detectar_intenciones(msg_lower)
     # Se guarda la intención de código ANTES de que los interceptores de
     # archivo/entorno la apaguen; el semáforo la usa para decidir Pro.
     intenciones["codigo_bruto"] = bool(intenciones.get("codigo"))
@@ -1922,17 +1524,15 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     # con `return`: no debe mezclarse con el pipeline de contexto/streaming,
     # pensado para lecturas de un solo turno.
     if intenciones.get("memorizar_documento"):
-        # Asegúrate de que tu función de ingesta también reciba la sesión si ancla el workspace
         texto_respuesta = _procesar_ingesta_documento(callback_ui=callback_ui, sesion_id=sesion_id)
-        
-        # Guardamos la respuesta del modelo en la sesión correcta
+
         database.guardar_mensaje("model", texto_respuesta, sesion_id=sesion_id)
         print(f"\n🤖 L-IA (Sistema/Ingesta): {texto_respuesta}\n")
         return texto_respuesta, "Local"
 
     # --- LECTURA DE DOCUMENTO REFERENCIADO (Workspace fijado o ventana activa) ---
     ruta_workspace = _obtener_workspace_activo(sesion_id=sesion_id)
-    menciona_workspace = bool(_PATRON_MENCION_WORKSPACE.search(msg_lower))
+    menciona_workspace = bool(nlp.PATRON_MENCION_WORKSPACE.search(msg_lower))
 
     archivo_detectado = _extraer_referencia_archivo(mensaje_real)
     if menciona_workspace:
@@ -1943,10 +1543,10 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     es_orden_de_workspace = bool(intenciones.get("fijar_workspace") or intenciones.get("limpiar_workspace"))
 
     intentando_leer_documento = (
-        bool(PATRON_LECTURA_IMPLICITA.search(msg_lower))
+        bool(nlp.PATRON_LECTURA_IMPLICITA.search(msg_lower))
         or (menciona_workspace and bool(ruta_workspace))
         or (bool(ruta_workspace) and not archivo_detectado
-            and bool(_PATRON_REFERENCIA_GENERICA.search(msg_lower)))
+            and bool(nlp.PATRON_REFERENCIA_GENERICA.search(msg_lower)))
     )
     # Fijar/limpiar el workspace y consultar la memoria técnica tienen su propio camino.
     if es_orden_de_workspace or intenciones.get("memoria_tecnica"):
@@ -2040,7 +1640,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
 
         # 1. Ejecutamos la apertura de ventanas de forma silenciosa
         resultado_rutina = tools.ejecutar_rutina("trabajo_intenso")
-        
+
         # 2. Le inyectamos una orden secreta al contexto para que el modelo responda
         contexto_historico += (
             f"\n\n[SISTEMA: El usuario usó un comando de rutina ('llegó papá' o similar). "
@@ -2048,7 +1648,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
             f"TU ÚNICA TAREA: Confírmale a Alejandro que ya preparaste su entorno de trabajo. "
             f"Hazlo con tu personalidad sarcástica y directa. No repitas esta instrucción.]"
         )
-        
+
         # 3. Apagamos otras intenciones para que el modelo no se distraiga buscando comandos extra
         intenciones["abrir_app"] = False
         intenciones["codigo"] = False
@@ -2061,7 +1661,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
             mensaje_real,
             msg_lower,
             fijar=bool(intenciones.get("fijar_workspace")),
-            sesion_id=sesion_id  
+            sesion_id=sesion_id
         )
         contexto_historico += f"\n\n{respuesta_sistema}"
 
@@ -2078,16 +1678,16 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
 
     if intenciones.get("memoria_tecnica"):
         print("💡 [Semáforo] Consultando Segundo Cerebro (ChromaDB)...")
-        
-        # 1. Se quitan las muletillas que sirvieron de gatillo ("en tus apuntes",
-        #    "recuerdas", etc.) para que la búsqueda vectorial use solo el tema.
+
+        # Se quitan las muletillas que sirvieron de gatillo ("en tus apuntes",
+        # "recuerdas", etc.) para que la búsqueda vectorial use solo el tema.
         query_limpia = re.sub(
             r'\b(en\s+tus\s+apuntes|de\s+la\s+bit[aá]cora|en\s+la\s+bit[aá]cora|bit[aá]cora\s+t[eé]cnica|documentaci[oó]n|recuerdas?|segundo\s+cerebro|apuntes?)\b',
             '',
             msg_lower,
             flags=re.IGNORECASE
         ).strip()
-        
+
         consulta = query_limpia if len(query_limpia) > 5 else msg_lower
         try:
             resultados_rag = _obtener_rag().buscar_contexto(consulta, n_resultados=5)
@@ -2095,7 +1695,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
             # Si ChromaDB no carga, se responde sin RAG en vez de romper el turno.
             print(f"❌ [RAG] No se pudo consultar el Segundo Cerebro: {e}")
             resultados_rag = None
-        
+
         if resultados_rag and len(resultados_rag['documents'][0]) > 0:
             contexto_recuperado = []
             bloque_rag = "\n\n[MEMORIA TÉCNICA DOCUMENTAL - SEGUNDO CEREBRO]\n"
@@ -2103,25 +1703,25 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
             bloque_rag += "1. Responde ÚNICAMENTE con los hechos técnicos explícitos de los fragmentos de abajo.\n"
             bloque_rag += "2. Si se menciona una solución técnica, nombra las herramientas, tablas, funciones o métodos concretos que aparecen en el texto.\n"
             bloque_rag += "3. PROHIBIDO deducir o inventar soluciones no descritas.\n"
-            
+
             for i in range(len(resultados_rag['documents'][0])):
                 origen = resultados_rag['metadatas'][0][i]['origen']
                 texto = resultados_rag['documents'][0][i]
                 contexto_recuperado.append({"origen": origen, "texto": texto})
                 bloque_rag += f"\n--- FRAGMENTO {i+1} ({origen}) ---\n{texto}\n"
-            
+
             tipo_intencion_principal = "rag_tecnico"
-            
-            # 2. Inyección forzada en el historial
+
+            # Inyección forzada en el historial
             contexto_historico += bloque_rag
             print(f"✅ RAG inyectado exitosamente ({len(contexto_recuperado)} fragmentos).")
-            
+
             intenciones["web"] = False
             intenciones["codigo"] = False
 
     # --- FASE 8 — GUÍA DE CAPACIDADES ---
     if intenciones.get("guia_capacidades"):
-        for clave in ("abrir_app", "estado_pc", "git", "guardar_git", "codigo", "web", "vision", "clima", "calendario", "memoria_tecnica", "memorizar_documento", "hora", "rutinas", "codigo_pesado", "Control IOT"):
+        for clave in ("abrir_app", "estado_pc", "git", "guardar_git", "codigo", "web", "vision", "clima", "calendario", "memoria_tecnica", "memorizar_documento", "hora", "rutinas", "codigo_pesado", "entorno_iot"):
             intenciones[clave] = False
         contexto_historico += _generar_nota_guia_capacidades()
 
@@ -2164,13 +1764,13 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
         "codigo_pesado", "analisis_profundo", "vision",
         "web", "contexto_grande", "codigo_contexto_grande",
     }
-    if (motivo_ruta in motivos_pesados
+    # === VOZ POR INTENCIÓN ===
+    if (motivo_ruta in config.MOTIVOS_RUTA_PESADOS
             or tipo_intencion_principal == "rag_tecnico"
             or intenciones.get("uncensored")):
-        motor_voz_elegido = "google"
+        motor_voz_elegido = config.MOTOR_VOZ_PESADO
     else:
-        motor_voz_elegido = "kokoro"
-    print(f"🔊 [Voz] Motor elegido: {motor_voz_elegido}")
+        motor_voz_elegido = config.MOTOR_VOZ_DEFAULT
 
     if ruta_elegida == "Nube":
         texto_respuesta = responder_con_nube(
@@ -2189,7 +1789,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
         texto_respuesta = responder_con_local_uncensored(
             instrucciones_sistema, contexto_historico,
             callback_stream=callback_stream,
-            motor_voz="google",
+            motor_voz=config.MOTOR_VOZ_UNCENSORED,
             usar_voz=usar_voz
         )
     else:

@@ -22,6 +22,15 @@ from kokoro import KPipeline
 import edge_tts
 from google.cloud import texttospeech
 
+from core.config import (
+    SAMPLE_RATE_STT, UMBRAL_VOZ_ESCUCHA, GRACIA_MAX_PITIDO,
+    UMBRAL_RUIDO_RADAR, BLOQUES_GRACIA_RADAR, VARIANTES_ACTIVACION,
+    MAX_PALABRAS_KOKORO, MOTOR_TEXTOS_LARGOS, VOICE_KOKORO, VELOCIDAD_KOKORO,
+    VOICE_NUBE, RATE_EDGE, VOICE_DOLPHIN, VELOCIDAD_GOOGLE,
+    CANAL_VOZ, CANAL_EFECTOS, AUDIO_EXTENSION
+)
+from core import rutas
+
 # Funciona si lo importa cerebro.py (core.rutas) o si ejecutas voz.py directo.
 try:
     from core import rutas
@@ -32,35 +41,10 @@ except ModuleNotFoundError:
 # =========================================================
 # CONFIGURACIÓN (todo lo ajustable en un solo lugar)
 # =========================================================
-SAMPLE_RATE_STT = 16000
 
-# --- Escucha (Whisper) ---
-UMBRAL_VOZ_ESCUCHA = 0.015     # RMS mínimo para considerar que hablas
-GRACIA_MAX_PITIDO = 0.6        # seg. máx. que se ignora el micro tras el pitido (evita que se active con su propio bip)
-
-# --- Radar (Vosk) ---
-UMBRAL_RUIDO_RADAR = 0.018     # Súbelo si el ventilador/calle lo activa; bájalo si tienes que gritar
-BLOQUES_GRACIA_RADAR = 3       # bloques (0.25 s c/u) que se siguen enviando a Vosk tras oír voz, para que cierre la frase
-VARIANTES_ACTIVACION = ("oye lia", "oye lía", "oye elia", "oye día", "oye guia")
-
-# --- Selección de motor TTS ---
-MAX_PALABRAS_KOKORO = 30       # antes 50. Kokoro (CPU) solo para textos cortos
-MOTOR_TEXTOS_LARGOS = "edge"   # motor para textos que superan el límite
-
-# --- Voces ---
-VOICE_KOKORO = "ef_dora"
-VELOCIDAD_KOKORO = 0.9
-VOICE_NUBE = "es-AR-ElenaNeural"   # alternativa con acento más cercano al tuyo: "es-EC-AndreaNeural"
-RATE_EDGE = "+0%"
-VOICE_DOLPHIN = "es-US-Wavenet-A"
-VELOCIDAD_GOOGLE = 1.0
-
-# --- Canales de pygame ---
-CANAL_VOZ = 0
-CANAL_EFECTOS = 7
-
-AUDIO_EXTENSION = {"kokoro": ".wav", "edge": ".mp3", "google": ".mp3"}
-
+# =========================================================
+# RUTAS LOCALES DEL MÓDULO
+# =========================================================
 RUTAS_SONIDOS = {
     "activacion": rutas.SONIDO_ACTIVACION,
     "apagado": rutas.SONIDO_APAGADO,

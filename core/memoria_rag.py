@@ -1,27 +1,18 @@
 import os
 import chromadb
+from datetime import datetime
 
-# Calculamos la raíz del proyecto y apuntamos a la carpeta data
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 
 class MemoriaRAG:
     def __init__(self, db_path="lia_chroma_db"):
-        # 1. Asegurar que la carpeta data exista
         os.makedirs(DATA_DIR, exist_ok=True)
-        
-        # 2. Forzar a ChromaDB a crearse DENTRO de data/
         ruta_absoluta = os.path.join(DATA_DIR, db_path)
         self.cliente = chromadb.PersistentClient(path=ruta_absoluta)
-        
-        # Colección principal para tu documentación técnica
         self.coleccion = self.cliente.get_or_create_collection(name="documentos_tecnicos")
 
     def _fragmentar_texto(self, texto, tamaño_chunk=600, solapamiento=100):
-        """
-        Divide un texto largo en fragmentos más pequeños.
-        El solapamiento evita que una idea se corte abruptamente a la mitad.
-        """
         chunks = []
         inicio = 0
         while inicio < len(texto):
@@ -30,23 +21,30 @@ class MemoriaRAG:
             inicio += tamaño_chunk - solapamiento
         return chunks
 
-    def indexar_documento(self, texto_completo, nombre_origen):
-        """
-        Fragmenta el texto e inyecta los metadatos (nombre del archivo).
-        """
+    # 1. REFACTORIZACIÓN: Añadimos parámetros para el grafo visual
+    def indexar_documento(self, texto_completo, nombre_origen, grupo="general", tipo="documento", titulo_corto=""):
         chunks = self._fragmentar_texto(texto_completo)
         ids = []
         metadatos = []
+        fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         for i in range(len(chunks)):
-            # Genera un ID único para cada párrafo
             id_chunk = f"{nombre_origen.replace(' ', '_')}_chunk_{i}"
             ids.append(id_chunk)
             
-            # Guarda el nombre del archivo para que L-IA sepa la fuente
-            metadatos.append({"origen": nombre_origen})
+            # Generamos un título legible para el nodo si no se provee uno
+            titulo_nodo = titulo_corto if titulo_corto else f"{nombre_origen} - Parte {i+1}"
             
-        print(f"Indexando {len(chunks)} fragmentos del archivo '{nombre_origen}'...")
+            # 2. METADATOS ENRIQUECIDOS: Esto alimenta los colores y filtros en React
+            metadatos.append({
+                "origen": nombre_origen,
+                "grupo": grupo,         # Ej: "iot", "unreal", "personal" (Color del nodo)
+                "tipo": tipo,           # Ej: "script", "pdf", "charla" (Icono o forma)
+                "titulo": titulo_nodo,  # Etiqueta visible al pasar el mouse
+                "fecha": fecha_actual
+            })
+            
+        print(f"Indexando {len(chunks)} fragmentos del archivo '{nombre_origen}' (Grupo: {grupo})...")
         
         self.coleccion.add(
             documents=chunks,
@@ -56,11 +54,15 @@ class MemoriaRAG:
         return len(chunks)
 
     def buscar_contexto(self, consulta, n_resultados=3):
-        """
-        Busca los párrafos más relevantes a la consulta.
-        """
-        resultados = self.coleccion.query(
+        return self.coleccion.query(
             query_texts=[consulta],
             n_results=n_resultados
         )
-        return resultados
+
+    # 3. NUEVO MÉTODO: El puente para la interfaz de React/Three.js
+    def obtener_todo_para_grafo(self):
+        """
+        Extrae toda la colección (textos, metadatos y vectores).
+        FastAPI usará esto para calcular las líneas de conexión (links) del mapa visual.
+        """
+        return self.coleccion.get(include=['embeddings', 'documents', 'metadatas'])
