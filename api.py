@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
 import ollama
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -501,6 +501,19 @@ def _workspace_activo(sesion_id: str) -> tuple[Optional[str], Optional[str]]:
         logger.debug("No se pudo leer el workspace activo de %s: %s", sesion_id, e)
     return None, None
 
+@app.post("/workspace/limpiar")
+async def api_limpiar_workspace(request: Request):
+    import core.database as database
+    
+    # 1. Atrapamos el sesion_id que envía React
+    datos = await request.json()
+    sesion_id = datos.get("sesion_id", "default")
+    
+    # 2. Limpiamos esa sesión específica
+    database.limpiar_workspace_activo(sesion_id)
+    
+    # 3. Respondemos EXACTAMENTE lo que React espera ("ok")
+    return {"status": "ok", "message": "Workspace liberado"}
 
 def _hilo_chat(entrada: str, mensaje: MensajeUsuario, cola: queue.Queue) -> None:
     """Cuerpo del hilo que conversa con L-IA y vuelca el resultado a la cola SSE."""

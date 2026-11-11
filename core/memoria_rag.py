@@ -1,50 +1,93 @@
+"""
+memoria_rag.py — Segundo Cerebro Vectorial de L-IA (ChromaDB)
+Solo administra textos crudos y vectores matemáticos. Operado al 100% en CPU.
+"""
 import os
-import chromadb
+import re
 from datetime import datetime
+import chromadb
+from chromadb.utils import embedding_functions
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+from core import config
+from core import rutas
 
 class MemoriaRAG:
-    def __init__(self, db_path="lia_chroma_db"):
-        os.makedirs(DATA_DIR, exist_ok=True)
-        ruta_absoluta = os.path.join(DATA_DIR, db_path)
+    def __init__(self):
+        # 1. Configurar ruta de ChromaDB usando la fuente centralizada
+        ruta_absoluta = str(rutas.CHROMA_DB_PATH)
         self.cliente = chromadb.PersistentClient(path=ruta_absoluta)
-        self.coleccion = self.cliente.get_or_create_collection(name="documentos_tecnicos")
+        
+        # 2. Forzar Embeddings en CPU (Protección estricta de VRAM para Gemma 2)
+        print(f"🧠 [ChromaDB] Cargando modelo de embeddings en CPU ({config.EMBEDDING_MODEL})...")
+        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name=config.EMBEDDING_MODEL,
+            device="cpu" 
+        )
+        
+        # 3. Conectar a la colección principal
+        self.coleccion = self.cliente.get_or_create_collection(
+            name=config.CHROMA_COLLECTION_NAME,
+            embedding_function=self.embedding_fn
+        )
 
-    def _fragmentar_texto(self, texto, tamaño_chunk=600, solapamiento=100):
+    def _fragmentar_texto_inteligente(self, texto, max_chars=config.CHUNK_SIZE):
+        """
+        Divide el texto priorizando saltos lógicos (párrafos dobles y líneas).
+        Evita cortar funciones de código o ideas a la mitad.
+        """
+        parrafos = re.split(r'\n\n+', texto)
         chunks = []
-        inicio = 0
-        while inicio < len(texto):
-            fin = inicio + tamaño_chunk
-            chunks.append(texto[inicio:fin])
-            inicio += tamaño_chunk - solapamiento
+        chunk_actual = ""
+
+        for parrafo in parrafos:
+            if len(chunk_actual) + len(parrafo) < max_chars:
+                chunk_actual += parrafo + "\n\n"
+            else:
+                if chunk_actual:
+                    chunks.append(chunk_actual.strip())
+                
+                # Si un solo bloque de código/texto es más grande que el máximo permitido
+                if len(parrafo) > max_chars:
+                    lineas = parrafo.split('\n')
+                    sub_chunk = ""
+                    for linea in lineas:
+                        if len(sub_chunk) + len(linea) < max_chars:
+                            sub_chunk += linea + "\n"
+                        else:
+                            chunks.append(sub_chunk.strip())
+                            sub_chunk = linea + "\n"
+                    chunk_actual = sub_chunk + "\n\n"
+                else:
+                    chunk_actual = parrafo + "\n\n"
+        
+        if chunk_actual:
+            chunks.append(chunk_actual.strip())
+            
         return chunks
 
-    # 1. REFACTORIZACIÓN: Añadimos parámetros para el grafo visual
-    def indexar_documento(self, texto_completo, nombre_origen, grupo="general", tipo="documento", titulo_corto=""):
-        chunks = self._fragmentar_texto(texto_completo)
+    def indexar_documento(self, doc_id, texto_completo, titulo, grupo="general", tipo="documento", origen="archivo"):
+        chunks = self._fragmentar_texto_inteligente(texto_completo)
         ids = []
         metadatos = []
         fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         for i in range(len(chunks)):
-            id_chunk = f"{nombre_origen.replace(' ', '_')}_chunk_{i}"
+            id_chunk = f"{doc_id}_chunk_{i}"
             ids.append(id_chunk)
             
-            # Generamos un título legible para el nodo si no se provee uno
-            titulo_nodo = titulo_corto if titulo_corto else f"{nombre_origen} - Parte {i+1}"
+            titulo_nodo = f"{titulo} - Parte {i+1}"
             
-            # 2. METADATOS ENRIQUECIDOS: Esto alimenta los colores y filtros en React
+            # Estos metadatos alimentarán los colores y filtros del frontend 3D
             metadatos.append({
-                "origen": nombre_origen,
-                "grupo": grupo,         # Ej: "iot", "unreal", "personal" (Color del nodo)
-                "tipo": tipo,           # Ej: "script", "pdf", "charla" (Icono o forma)
-                "titulo": titulo_nodo,  # Etiqueta visible al pasar el mouse
+                "doc_id": doc_id,
+                "origen": origen,
+                "grupo": grupo,
+                "tipo": tipo,
+                "titulo": titulo_nodo,
                 "fecha": fecha_actual
             })
             
-        print(f"Indexando {len(chunks)} fragmentos del archivo '{nombre_origen}' (Grupo: {grupo})...")
+        print(f"📦 [RAG] Indexando {len(chunks)} fragmentos para '{titulo}' (Grupo: {grupo})...")
         
         self.coleccion.add(
             documents=chunks,
@@ -53,16 +96,18 @@ class MemoriaRAG:
         )
         return len(chunks)
 
-    def buscar_contexto(self, consulta, n_resultados=3):
+    def buscar_contexto(self, consulta, n_resultados=config.MAX_RAG_RESULTS):
+        """Busca los conceptos similares en el espacio vectorial."""
         return self.coleccion.query(
             query_texts=[consulta],
             n_results=n_resultados
         )
 
-    # 3. NUEVO MÉTODO: El puente para la interfaz de React/Three.js
+    def eliminar_vectores_por_doc(self, doc_id):
+        """Elimina en cascada todos los fragmentos que pertenezcan a un documento."""
+        self.coleccion.delete(where={"doc_id": doc_id})
+        print(f"🗑️ [ChromaDB] Memoria vectorial eliminada para ID: {doc_id}")
+
     def obtener_todo_para_grafo(self):
-        """
-        Extrae toda la colección (textos, metadatos y vectores).
-        FastAPI usará esto para calcular las líneas de conexión (links) del mapa visual.
-        """
+        """Puente API: Extrae los nodos y tensores matemáticos para renderizar en Three.js"""
         return self.coleccion.get(include=['embeddings', 'documents', 'metadatas'])

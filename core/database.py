@@ -115,6 +115,21 @@ def inicializar_base_datos():
 
     conexion.commit()
 
+    # 7. Memoria Relacional RAG (NUEVO)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS documentos_memoria (
+        doc_id TEXT PRIMARY KEY,
+        titulo TEXT,
+        grupo TEXT,
+        tipo TEXT,
+        ruta_archivo TEXT,
+        total_chunks INTEGER,
+        veces_consultado INTEGER DEFAULT 0,
+        fecha_creacion DATETIME
+    )
+    """)
+    conexion.commit()
+
     # --- Seed data ---
     _seed_perfil(cursor)
     _seed_sesiones(cursor)
@@ -325,6 +340,74 @@ def obtener_historial_reciente(limite=10, sesion_id="default"):
     mensajes = cursor.fetchall()
     conexion.close()
     return [dict(msg) for msg in reversed(mensajes)]
+
+# ============================================================
+# GESTIÓN DE MEMORIA RAG (Índice Maestro)
+# ============================================================
+
+def registrar_documento_rag(doc_id, titulo, grupo, tipo, ruta_archivo, total_chunks):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("""
+        INSERT OR REPLACE INTO documentos_memoria 
+        (doc_id, titulo, grupo, tipo, ruta_archivo, total_chunks, fecha_creacion)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (doc_id, titulo, grupo, tipo, ruta_archivo, total_chunks, _ahora()))
+    conexion.commit()
+    conexion.close()
+
+def listar_documentos_rag():
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("SELECT * FROM documentos_memoria")
+    filas = cursor.fetchall()
+    conexion.close()
+    return [dict(f) for f in filas]
+
+def incrementar_uso_documento_rag(doc_id):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("""
+        UPDATE documentos_memoria 
+        SET veces_consultado = veces_consultado + 1 
+        WHERE doc_id = ?
+    """, (doc_id,))
+    conexion.commit()
+    conexion.close()
+
+def buscar_ruta_proyecto_rag(nombre_proyecto):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("""
+        SELECT ruta_archivo FROM documentos_memoria 
+        WHERE titulo LIKE ? OR grupo LIKE ?
+    """, (f"%{nombre_proyecto}%", f"%{nombre_proyecto}%"))
+    resultado = cursor.fetchone()
+    conexion.close()
+    return resultado["ruta_archivo"] if resultado else None
+
+def actualizar_workspace_resumen(resumen, sesion_id="default"):
+    """Guarda el micro-resumen en la tabla de la sesión activa."""
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("UPDATE sesiones_chat SET workspace_resumen = ?, ultima_actualizacion = ? WHERE id = ?", (resumen, _ahora(), sesion_id))
+    conexion.commit()
+    conexion.close()
+
+def guardar_hecho(clave, valor, categoria=None):
+    """Guarda un dato suelto en la tabla de memoria_hechos."""
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    cursor.execute("""
+        INSERT INTO memoria_hechos (clave, valor, categoria, ultima_actualizacion)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(clave) DO UPDATE SET 
+        valor = excluded.valor, 
+        categoria = excluded.categoria,
+        ultima_actualizacion = excluded.ultima_actualizacion
+    """, (clave, valor, categoria, _ahora()))
+    conexion.commit()
+    conexion.close()
 
 # ============================================================
 # (RESTO DE FUNCIONES DE HERRAMIENTAS, PERFIL, Y HECHOS IGUALES)

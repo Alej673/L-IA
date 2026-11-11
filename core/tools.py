@@ -405,7 +405,7 @@ def abrir_aplicacion(nombres_apps: str) -> str:
 
     return " | ".join(resultados)
 
-def buscar_archivo_local(nombre_archivo: str, callback_desambiguacion=None) -> str:
+def buscar_archivo_local(nombre_archivo: str) -> str:
     """
     Rastrea 'Zonas Seguras' usando el microservicio concurrente en Go.
     Si encuentra múltiples archivos, lanza un modal en React para elegir.
@@ -484,41 +484,61 @@ def buscar_archivo_local(nombre_archivo: str, callback_desambiguacion=None) -> s
 def leer_archivo_local(ruta_archivo: str, busqueda_automatica=False):
     """
     Lee un archivo de texto, código, Word (.docx) o PDF desde una ruta.
+    Busca inteligentemente en el directorio de trabajo si solo se pasa un nombre.
     """
+    import os
     ruta_limpia = ruta_archivo.strip("'\"").strip()
+    ruta_final = None
 
+    # 1. Búsqueda inteligente si no existe directamente
     if not os.path.exists(ruta_limpia):
-        if not busqueda_automatica and "\\" not in ruta_limpia and "/" not in ruta_limpia:
-            return buscar_archivo_local(ruta_limpia)
-        return {"error": f"No se encontró la ruta: {ruta_limpia}"}
+        # Si NO es una ruta absoluta, buscamos recursivamente en el directorio actual
+        if "\\" not in ruta_limpia and "/" not in ruta_limpia:
+            # Empezamos a buscar desde la carpeta raíz del proyecto L-IA
+            # (Subimos un nivel desde la carpeta core/ donde está tools.py)
+            directorio_raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            for root, dirs, files in os.walk(directorio_raiz):
+                if ruta_limpia in files:
+                    ruta_final = os.path.join(root, ruta_limpia)
+                    print(f"🕵️‍♀️ [Tools] Archivo encontrado localmente en: {ruta_final}")
+                    break
+            
+            # Si aún así no lo encontramos localmente, lanzamos la búsqueda global
+            if not ruta_final and not busqueda_automatica:
+                return buscar_archivo_local(ruta_limpia)
+        
+        if not ruta_final:
+            return {"error": f"No se encontró la ruta ni el archivo: {ruta_limpia}"}
+    else:
+        ruta_final = ruta_limpia
 
     try:
-        tamano_kb = os.path.getsize(ruta_limpia) / 1024
-        nombre_archivo = os.path.basename(ruta_limpia)
+        tamano_kb = os.path.getsize(ruta_final) / 1024
+        nombre_archivo = os.path.basename(ruta_final)
         _, extension = os.path.splitext(nombre_archivo)
 
-        # 1. Agregamos .docx y .pdf a las extensiones válidas
-        extensiones_validas = ['.txt', '.py', '.php', '.js', '.json', '.html', '.css', '.md', '.env', '.cpp', '.h', '.docx', '.pdf']
+        # 2. Extensiones válidas
+        extensiones_validas = ['.txt', '.py', '.php', '.js', '.json', '.html', '.css', '.md', '.env', '.cpp', '.h', '.docx', '.pdf', '.java', '.cs', '.rb', '.go', '.rs', '.ts', '.sh', '.bat', '.yml', '.yaml', '.ini', '.conf', '.log', '.sql', '.c', '.swift', '.pl', '.r', '.lua', '.asm', '.dart', '.kt', '.m', '.vbs', '.jsx', '.tsx', '.ps1', '.gradle', '.makefile', '.dockerfile', '.tex', '.erl', '.ex', '.exs', '.clj', '.cljs', '.groovy', '.hbs', '.twig', '.jade', '.pug']
 
         if extension.lower() not in extensiones_validas:
             return {"error": f"El formato '{extension}' no está soportado."}
 
         contenido = ""
 
-        # 2. Lógica para documentos de Word
+        # 3. Lógica para documentos de Word
         if extension.lower() == '.docx':
             try:
                 import docx
-                doc = docx.Document(ruta_limpia)
+                doc = docx.Document(ruta_final)
                 contenido = "\n".join([parrafo.text for parrafo in doc.paragraphs if parrafo.text.strip() != ""])
             except ImportError:
                 return {"error": "Falta la librería. Ejecuta en la terminal: pip install python-docx"}
 
-        # 3. Lógica para PDFs
+        # 4. Lógica para PDFs
         elif extension.lower() == '.pdf':
             try:
                 import PyPDF2
-                with open(ruta_limpia, 'rb') as f:
+                with open(ruta_final, 'rb') as f:
                     lector = PyPDF2.PdfReader(f)
                     for pagina in lector.pages:
                         texto = pagina.extract_text()
@@ -527,16 +547,18 @@ def leer_archivo_local(ruta_archivo: str, busqueda_automatica=False):
             except ImportError:
                 return {"error": "Falta la librería. Ejecuta en la terminal: pip install PyPDF2"}
 
-        # 4. Lógica original para texto plano y código
+        # 5. Lógica original para texto plano y código
         else:
-            with open(ruta_limpia, 'r', encoding='utf-8', errors='ignore') as f:
+            with open(ruta_final, 'r', encoding='utf-8', errors='ignore') as f:
                 contenido = f.read()
 
+        # DEVOLVEMOS 'ruta_absoluta' PARA QUE EL GESTOR DE MEMORIA SEPA DÓNDE ESTÁ FÍSICAMENTE
         return {
             "nombre": nombre_archivo,
             "contenido": contenido,
             "tamano_kb": round(tamano_kb, 2),
-            "es_pesado": tamano_kb > 35.0
+            "es_pesado": tamano_kb > 35.0,
+            "ruta_absoluta": os.path.abspath(ruta_final)
         }
     except Exception as e:
         return {"error": f"Error de lectura: {e}"}

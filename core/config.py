@@ -28,7 +28,7 @@ CHROMA_COLLECTION_NAME = "memoria_largo_plazo"
 CHUNK_SIZE = 600             # Caracteres máx. por fragmento
 CHUNK_OVERLAP = 100          # Solapamiento para no cortar ideas
 MAX_RAG_RESULTS = 3          # Máximo de recuerdos inyectados al prompt de Gemma 2
-SIMILARITY_THRESHOLD = 1.55  # Distancia L2 máxima permitida (menor = más estricto; >1.55 se ignora)
+SIMILARITY_THRESHOLD = 0.85  # Distancia L2 máxima permitida (menor = más estricto; >1.6 se ignora)
 
 # =========================================================
 # 3. AUDIO, ESCUCHA Y MOTORES DE VOZ (STT / TTS)

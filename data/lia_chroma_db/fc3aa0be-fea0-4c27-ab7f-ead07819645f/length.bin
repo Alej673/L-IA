@@ -1,0 +1,2 @@
+invalid type: string "def _ejecutar_dinamico(nombre_herramienta, **kwargs):\n    \"\"\"Enrutador interno (dispatch) hacia la funciÃ³n real en tools.py\"\"\"\n    if nombre_herramienta == \"abrir_aplicacion\":\n        return abrir_aplicacion(kwargs.get(\"nombres_apps\", \"\"))\n    elif nombre_herramienta == \"obtener_estado_sistema\":\n        return obtener_estado_sistema()\n"nivel": 2},
+    "ÿÿ

@@ -1140,8 +1140,7 @@ def _ejecutar_guardado_git(msg_lower, callback_ui=None):
 
 def _procesar_workspace_fase_7(mensaje_real, msg_lower, fijar: bool, sesion_id="default"):
     if not fijar:
-        database.limpiar_workspace_activo()  # Ya borra el activo y el historial de golpe en database.py
-        database.limpiar_workspace_resumen()
+        database.limpiar_workspace_activo(sesion_id)
         print("🧹 [Fase 7] Workspace limpiado por orden del usuario.")
         return "[SISTEMA: El Workspace activo ha sido limpiado. L-IA ya no tiene ningún archivo fijado en memoria.]"
 
@@ -1184,8 +1183,8 @@ def _procesar_workspace_fase_7(mensaje_real, msg_lower, fijar: bool, sesion_id="
             except Exception as e:
                 print(f"⚠️ [Error generando micro-resumen: {e}]")
 
-        database.establecer_workspace_activo(ruta_final)
-        database.guardar_hecho("workspace_resumen", resumen_tecnico, categoria="contexto_fase7")
+        database.establecer_workspace_activo(ruta_final, sesion_id)
+        database.actualizar_workspace_resumen(resumen_tecnico, sesion_id)
 
         print(f"📌 [Fase 7] Workspace fijado a: {ruta_final}")
         print(f"🧠 [Micro-resumen guardado]: {resumen_tecnico}")
@@ -1235,7 +1234,6 @@ def _procesar_archivo(ruta_o_nombre, contexto_historico):
     print(f"📄 [Archivo procesado. Tokens estimados del contenido: {tokens_estimados}]")
     return contexto_historico, tokens_estimados
 
-
 # ==========================================
 # 6.5 INTERCEPTOR — INGESTA AL SEGUNDO CEREBRO
 # ==========================================
@@ -1245,37 +1243,32 @@ def _procesar_archivo(ruta_o_nombre, contexto_historico):
 # aunque reutiliza `contexto.obtener_ventana_activa()` y
 # `tools.leer_archivo_local()` para no duplicar la detección del archivo.
 
-def asimilar_documento_maestro(ruta_absoluta: str, origen_texto: str = "archivo") -> str:
+def asimilar_documento_maestro(ruta_absoluta: str, origen_texto: str = "archivo", sesion_id="default") -> str:
     """
-    Función unificada para procesar un documento.
-    Realiza 3 tareas críticas:
-    1. Indexa el contenido en ChromaDB (Memoria RAG a largo plazo).
-    2. Fija la ruta en SQLite como el Workspace activo.
-    3. Genera el Micro-Resumen de 25 palabras para la atención a corto plazo.
+    Función unificada para procesar un documento (Orquestada).
+    1. Indexa y registra (Gestor de Memoria).
+    2. Fija la ruta en SQLite como Workspace activo.
+    3. Genera el Micro-Resumen.
     """
+    import core.gestor_memoria as gestor_memoria
+    
     print(f"\n🧠 [Asimilación Maestra] Procesando: '{ruta_absoluta}'")
 
-    # 1. Leer el archivo físicamente
+    # 1. Asimilación Vectorial y Administrativa (ChromaDB + SQLite sincronizados)
+    resultado_gestor = gestor_memoria.asimilar_archivo(
+        ruta_absoluta, 
+        grupo="general", 
+        tipo="documento"
+    )
+    
+    if "❌" in resultado_gestor:
+        return resultado_gestor
+
+    # 2. Generar Micro-Resumen (Atención a corto plazo)
     datos = tools.leer_archivo_local(ruta_absoluta)
-    if not (isinstance(datos, dict) and "contenido" in datos):
-        return f"Error: No pude extraer el texto de '{ruta_absoluta}'. Verifica permisos o el formato."
-
-    texto_a_vectorizar = datos["contenido"]
-    nombre_archivo = os.path.basename(ruta_absoluta)
-
-    # 2. Vectorizar en ChromaDB (RAG)
-    try:
-        cantidad_fragmentos = _obtener_rag().indexar_documento(
-            texto_completo=texto_a_vectorizar,
-            nombre_origen=nombre_archivo
-        )
-        print(f"✅ [RAG] Indexados {cantidad_fragmentos} fragmentos en el Segundo Cerebro.")
-    except Exception as e:
-        print(f"❌ [Ingesta RAG] Falló la vectorización: {e}")
-        return f"Fallo crítico en el Segundo Cerebro al intentar memorizar '{nombre_archivo}'."
-
-    # 3. Generar Micro-Resumen (Atención a corto plazo)
+    texto_a_vectorizar = datos.get("contenido", "")
     fragmento_resumen = texto_a_vectorizar[:3000]
+    
     prompt_resumen = (
         "Eres un analizador estricto. Lee este texto y devuelve UNICAMENTE un "
         "resumen técnico de máximo 25 palabras indicando su propósito o tema central. Cero saludos.\n\n"
@@ -1294,13 +1287,13 @@ def asimilar_documento_maestro(ruta_absoluta: str, origen_texto: str = "archivo"
     except Exception as e:
         print(f"⚠️ [Error generando micro-resumen: {e}]")
 
-    # 4. Guardar en SQLite (Workspace)
-    database.establecer_workspace_activo(ruta_absoluta)
-    database.guardar_hecho("workspace_resumen", resumen_tecnico, categoria="contexto_fase7")
+    # 3. Guardar en SQLite (Workspace de la sesión actual)
+    database.establecer_workspace_activo(ruta_absoluta, sesion_id)
+    database.actualizar_workspace_resumen(resumen_tecnico, sesion_id)
 
     return (
-        f"Asimilación completa. Procesé '{nombre_archivo}', lo dividí en {cantidad_fragmentos} "
-        f"fragmentos para mi memoria a largo plazo y lo he fijado como mi entorno activo. "
+        f"Asimilación completa. {resultado_gestor.replace('✅ ', '')} "
+        f"Además, lo he fijado como mi entorno activo. "
         f"Resumen generado: {resumen_tecnico}"
     )
 
@@ -1328,12 +1321,14 @@ def _procesar_ingesta_documento(callback_ui=None, sesion_id="default"):
             ruta_absoluta = match_primera.group(1).strip()
         else:
             return "Hay múltiples archivos con ese nombre. Por favor, sé más específico."
-    elif isinstance(resultado, dict) and "ruta" in resultado:
-        ruta_absoluta = resultado.get("ruta", nombre_archivo)
+    elif isinstance(resultado, dict) and "contenido" in resultado:
+        # CORRECCIÓN: Validamos que exista el contenido.
+        # Si la herramienta no adjuntó la ruta absoluta, usamos el nombre del archivo.
+        ruta_absoluta = resultado.get("ruta_absoluta", resultado.get("ruta", nombre_archivo))
     else:
         return f"Pude ver el archivo '{nombre_archivo}', pero hubo un error al extraerlo. Revisa los permisos."
 
-    return asimilar_documento_maestro(ruta_absoluta)
+    return asimilar_documento_maestro(ruta_absoluta, sesion_id=sesion_id)
 
 # ==========================================
 # 7. SEMÁFORO v3 — DECISIÓN DE RUTA
@@ -1515,6 +1510,13 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     # =================================================================
 
     intenciones = nlp.detectar_intenciones(msg_lower)
+    # --- PARCHE: FORZAR DETECCIÓN DEL RAG ---
+    if re.search(r'\b(memoria\s+t[eé]cnica|segundo\s+cerebro|bit[aá]cora|apuntes?|recuerdas?)\b', msg_lower):
+        intenciones["memoria_tecnica"] = True
+    # ----------------------------------------
+    
+    # Se guarda la intención de código ANTES de que los interceptores...
+    intenciones["codigo_bruto"] = bool(intenciones.get("codigo"))
     # Se guarda la intención de código ANTES de que los interceptores de
     # archivo/entorno la apaguen; el semáforo la usa para decidir Pro.
     intenciones["codigo_bruto"] = bool(intenciones.get("codigo"))
@@ -1676,21 +1678,33 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     tipo_intencion_principal = "casual"
     contexto_recuperado = None
 
+    # PARCHE OBLIGATORIO: Forzar bandera de RAG si el usuario menciona la memoria
+    if re.search(r'\b(memoria\s+t[eé]cnica|segundo\s+cerebro|bit[aá]cora|apuntes?|recuerdas?)\b', msg_lower):
+        intenciones["memoria_tecnica"] = True
+
     if intenciones.get("memoria_tecnica"):
         print("💡 [Semáforo] Consultando Segundo Cerebro (ChromaDB)...")
 
-        # Se quitan las muletillas que sirvieron de gatillo ("en tus apuntes",
-        # "recuerdas", etc.) para que la búsqueda vectorial use solo el tema.
+        # ELIMINAR OTRAS RUTAS INMEDIATAMENTE
+        # Esto mata la intención de buscar_archivo que Gemma enciende erróneamente
+        intenciones["buscar_archivo"] = False
+        intenciones["abrir_app"] = False
+        intenciones["codigo"] = False
+        intenciones["web"] = False
+
+        # Se quitan las muletillas que sirvieron de gatillo
         query_limpia = re.sub(
-            r'\b(en\s+tus\s+apuntes|de\s+la\s+bit[aá]cora|en\s+la\s+bit[aá]cora|bit[aá]cora\s+t[eé]cnica|documentaci[oó]n|recuerdas?|segundo\s+cerebro|apuntes?)\b',
+            r'\b(en\s+tus\s+apuntes|de\s+la\s+bit[aá]cora|en\s+la\s+bit[aá]cora|bit[aá]cora\s+t[eé]cnica|documentaci[oó]n|recuerdas?|segundo\s+cerebro|apuntes?|memoria\s+t[eé]cnica|busca\s+en\s+tu)\b',
             '',
             msg_lower,
             flags=re.IGNORECASE
         ).strip()
 
         consulta = query_limpia if len(query_limpia) > 5 else msg_lower
+        
         try:
-            resultados_rag = _obtener_rag().buscar_contexto(consulta, n_resultados=5)
+            import core.gestor_memoria as gestor_memoria
+            resultados_rag = gestor_memoria.consultar_memoria(consulta, n_resultados=5)
         except Exception as e:
             # Si ChromaDB no carga, se responde sin RAG en vez de romper el turno.
             print(f"❌ [RAG] No se pudo consultar el Segundo Cerebro: {e}")
@@ -1710,14 +1724,26 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
                 contexto_recuperado.append({"origen": origen, "texto": texto})
                 bloque_rag += f"\n--- FRAGMENTO {i+1} ({origen}) ---\n{texto}\n"
 
-            tipo_intencion_principal = "rag_tecnico"
+            tipo_intencion_principal = "casual"
+            contexto_recuperado = None
 
-            # Inyección forzada en el historial
-            contexto_historico += bloque_rag
-            print(f"✅ RAG inyectado exitosamente ({len(contexto_recuperado)} fragmentos).")
+            if intenciones.get("memoria_tecnica"):
+                print("💡 [Semáforo] Consultando Segundo Cerebro (ChromaDB)...")
 
-            intenciones["web"] = False
-            intenciones["codigo"] = False
+                # APAGADO FORZADO: Si es una consulta RAG, prohibimos explícitamente usar herramientas.
+                # Esto evita que Gemma confunda "buscar en memoria" con "buscar_archivo_local".
+                intenciones["buscar_archivo"] = False
+                intenciones["abrir_app"] = False
+                intenciones["codigo"] = False
+                intenciones["web"] = False
+
+                # Se quitan las muletillas que sirvieron de gatillo ("en tus apuntes", etc.)
+                query_limpia = re.sub(
+                    r'\b(en\s+tus\s+apuntes|de\s+la\s+bit[aá]cora|en\s+la\s+bit[aá]cora|bit[aá]cora\s+t[eé]cnica|documentaci[oó]n|recuerdas?|segundo\s+cerebro|apuntes?|memoria\s+t[eé]cnica)\b',
+                    '',
+                    msg_lower,
+                    flags=re.IGNORECASE
+                ).strip()
 
     # --- FASE 8 — GUÍA DE CAPACIDADES ---
     if intenciones.get("guia_capacidades"):
