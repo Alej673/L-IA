@@ -110,10 +110,15 @@ def olvidar_documento(doc_id):
 
     # 2. Destrucción de metadatos
     conexion = database.obtener_conexion()
-    cursor = conexion.cursor()
-    cursor.execute("DELETE FROM documentos_memoria WHERE doc_id = ?", (doc_id,))
-    conexion.commit()
-    conexion.close()
+    try:
+        cursor = conexion.cursor()
+        cursor.execute("DELETE FROM documentos_memoria WHERE doc_id = ?", (doc_id,))
+        conexion.commit()
+    except Exception:
+        conexion.rollback()
+        raise
+    finally:
+        conexion.close()
 
     print(f"🧹 [Gestor] Documento {doc_id} erradicado permanentemente de ambas memorias.")
     return True

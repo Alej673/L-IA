@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 type BuscarRequest struct {
@@ -27,22 +28,32 @@ type BuscarResponse struct {
 
 // Replicamos tu lista de exclusión para no saturar la búsqueda
 var carpetasExcluidas = map[string]bool{
-	"node_modules": true, "vendor": true, ".git": true,
+	"node_modules": true, "vendor": true, ".git": true, ".venv": true,
+	"venv": true, "__pycache__": true, "target": true,
+	"dist": true, "build": true, "lia_chroma_db": true,
 	"AppData": true, "Saved": true, "Intermediate": true,
 }
 
+const maxResultadosBusqueda = 20
+
 func buscarArchivosHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	var req BuscarRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		json.NewEncoder(w).Encode(BuscarResponse{Error: "Petición mal formada"})
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
 
-	palabra := strings.ToLower(req.PalabraClave)
-	var resultados []ArchivoEncontrado
+	palabra := strings.ToLower(strings.TrimSpace(req.PalabraClave))
+	if palabra == "" {
+		json.NewEncoder(w).Encode(BuscarResponse{Resultados: []ArchivoEncontrado{}})
+		return
+	}
+
+	resultados := make([]ArchivoEncontrado, 0, maxResultadosBusqueda)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	var limiteAlcanzado atomic.Bool
 
 	// Lanzar una goroutine por cada "Zona Segura" para buscar en paralelo
 	for _, carpeta := range req.Carpetas {
@@ -51,12 +62,15 @@ func buscarArchivosHandler(w http.ResponseWriter, r *http.Request) {
 			defer wg.Done()
 
 			filepath.WalkDir(rutaBase, func(path string, d fs.DirEntry, err error) error {
+				if limiteAlcanzado.Load() {
+					return fs.SkipAll
+				}
 				if err != nil {
 					return nil // Ignorar archivos bloqueados por Windows o sin permisos
 				}
 
 				if d.IsDir() {
-					if carpetasExcluidas[d.Name()] || strings.HasPrefix(d.Name(), ".") {
+					if path != rutaBase && (carpetasExcluidas[d.Name()] || strings.HasPrefix(d.Name(), ".")) {
 						return filepath.SkipDir
 					}
 					return nil
@@ -72,15 +86,24 @@ func buscarArchivosHandler(w http.ResponseWriter, r *http.Request) {
 					info, err := d.Info()
 					if err == nil {
 						mu.Lock()
-						// Limitamos a 20 resultados máximos para no saturar la interfaz de React
-						if len(resultados) < 20 {
-							resultados = append(resultados, ArchivoEncontrado{
-								Ruta:       path,
-								FechaModif: info.ModTime().Format("2006-01-02 15:04"),
-								TamanoKB:   float64(info.Size()) / 1024.0,
-							})
+						if len(resultados) >= maxResultadosBusqueda {
+							limiteAlcanzado.Store(true)
+							mu.Unlock()
+							return fs.SkipAll
+						}
+						resultados = append(resultados, ArchivoEncontrado{
+							Ruta:       path,
+							FechaModif: info.ModTime().Format("2006-01-02 15:04"),
+							TamanoKB:   float64(info.Size()) / 1024.0,
+						})
+						alcanzado := len(resultados) >= maxResultadosBusqueda
+						if alcanzado {
+							limiteAlcanzado.Store(true)
 						}
 						mu.Unlock()
+						if alcanzado {
+							return fs.SkipAll
+						}
 					}
 				}
 				return nil
