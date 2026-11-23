@@ -50,7 +50,6 @@ import core.database as database
 import core.tools as tools
 import core.apis as apis
 import core.contexto as contexto
-import core.eventos_anomalos as eventos_anomalos
 import core.intenciones as nlp
 import core.bozales as bozales
 from core import config
@@ -739,6 +738,7 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
             motor=motor_voz,
             callback_stream=_stream_contado,
             texto_para_mostrar=response.text,
+            usar_voz=usar_voz,
         )
 
     return _ejecutar_con_reintentos(_accion_herramientas, callback_stream, emitidos, etiqueta)
@@ -1528,8 +1528,6 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
         intenciones["memoria_tecnica"] = True
     # ----------------------------------------
     
-    # Se guarda la intención de código ANTES de que los interceptores...
-    intenciones["codigo_bruto"] = bool(intenciones.get("codigo"))
     # Se guarda la intención de código ANTES de que los interceptores de
     # archivo/entorno la apaguen; el semáforo la usa para decidir Pro.
     intenciones["codigo_bruto"] = bool(intenciones.get("codigo"))
@@ -1748,24 +1746,6 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
             tipo_intencion_principal = "rag_tecnico"
             print(f"✅ [RAG] {len(contexto_recuperado)} fragmentos inyectados al contexto.")
 
-            if intenciones.get("memoria_tecnica"):
-                print("💡 [Semáforo] Consultando Segundo Cerebro (ChromaDB)...")
-
-                # APAGADO FORZADO: Si es una consulta RAG, prohibimos explícitamente usar herramientas.
-                # Esto evita que Gemma confunda "buscar en memoria" con "buscar_archivo_local".
-                intenciones["buscar_archivo"] = False
-                intenciones["abrir_app"] = False
-                intenciones["codigo"] = False
-                intenciones["web"] = False
-
-                # Se quitan las muletillas que sirvieron de gatillo ("en tus apuntes", etc.)
-                query_limpia = re.sub(
-                    r'\b(en\s+tus\s+apuntes|de\s+la\s+bit[aá]cora|en\s+la\s+bit[aá]cora|bit[aá]cora\s+t[eé]cnica|documentaci[oó]n|recuerdas?|segundo\s+cerebro|apuntes?|memoria\s+t[eé]cnica)\b',
-                    '',
-                    msg_lower,
-                    flags=re.IGNORECASE
-                ).strip()
-
     # --- FASE 8 — GUÍA DE CAPACIDADES ---
     if intenciones.get("guia_capacidades"):
         for clave in ("abrir_app", "estado_pc", "git", "guardar_git", "codigo", "web", "vision", "clima", "calendario", "memoria_tecnica", "memorizar_documento", "hora", "rutinas", "codigo_pesado", "entorno_iot"):
@@ -1785,7 +1765,8 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     # y, en modo RAG, los fragmentos que debe citar).
     instrucciones_sistema = prompt_builder.obtener_instrucciones_sistema(
         intencion_detectada=tipo_intencion_principal,
-        contexto_rag=contexto_recuperado
+        contexto_rag=contexto_recuperado,
+        sesion_id=sesion_id,
     )
 
     tokens_totales = estimar_tokens(contexto_historico)
@@ -1807,11 +1788,6 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     # === VOZ POR INTENCIÓN ===
     # Kokoro es el motor principal (local, rápido). Google se reserva para
     # tareas pesadas y para el modo sin filtros.
-    motivos_pesados = {
-        "codigo_pesado", "analisis_profundo", "vision",
-        "web", "contexto_grande", "codigo_contexto_grande",
-    }
-    # === VOZ POR INTENCIÓN ===
     if (motivo_ruta in config.MOTIVOS_RUTA_PESADOS
             or tipo_intencion_principal == "rag_tecnico"
             or intenciones.get("uncensored")):

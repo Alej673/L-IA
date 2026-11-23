@@ -497,7 +497,12 @@ def leer_archivo_local(ruta_archivo: str, busqueda_automatica=False):
             # Empezamos a buscar desde la carpeta raíz del proyecto L-IA
             # (Subimos un nivel desde la carpeta core/ donde está tools.py)
             directorio_raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            carpetas_excluidas = {
+                ".venv", "venv", "node_modules", "__pycache__",
+                ".git", "target", "dist", "build", "lia_chroma_db",
+            }
             for root, dirs, files in os.walk(directorio_raiz):
+                dirs[:] = [d for d in dirs if d not in carpetas_excluidas]
                 if ruta_limpia in files:
                     ruta_final = os.path.join(root, ruta_limpia)
                     print(f"🕵️‍♀️ [Tools] Archivo encontrado localmente en: {ruta_final}")

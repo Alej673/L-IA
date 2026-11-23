@@ -361,6 +361,7 @@ _detener_daemons = threading.Event()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # Arranque
+    database.inicializar_base_datos()
     _detener_daemons.clear()
     orquestador.iniciar()
     threading.Thread(
