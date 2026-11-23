@@ -1,0 +1,621 @@
+/* ==========================================================================
+   NucleoLIA.css — Estilos encapsulados bajo .nucleo-lia (0 MB VRAM · 100% GPU)
+   Mantiene intactos NucleoColapso.css y ColapsoSistema.jsx
+   ========================================================================== */
+
+.nucleo-lia .etiqueta-estado {
+  font-family: var(--lia-font-mono, 'Cascadia Code', monospace);
+  letter-spacing: 0.14em;
+  font-weight: 600;
+}
+
+.nucleo-lia .nucleo-halo {
+  filter: none;
+  will-change: transform, opacity;
+}
+
+.nucleo-lia.glitch-rgb {
+  animation: nucleo-rgb-split 0.11s infinite alternate;
+}
+
+@keyframes nucleo-rgb-split {
+  0% {
+    filter: drop-shadow(2px 0 0 rgba(244, 63, 94, 0.9)) drop-shadow(-2px 0 0 rgba(34, 211, 238, 0.9));
+  }
+  100% {
+    filter: drop-shadow(-2px 1px 0 rgba(244, 63, 94, 0.9)) drop-shadow(2px -1px 0 rgba(34, 211, 238, 0.9));
+  }
+}
+
+.nucleo-lia .anillo-exterior,
+.nucleo-lia .anillo-medio {
+  will-change: transform;
+}
+
+.nucleo-lia .anillo-interior {
+  will-change: transform, opacity;
+}
+
+.nucleo-lia .nucleo-levitacion-wrap,
+.nucleo-lia .nucleo-impulso-wrap,
+.nucleo-lia .nucleo-postura-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  will-change: transform;
+}
+
+.nucleo-lia .centro-nucleo {
+  cursor: pointer;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+
+.nucleo-lia .ojos-con-lentes {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nucleo-lia .ojo-parpado,
+.nucleo-lia .boca-audio-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: center;
+  will-change: transform;
+}
+
+/* Lentes holográficos acoplados al movimiento del rostro */
+.nucleo-lia .lentes-lectura-ancla {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.nucleo-lia .lentes-lectura {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  will-change: transform, opacity;
+}
+
+.nucleo-lia .lente {
+  width: 16px;
+  height: 11px;
+  border: 1.8px solid rgba(52, 211, 153, 0.9);
+  border-radius: 2px 2px 6px 6px;
+  background: rgba(52, 211, 153, 0.16);
+}
+
+.nucleo-lia .puente-lentes {
+  width: 5px;
+  height: 2px;
+  align-self: center;
+}
+
+/* Partículas orbitales con inercia angular */
+.nucleo-lia .anillo-particulas {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  --lia-radio-orbita: 88px;
+  will-change: transform;
+}
+
+.nucleo-lia .particula {
+  position: absolute;
+  top: -2.5px;
+  left: -2.5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  transform: rotate(calc(var(--i) * 60deg)) translateX(var(--lia-radio-orbita));
+  transition: background 0.8s ease, opacity 0.6s ease;
+  will-change: transform;
+}
+
+.nucleo-lia .particula-zzz {
+  position: absolute;
+  font-family: var(--lia-font-mono, monospace);
+  font-weight: 800;
+  pointer-events: none;
+  user-select: none;
+  text-shadow: 0 0 8px currentColor;
+}
+
+.nucleo-lia .glifo-molesta {
+  position: absolute;
+  top: -12px;
+  right: -10px;
+  display: inline-flex;
+  color: var(--lia-danger, #f43f5e);
+  filter: drop-shadow(0 0 6px rgba(244, 63, 94, 0.7));
+  pointer-events: none;
+}
+
+/* Escáner RAG en GPU */
+.nucleo-lia .escaner-rag {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.nucleo-lia .escaner-rag-barra {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 30%;
+  background: linear-gradient(to bottom, transparent, rgba(255, 255, 255, 0.85), transparent);
+  will-change: transform;
+}
+
+/* Barras tipo ecualizador al responder */
+.nucleo-lia .barras-voz {
+  position: absolute;
+  bottom: 14px;
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 20px;
+  z-index: 3;
+}
+
+.nucleo-lia .barras-voz span {
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  display: block;
+  transform-origin: bottom center;
+  will-change: transform;
+}
+
+/* Destello de error */
+.nucleo-lia .destello-error {
+  position: absolute;
+  width: 170px;
+  height: 170px;
+  border-radius: 50%;
+  border: 2px solid var(--lia-danger, #f43f5e);
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+/* Aureola de escucha */
+.nucleo-lia .aureola-escucha {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.nucleo-lia .aureola-voz,
+.nucleo-lia .onda-escucha {
+  position: absolute;
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  border: 2px solid;
+  will-change: transform, opacity;
+}
+
+.nucleo-lia .onda-escucha {
+  border-width: 1px;
+}
+
+/* ==========================================================================
+   MINI-ESCENAS HOLOGRÁFICAS EXTERNAS (0 MB VRAM · GPU PURE)
+   ========================================================================== */
+
+/* 1. Sistema: engranajes entrelazados */
+.nucleo-lia .escena-sistema {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  color: #38bdf8;
+}
+
+.nucleo-lia .engranaje-hud {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 0 5px rgba(56, 189, 248, 0.45));
+  will-change: transform;
+}
+
+.nucleo-lia .engranaje-1 {
+  width: 40px;
+  height: 40px;
+  margin-left: 44px;
+  margin-top: -54px;
+}
+
+.nucleo-lia .engranaje-2 {
+  width: 28px;
+  height: 28px;
+  margin-left: 74px;
+  margin-top: -22px;
+  color: #60a5fa;
+}
+
+.nucleo-lia .engranaje-3 {
+  width: 30px;
+  height: 30px;
+  margin-left: -82px;
+  margin-top: 12px;
+  color: #38bdf8;
+}
+
+.nucleo-lia .pulso-hud-dot {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #67e8f9;
+  will-change: transform, opacity;
+}
+
+/* 2. Git: grafo de ramas + subida a nube */
+.nucleo-lia .escena-git {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin-left: 68px;
+  margin-top: -48px;
+  width: 78px;
+  height: 92px;
+  pointer-events: none;
+  z-index: 2;
+  color: #fb7185;
+}
+
+.nucleo-lia .git-svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  filter: drop-shadow(0 0 5px rgba(244, 63, 94, 0.4));
+}
+
+.nucleo-lia .git-commit-dot {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  margin-left: -3.5px;
+  margin-top: -3.5px;
+  border-radius: 50%;
+  background: #fda4af;
+  will-change: transform, opacity;
+}
+
+.nucleo-lia .git-paquete {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  margin-left: -2.5px;
+  margin-top: -2.5px;
+  border-radius: 50%;
+  background: #ffffff;
+  will-change: transform, opacity;
+}
+
+/* 3. RAG: documento fragmentándose en chunks */
+.nucleo-lia .escena-rag {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin-left: -138px;
+  margin-top: -34px;
+  width: 112px;
+  height: 68px;
+  pointer-events: none;
+  z-index: 2;
+  color: #a78bfa;
+}
+
+.nucleo-lia .rag-doc-origen {
+  position: absolute;
+  left: 0;
+  top: 15px;
+  width: 30px;
+  height: 38px;
+  padding: 7px 5px;
+  border-radius: 5px;
+  background: rgba(167, 139, 250, 0.14);
+  border: 1px solid rgba(167, 139, 250, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  will-change: transform, opacity;
+}
+
+.nucleo-lia .rag-doc-origen span {
+  display: block;
+  height: 2.5px;
+  border-radius: 999px;
+  background: rgba(196, 181, 253, 0.78);
+}
+
+.nucleo-lia .rag-chunk {
+  position: absolute;
+  left: 24px;
+  top: 31px;
+  width: 12px;
+  height: 5px;
+  border-radius: 2px;
+  background: #c4b5fd;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  will-change: transform, opacity;
+}
+
+/* 4. Doc / Lectura libre: tarjeta holográfica */
+.nucleo-lia .escena-doc {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin-left: 72px;
+  margin-top: -34px;
+  width: 58px;
+  height: 68px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.nucleo-lia .doc-tarjeta {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  padding: 10px 8px 8px;
+  border-radius: 7px;
+  background: rgba(10, 26, 24, 0.78);
+  border: 1px solid rgba(52, 211, 153, 0.45);
+  box-shadow: inset 0 1px 0 rgba(110, 231, 183, 0.18);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  overflow: hidden;
+  will-change: transform;
+}
+
+.nucleo-lia .doc-tarjeta::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 9px;
+  height: 9px;
+  background: rgba(52, 211, 153, 0.25);
+  border-bottom-left-radius: 4px;
+}
+
+.nucleo-lia .doc-linea {
+  height: 3px;
+  border-radius: 999px;
+  background: #34d399;
+  transform-origin: left center;
+  will-change: transform, opacity;
+}
+
+.nucleo-lia .doc-cursor-lectura {
+  position: absolute;
+  top: 8px;
+  left: 0;
+  right: 0;
+  height: 10px;
+  background: linear-gradient(90deg, transparent, rgba(52, 211, 153, 0.32), transparent);
+  pointer-events: none;
+  will-change: transform;
+}
+
+/* 5. Escuchando: arcos acústicos laterales */
+.nucleo-lia .arcos-acusticos {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  color: #f43f5e;
+}
+
+.nucleo-lia .arco-lado {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 24px;
+  height: 48px;
+  margin-top: -24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  will-change: transform, opacity;
+}
+
+.nucleo-lia .arco-lado.izq {
+  margin-left: -94px;
+}
+
+.nucleo-lia .arco-lado.der {
+  margin-left: 70px;
+}
+
+/* 6. Escribiendo: chispas sutiles de datos hacia afuera */
+.nucleo-lia .chispas-escritura {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.nucleo-lia .chispa-dato {
+  position: absolute;
+  width: 4.5px;
+  height: 4.5px;
+  margin-left: -2.25px;
+  margin-top: -2.25px;
+  border-radius: 1px;
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+/* ==========================================================================
+   INTERACCIONES TÁCTILES + ACTIVIDADES AUTÓNOMAS EN REPOSO
+   ========================================================================== */
+
+/* Escudo hexagonal de paciencia (Easter Egg) */
+.nucleo-lia .escudo-hexagonal {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 108px;
+  height: 108px;
+  margin-left: -54px;
+  margin-top: -54px;
+  pointer-events: none;
+  z-index: 5;
+  color: #22d3ee;
+  filter: drop-shadow(0 0 8px rgba(34, 211, 238, 0.55));
+  will-change: transform, opacity;
+}
+
+.nucleo-lia .escudo-destello {
+  position: absolute;
+  inset: 6px;
+  border-radius: 50%;
+  border: 2px solid #67e8f9;
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+/* Destellos positivos al acariciar */
+.nucleo-lia .caricia-destellos {
+  position: absolute;
+  inset: -14px;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.nucleo-lia .caricia-estrella {
+  position: absolute;
+  font-size: 11px;
+  color: #6ee7b7;
+  text-shadow: 0 0 8px rgba(52, 211, 153, 0.8);
+  will-change: transform, opacity;
+}
+
+/* Actividad autónoma 1: jugar haciendo rebotar un orbe holográfico */
+.nucleo-lia .actividad-orbe {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin-left: 72px;
+  margin-top: -36px;
+  width: 44px;
+  height: 72px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.nucleo-lia .orbe-pelota {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  margin-bottom: 4px;
+  will-change: transform;
+}
+
+.nucleo-lia .orbe-base {
+  width: 24px;
+  height: 2px;
+  border-radius: 999px;
+  opacity: 0.45;
+  will-change: transform, opacity;
+}
+
+/* Actividad autónoma 2: rotar formas geométricas con curiosidad */
+.nucleo-lia .actividad-formas {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin-left: 66px;
+  margin-top: -40px;
+  width: 64px;
+  height: 80px;
+  pointer-events: none;
+  z-index: 2;
+  color: #22d3ee;
+}
+
+.nucleo-lia .forma-geo {
+  position: absolute;
+  display: inline-flex;
+  filter: drop-shadow(0 0 5px rgba(34, 211, 238, 0.45));
+  will-change: transform, opacity;
+}
+
+/* Actividad autónoma 4: auriculares minimalistas sobre la esfera */
+.nucleo-lia .accesorio-auriculares {
+  position: absolute;
+  top: -13px;
+  left: 50%;
+  width: 82px;
+  height: 54px;
+  margin-left: -41px;
+  pointer-events: none;
+  z-index: 4;
+  filter: drop-shadow(0 0 6px rgba(34, 211, 238, 0.55));
+  will-change: transform, opacity;
+}
+
+/* ==========================================================================
+   RESPONSIVE MINI-HUD (450 x 700 px)
+   ========================================================================== */
+@media (max-width: 800px) {
+  .nucleo-lia {
+    margin-top: 10px;
+    margin-bottom: 6px;
+  }
+
+  .nucleo-lia .anillo-particulas {
+    --lia-radio-orbita: 66px;
+  }
+
+  .nucleo-lia .aureola-voz,
+  .nucleo-lia .onda-escucha {
+    width: 150px;
+    height: 150px;
+  }
+
+  .nucleo-lia .destello-error {
+    width: 146px;
+    height: 146px;
+  }
+
+  .nucleo-lia .particula {
+    transform-origin: center;
+  }
+}
