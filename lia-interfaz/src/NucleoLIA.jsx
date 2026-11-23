@@ -43,8 +43,35 @@ const BARRAS_VOZ_CFG = [
   { escalas: [0.20, 0.78, 0.30, 0.64, 0.20], dur: 0.74, delay: 0.06 },
 ]
 
-// Actividades autónomas aleatorias durante reposo (entre 8s y 34s, antes de bostezo -> durmiendo)
+// Paletas constantes fuera del componente para no reiniciar useCicloDeTono en cada render
+const TONOS_SEMAFORO_SEGURIDAD = ['#f59e0b', '#f43f5e', '#fbbf24', '#fb7185']
+const TONOS_SEMAFORO_ARCHIVOS = ['#22d3ee', '#38bdf8', '#67e8f9', '#34d399']
+const TONOS_FEEDBACK_OK = ['#34d399', '#6ee7b7']
+const TONOS_FEEDBACK_NO = ['#f43f5e', '#fb7185']
+
+// Actividades autónomas en reposo con ritmo pausado e intervalos naturales en 'normal'
 const ACTIVIDADES_REPOSO = ['jugar_orbe', 'explorar_formas', 'leer_libre', 'accesorio_audio']
+const TIEMPOS_REPOSO_MS = {
+  normalInicial: [14000, 18000],
+  actividad: [22000, 34000],
+  pausaEntreActividades: [10000, 16000],
+  pausaPreSueno: [10000, 14000],
+  bostezo: 4800,
+  somnolienta: 4200,
+}
+
+function aleatorioEntre(min, max) {
+  return min + Math.random() * (max - min)
+}
+
+function crearCicloReposoInicial(ahora) {
+  return {
+    fase: 'normal_inicial',
+    finFaseTs: ahora + aleatorioEntre(...TIEMPOS_REPOSO_MS.normalInicial),
+    actividadesHechas: 0,
+    ultimaActividad: null,
+  }
+}
 
 function elegirActividadAleatoria(excluir = null) {
   const pool = ACTIVIDADES_REPOSO.filter(a => a !== excluir)
@@ -731,22 +758,171 @@ function AccesorioAuriculares({ color }) {
   )
 }
 
+// --- Escenas holográficas para Semáforos y Feedback de Decisión ---
+function EscenaAlertaSeguridad({ color }) {
+  return (
+    <motion.div
+      key="escena-alerta-seguridad"
+      className="escena-alerta-seguridad"
+      style={{ color }}
+      initial={{ opacity: 0, scale: 0.85 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.85 }}
+      transition={{ duration: 0.25 }}
+    >
+      <motion.span
+        className="alerta-anillo-pulso"
+        animate={{ scale: [0.96, 1.24, 0.96], opacity: [0.22, 0.82, 0.22] }}
+        transition={{ repeat: Infinity, duration: 1.35, ease: 'easeInOut' }}
+      />
+      <motion.div
+        className="alerta-escudo-badge"
+        animate={{ y: [-3, 3, -3] }}
+        transition={{ repeat: Infinity, duration: 2.1, ease: 'easeInOut' }}
+      >
+        <svg width="36" height="40" viewBox="0 0 36 40" fill="none" aria-hidden="true">
+          <path
+            d="M18 3L31 8.5V19C31 27.6 25.4 34.4 18 37C10.6 34.4 5 27.6 5 19V8.5L18 3Z"
+            fill="currentColor"
+            fillOpacity="0.16"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinejoin="round"
+          />
+          <path d="M18 12.5V21.5" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+          <circle cx="18" cy="26.5" r="1.6" fill="currentColor" />
+        </svg>
+      </motion.div>
+    </motion.div>
+  )
+}
+
+const TARJETAS_ARCHIVO_CFG = [
+  { ancho: '72%', delay: 0.0 },
+  { ancho: '88%', delay: 0.35 },
+  { ancho: '62%', delay: 0.7 },
+]
+
+function EscenaOpcionesArchivos({ color }) {
+  return (
+    <motion.div
+      key="escena-opciones-archivos"
+      className="escena-opciones-archivos"
+      style={{ color }}
+      initial={{ opacity: 0, x: -10, scale: 0.88 }}
+      animate={{ opacity: 1, x: 0, scale: 1 }}
+      exit={{ opacity: 0, x: -8, scale: 0.88 }}
+      transition={{ type: 'spring', stiffness: 180, damping: 18 }}
+    >
+      {TARJETAS_ARCHIVO_CFG.map((card, idx) => (
+        <motion.div
+          key={idx}
+          className="opcion-holo-card"
+          style={{ borderColor: `${color}88` }}
+          animate={{ x: [0, 3.5, 0], opacity: [0.5, 1, 0.5] }}
+          transition={{ repeat: Infinity, duration: 2.0, delay: card.delay, ease: 'easeInOut' }}
+        >
+          <span className="opcion-holo-dot" style={{ background: color }} />
+          <span className="opcion-holo-bar" style={{ width: card.ancho, background: color }} />
+        </motion.div>
+      ))}
+    </motion.div>
+  )
+}
+
+function EscenaFeedbackDecision({ tipo }) {
+  const esOk = tipo === 'autorizado'
+  const c = esOk ? '#34d399' : '#f43f5e'
+  return (
+    <motion.div
+      key={`escena-feedback-${tipo}`}
+      className="escena-feedback-decision"
+      style={{ color: c }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.18 }}
+    >
+      <motion.span
+        className="feedback-onda"
+        initial={{ scale: 0.72, opacity: 0.92 }}
+        animate={{ scale: 1.48, opacity: 0 }}
+        transition={{ duration: 0.68, ease: 'easeOut' }}
+      />
+      <motion.div
+        className="feedback-badge"
+        initial={{ scale: 0.4, opacity: 0, rotate: esOk ? -18 : 18 }}
+        animate={{ scale: [0.4, 1.15, 1], opacity: 1, rotate: 0 }}
+        exit={{ scale: 0.75, opacity: 0 }}
+        transition={{ duration: 0.34, ease: 'easeOut' }}
+      >
+        {esOk ? (
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+            <motion.path
+              d="M3.5 9.5L7.4 13.2L14.5 5.2"
+              stroke="currentColor"
+              strokeWidth="2.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              initial={{ pathLength: 0 }}
+              animate={{ pathLength: 1 }}
+              transition={{ duration: 0.28, delay: 0.06 }}
+            />
+          </svg>
+        ) : (
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+            <motion.path
+              d="M5 5L13 13M13 5L5 13"
+              stroke="currentColor"
+              strokeWidth="2.4"
+              strokeLinecap="round"
+              initial={{ pathLength: 0 }}
+              animate={{ pathLength: 1 }}
+              transition={{ duration: 0.24, delay: 0.04 }}
+            />
+          </svg>
+        )}
+      </motion.div>
+    </motion.div>
+  )
+}
+
 // =========================================
 // NÚCLEO L-IA: Expresividad, GPU 60 FPS e Interacciones Táctiles
 // =========================================
-export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, onInteraccion }) {
+export default function NucleoLIA({
+  estado,
+  mensajeEspera,
+  modoColapso = false,
+  onInteraccion,
+  semaforoVisual = null,
+  feedbackDecision = null,
+}) {
   const estadoReal = estado === 'procesando' ? 'procesando_pregunta' : estado
   const pensando = estadoReal.startsWith('procesando')
   const escribiendoAhora = estadoReal === 'escribiendo'
   const escuchandoAhora = estadoReal === 'escuchando'
 
+  // Exclusión mutua visual: el semáforo activo o su feedback (~1s) prevalecen sobre las mini-escenas
+  // técnicas sin mutar `estadoLIA`, evitando colisiones visuales y preservando SSE y polling.
+  const feedbackActivo = !modoColapso ? feedbackDecision : null
+  const semaforoActivo = !modoColapso && !feedbackActivo ? semaforoVisual : null
+  const mostrarEscenaBase = !modoColapso && !semaforoActivo && !feedbackActivo
+
   const cfg = CONFIG_ESTADOS[estadoReal] || CONFIG_ESTADOS.reposo
   const { label, velAngular, pulso, tonos } = cfg
-  const color = useCicloDeTono(tonos, estadoReal === 'error' ? 600 : 2400)
+  const tonosActivos =
+    feedbackActivo ? (feedbackActivo.tipo === 'autorizado' ? TONOS_FEEDBACK_OK : TONOS_FEEDBACK_NO) :
+    semaforoActivo === 'seguridad' ? TONOS_SEMAFORO_SEGURIDAD :
+    semaforoActivo === 'archivos' ? TONOS_SEMAFORO_ARCHIVOS :
+    tonos
+  const intervaloTono =
+    semaforoActivo === 'seguridad' ? 900 : estadoReal === 'error' ? 600 : 2400
+  const color = useCicloDeTono(tonosActivos, intervaloTono)
   const colorRostro = '#021017'
 
   const [gesto, rondaGesto] = useGestoPensamiento(estadoReal === 'procesando_pregunta')
-  const gestoHabla = useGestoHabla(escribiendoAhora && !modoColapso)
+  const gestoHabla = useGestoHabla(escribiendoAhora && mostrarEscenaBase)
   const { nivel, hayVoz } = useNivelMicrofono(escuchandoAhora)
   const gestoEscucha = useGestoEscucha(escuchandoAhora && !hayVoz)
 
@@ -777,14 +953,15 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
   const subEstado = estadoReal === 'reposo' ? subEstadoReposo : 'normal'
   const interaccionActiva = (estadoReal === 'reposo' && !modoColapso) ? interaccion : null
   const actividadActual =
-    estadoReal === 'reposo' && !modoColapso && !interaccionActiva && ACTIVIDADES_REPOSO.includes(subEstado)
+    estadoReal === 'reposo' && mostrarEscenaBase && !interaccionActiva && ACTIVIDADES_REPOSO.includes(subEstado)
       ? subEstado
       : null
 
   // Referencias (0 re-renders en loops)
   const wrapperRef = useRef(null)
   const ultimaActividadRef = useRef(0)
-  const actividadInicioSecRef = useRef(0)
+  const cicloReposoRef = useRef(null)
+  const bloqueoReposoRef = useRef(false)
   const estadoPrevioRef = useRef(estadoReal)
   const pokesRef = useRef(0)
   const interaccionRef = useRef(null)
@@ -817,6 +994,15 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
   // Impulsos puntuales
   const controlesGesto = useAnimation()
 
+  const reiniciarCicloReposo = useCallback((ahora = performance.now()) => {
+    ultimaActividadRef.current = ahora
+    cicloReposoRef.current = crearCicloReposoInicial(ahora)
+  }, [])
+
+  useEffect(() => {
+    bloqueoReposoRef.current = Boolean(interaccion || semaforoActivo || feedbackActivo)
+  }, [interaccion, semaforoActivo, feedbackActivo])
+
   const limpiarTimersTactiles = useCallback(() => {
     clearTimeout(decayTimerRef.current)
     clearTimeout(interaccionTimerRef.current)
@@ -830,7 +1016,7 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
       limpiarTimersTactiles()
       pokesRef.current = 0
       interaccionRef.current = null
-      actividadInicioSecRef.current = 0
+      cicloReposoRef.current = null
       cariciaRef.current = { lastX: null, lastY: null, lastTs: 0, acumMs: 0, lastDecayAt: 0 }
     }
   }, [estadoReal, limpiarTimersTactiles])
@@ -854,8 +1040,9 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
     interaccionTimerRef.current = setTimeout(() => {
       pokesRef.current = 0
       fijarInteraccion(null, null)
+      reiniciarCicloReposo()
     }, 5000)
-  }, [limpiarTimersTactiles, fijarInteraccion, onInteraccion, controlesGesto])
+  }, [limpiarTimersTactiles, fijarInteraccion, onInteraccion, controlesGesto, reiniciarCicloReposo])
 
   const programarDecayPokes = useCallback(() => {
     clearTimeout(decayTimerRef.current)
@@ -864,9 +1051,10 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
       pokesRef.current = 0
       if (['sorpresa', 'fastidio', 'advertencia'].includes(interaccionRef.current)) {
         fijarInteraccion(null, null)
+        reiniciarCicloReposo()
       }
     }, 6000)
-  }, [fijarInteraccion])
+  }, [fijarInteraccion, reiniciarCicloReposo])
 
   const manejarClickNucleo = useCallback((e) => {
     e.stopPropagation()
@@ -878,8 +1066,7 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
       return
     }
 
-    ultimaActividadRef.current = performance.now()
-    actividadInicioSecRef.current = 0
+    reiniciarCicloReposo()
     setSubEstadoReposo('normal')
     cariciaRef.current.acumMs = 0
 
@@ -912,7 +1099,10 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
         transition: { duration: 0.38, ease: 'easeOut' },
       })
       interaccionTimerRef.current = setTimeout(() => {
-        if (interaccionRef.current === 'sorpresa') fijarInteraccion(null, null)
+        if (interaccionRef.current === 'sorpresa') {
+          fijarInteraccion(null, null)
+          reiniciarCicloReposo()
+        }
       }, 1800)
     } else if (nuevo <= 5) {
       const textos = ['OYE, ESO MOLESTA', 'NO TOQUES EL NÚCLEO', 'EN SERIO, PARA...']
@@ -923,7 +1113,10 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
         transition: { duration: 0.34, ease: 'easeOut' },
       })
       interaccionTimerRef.current = setTimeout(() => {
-        if (interaccionRef.current === 'fastidio') fijarInteraccion(null, null)
+        if (interaccionRef.current === 'fastidio') {
+          fijarInteraccion(null, null)
+          reiniciarCicloReposo()
+        }
       }, 2200)
     } else {
       fijarInteraccion('advertencia', 'ÚLTIMA ADVERTENCIA...')
@@ -939,10 +1132,13 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
         transition: { duration: 0.32 },
       })
       interaccionTimerRef.current = setTimeout(() => {
-        if (interaccionRef.current === 'advertencia') fijarInteraccion(null, null)
+        if (interaccionRef.current === 'advertencia') {
+          fijarInteraccion(null, null)
+          reiniciarCicloReposo()
+        }
       }, 2200)
     }
-  }, [estadoReal, modoColapso, controlesGesto, activarEscudo, programarDecayPokes, fijarInteraccion, onInteraccion])
+  }, [estadoReal, modoColapso, controlesGesto, activarEscudo, programarDecayPokes, fijarInteraccion, onInteraccion, reiniciarCicloReposo])
 
   // Interacción 100% positiva al acariciar suavemente la esfera
   const manejarPointerMoveEsfera = useCallback((e) => {
@@ -958,6 +1154,7 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
         if (cRef.acumMs >= 1200) {
           const recienActivada = interaccionRef.current !== 'caricia'
           if (recienActivada) {
+            setSubEstadoReposo('normal')
             fijarInteraccion('caricia', 'ESO SE SIENTE BIEN')
             if (ahora - ultimaEmisionCariciaRef.current >= 5000) {
               ultimaEmisionCariciaRef.current = ahora
@@ -978,7 +1175,10 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
 
           clearTimeout(interaccionTimerRef.current)
           interaccionTimerRef.current = setTimeout(() => {
-            if (interaccionRef.current === 'caricia') fijarInteraccion(null, null)
+            if (interaccionRef.current === 'caricia') {
+              fijarInteraccion(null, null)
+              reiniciarCicloReposo()
+            }
             cariciaRef.current.acumMs = 0
           }, 1300)
         }
@@ -987,7 +1187,7 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
     cRef.lastX = e.clientX
     cRef.lastY = e.clientY
     cRef.lastTs = ahora
-  }, [estadoReal, modoColapso, fijarInteraccion, onInteraccion])
+  }, [estadoReal, modoColapso, fijarInteraccion, onInteraccion, reiniciarCicloReposo])
 
   const manejarPointerLeaveEsfera = useCallback(() => {
     cariciaRef.current.lastX = null
@@ -1000,6 +1200,11 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
     const dt = Math.min(deltaMs, 50) / 1000
     let velObjetivo = velAngular
     if (modoColapso) velObjetivo = 540
+    else if (feedbackActivo) velObjetivo = feedbackActivo.tipo === 'autorizado' ? 110 : 185
+    else if (semaforoActivo === 'seguridad') velObjetivo = 135
+    else if (semaforoActivo === 'archivos') velObjetivo = 75
+    else if (estadoReal === 'reposo' && subEstado === 'bostezo') velObjetivo = 15
+    else if (estadoReal === 'reposo' && subEstado === 'somnolienta') velObjetivo = 10
     else if (estadoReal === 'reposo' && subEstado === 'durmiendo') velObjetivo = 7
     else if (escuchandoAhora) velObjetivo = velAngular + nivel.get() * 115
 
@@ -1012,14 +1217,12 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
 
   // 1. Seguimiento ocular 2.5D relativo al centro real de la ventana/núcleo
   useEffect(() => {
-    ultimaActividadRef.current = performance.now()
     const onMouseMove = (e) => {
-      ultimaActividadRef.current = performance.now()
-      actividadInicioSecRef.current = 0
+      reiniciarCicloReposo()
       if (estadoReal === 'reposo') {
         setSubEstadoReposo(prev => (prev === 'normal' ? prev : 'normal'))
       }
-      if (estadoReal !== 'reposo' || subEstado === 'durmiendo' || modoColapso) return
+      if (estadoReal !== 'reposo' || subEstado === 'durmiendo' || modoColapso || semaforoActivo || feedbackActivo) return
       if (interaccionRef.current === 'escudo') return
 
       const rect = wrapperRef.current?.getBoundingClientRect()
@@ -1032,45 +1235,97 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
     }
     window.addEventListener('mousemove', onMouseMove, { passive: true })
     return () => window.removeEventListener('mousemove', onMouseMove)
-  }, [estadoReal, subEstado, modoColapso, miradaTargetX, miradaTargetY])
+  }, [estadoReal, subEstado, modoColapso, semaforoActivo, feedbackActivo, miradaTargetX, miradaTargetY, reiniciarCicloReposo])
 
-  // 2. Reloj de inactividad con actividades autónomas aleatorias antes de bostezo -> durmiendo
+  // 2. Reloj de inactividad con máquina de fases: actividades pausadas (22-34s),
+  //    pausas en 'normal' y transición conjunta bostezo -> somnolienta -> durmiendo.
   useEffect(() => {
     if (estadoReal !== 'reposo' || modoColapso) return
-    ultimaActividadRef.current = performance.now()
-    actividadInicioSecRef.current = 0
+    reiniciarCicloReposo()
     const id = setInterval(() => {
-      if (interaccionRef.current) return
-      const s = (performance.now() - ultimaActividadRef.current) / 1000
-      if (s > 40) {
-        setSubEstadoReposo(prev => (prev === 'durmiendo' ? prev : 'durmiendo'))
+      // Pausar progresión durante interacciones táctiles o modales activos para no interrumpir al usuario
+      if (bloqueoReposoRef.current || interaccionRef.current) {
+        reiniciarCicloReposo(performance.now())
         return
       }
-      if (s > 34) {
-        setSubEstadoReposo(prev => (prev === 'bostezo' ? prev : 'bostezo'))
+      // Avance por timestamps: 0 re-renders por segundo mientras permanece dentro de una fase
+      const ahora = performance.now()
+      const ciclo = cicloReposoRef.current || crearCicloReposoInicial(ahora)
+      if (ciclo.fase === 'durmiendo' || ahora < ciclo.finFaseTs) return
+
+      if (ciclo.fase === 'normal_inicial' || ciclo.fase === 'pausa') {
+        const act = elegirActividadAleatoria(ciclo.ultimaActividad)
+        cicloReposoRef.current = {
+          fase: 'actividad',
+          finFaseTs: ahora + aleatorioEntre(...TIEMPOS_REPOSO_MS.actividad),
+          actividadesHechas: ciclo.actividadesHechas + 1,
+          ultimaActividad: act,
+        }
+        setSubEstadoReposo(act)
         return
       }
-      if (s > 7) {
-        setSubEstadoReposo(prev => {
-          if (!ACTIVIDADES_REPOSO.includes(prev)) {
-            actividadInicioSecRef.current = s
-            return elegirActividadAleatoria(prev)
-          }
-          if (s - actividadInicioSecRef.current >= 12) {
-            actividadInicioSecRef.current = s
-            return elegirActividadAleatoria(prev)
-          }
-          return prev
-        })
+
+      if (ciclo.fase === 'actividad') {
+        const siguienteFase = ciclo.actividadesHechas < 2 ? 'pausa' : 'pausa_sueno'
+        const [minPausa, maxPausa] =
+          siguienteFase === 'pausa'
+            ? TIEMPOS_REPOSO_MS.pausaEntreActividades
+            : TIEMPOS_REPOSO_MS.pausaPreSueno
+        cicloReposoRef.current = {
+          ...ciclo,
+          fase: siguienteFase,
+          finFaseTs: ahora + aleatorioEntre(minPausa, maxPausa),
+        }
+        setSubEstadoReposo('normal')
         return
       }
-      setSubEstadoReposo(prev => (prev === 'normal' ? prev : 'normal'))
+
+      if (ciclo.fase === 'pausa_sueno') {
+        cicloReposoRef.current = { ...ciclo, fase: 'bostezo', finFaseTs: ahora + TIEMPOS_REPOSO_MS.bostezo }
+        setSubEstadoReposo('bostezo')
+        return
+      }
+
+      if (ciclo.fase === 'bostezo') {
+        cicloReposoRef.current = { ...ciclo, fase: 'somnolienta', finFaseTs: ahora + TIEMPOS_REPOSO_MS.somnolienta }
+        setSubEstadoReposo('somnolienta')
+        return
+      }
+
+      if (ciclo.fase === 'somnolienta') {
+        cicloReposoRef.current = { ...ciclo, fase: 'durmiendo', finFaseTs: Infinity }
+        setSubEstadoReposo('durmiendo')
+      }
     }, 1000)
     return () => clearInterval(id)
-  }, [estadoReal, modoColapso])
+  }, [estadoReal, modoColapso, reiniciarCicloReposo])
 
-  // 3. Dirección de mirada según estado, actividades autónomas e interacción táctil
+  // 3. Dirección de mirada según semáforos, estado, actividades autónomas e interacción táctil
   useEffect(() => {
+    if (feedbackActivo) {
+      miradaTargetX.set(0)
+      miradaTargetY.set(feedbackActivo.tipo === 'autorizado' ? -0.6 : 0)
+      return
+    }
+
+    if (semaforoActivo === 'seguridad') {
+      miradaTargetX.set(0)
+      miradaTargetY.set(3.0)
+      return
+    }
+
+    if (semaforoActivo === 'archivos') {
+      let miraOpciones = true
+      miradaTargetX.set(3.4)
+      miradaTargetY.set(-0.4)
+      const id = setInterval(() => {
+        miraOpciones = !miraOpciones
+        miradaTargetX.set(miraOpciones ? 3.4 : 0)
+        miradaTargetY.set(miraOpciones ? -0.4 : 2.8)
+      }, 1400)
+      return () => clearInterval(id)
+    }
+
     if (estadoReal === 'procesando_doc' || actividadActual === 'leer_libre') {
       let paso = 0
       const puntos = [
@@ -1182,6 +1437,18 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
       return
     }
 
+    if (subEstado === 'bostezo') {
+      miradaTargetX.set(0)
+      miradaTargetY.set(-0.8)
+      return
+    }
+
+    if (subEstado === 'somnolienta') {
+      miradaTargetX.set(0)
+      miradaTargetY.set(2.2)
+      return
+    }
+
     if (subEstado === 'durmiendo') {
       miradaTargetX.set(0)
       miradaTargetY.set(3.5)
@@ -1244,6 +1511,8 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
     subEstado,
     actividadActual,
     interaccionActiva,
+    semaforoActivo,
+    feedbackActivo,
     gesto,
     escribiendoAhora,
     gestoHabla,
@@ -1256,7 +1525,13 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
 
   // 4. Parpadeo orgánico GPU (cadencia variable, doble parpadeo ocasional y guiño en caricia/orbe)
   useEffect(() => {
-    if (subEstado === 'durmiendo' || modoColapso) {
+    if (
+      subEstado === 'durmiendo' ||
+      subEstado === 'bostezo' ||
+      subEstado === 'somnolienta' ||
+      modoColapso ||
+      Boolean(feedbackActivo)
+    ) {
       parpadeoIzqRaw.set(1)
       parpadeoDerRaw.set(1)
       return
@@ -1314,9 +1589,28 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
       parpadeoIzqRaw.set(1)
       parpadeoDerRaw.set(1)
     }
-  }, [estadoReal, subEstado, actividadActual, interaccionActiva, modoColapso, parpadeoIzqRaw, parpadeoDerRaw])
+  }, [estadoReal, subEstado, actividadActual, interaccionActiva, modoColapso, feedbackActivo, parpadeoIzqRaw, parpadeoDerRaw])
 
-  // 5. Micro-gestos puntuales de transición (`escribiendo -> reposo`, `-> error`, énfasis)
+  // 5. Micro-gestos puntuales de transición (`escribiendo -> reposo`, `-> error`, semáforos, énfasis)
+  const feedbackId = feedbackActivo?.id ?? null
+  const feedbackTipo = feedbackActivo?.tipo ?? null
+  useEffect(() => {
+    if (!feedbackId || !feedbackTipo) return
+    if (feedbackTipo === 'autorizado') {
+      controlesGesto.start({
+        y: [0, 6, -1.5, 3, 0],
+        scale: [1, 1.07, 0.99, 1.02, 1],
+        transition: { duration: 0.56, ease: 'easeInOut' },
+      })
+    } else {
+      controlesGesto.start({
+        x: [0, -6.5, 6.5, -4, 3, 0],
+        scale: [1, 0.95, 1.02, 1],
+        transition: { duration: 0.44, ease: 'easeOut' },
+      })
+    }
+  }, [feedbackId, feedbackTipo, controlesGesto])
+
   useEffect(() => {
     const previo = estadoPrevioRef.current
     estadoPrevioRef.current = estadoReal
@@ -1347,6 +1641,29 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
   // --- GEOMETRÍA FACIAL ASIMÉTRICA ---
   const getOjos = () => {
     const base = (cfgOjo) => ({ scaleX: 1, scaleY: 1, ...cfgOjo })
+
+    if (feedbackActivo) {
+      if (feedbackActivo.tipo === 'autorizado') {
+        const g = base({ height: '5.5px', width: '11px', y: -1, rotate: 0, borderRadius: '50% 50% 0 0' })
+        return { izq: g, der: g }
+      }
+      return {
+        izq: base({ height: '5.5px', width: '10.5px', y: 1, rotate: 14, borderRadius: '3px' }),
+        der: base({ height: '5.5px', width: '10.5px', y: 1, rotate: -14, borderRadius: '3px' }),
+      }
+    }
+
+    if (semaforoActivo === 'seguridad') {
+      return {
+        izq: base({ height: '7.5px', width: '10px', y: 0, rotate: 8, borderRadius: '40%' }),
+        der: base({ height: '7.5px', width: '10px', y: 0, rotate: -8, borderRadius: '40%' }),
+      }
+    }
+
+    if (semaforoActivo === 'archivos') {
+      const g = base({ height: '10.5px', width: '10px', y: -1, rotate: 0, borderRadius: '50%' })
+      return { izq: g, der: g }
+    }
 
     if (estadoReal === 'reposo') {
       if (interaccionActiva === 'escudo') {
@@ -1379,10 +1696,21 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
         const g = base({ height: '2px', width: '10px', y: 3, rotate: 0, borderRadius: '2px' })
         return { izq: g, der: g }
       }
+      if (subEstado === 'somnolienta') {
+        const g = base({
+          height: '5px',
+          width: '10px',
+          y: 2,
+          rotate: 0,
+          borderRadius: '2px 2px 50% 50%',
+          scaleY: [0.92, 0.24, 0.56, 0.18],
+        })
+        return { izq: g, der: g }
+      }
       if (subEstado === 'bostezo') {
         return {
-          izq: base({ height: '3px', width: '9px', y: -2, rotate: -15, borderRadius: '2px' }),
-          der: base({ height: '3px', width: '9px', y: -2, rotate: 15, borderRadius: '2px' }),
+          izq: base({ height: '4px', width: '10px', y: -1, rotate: -10, borderRadius: '50% 50% 20% 20%' }),
+          der: base({ height: '4px', width: '10px', y: -1, rotate: 10, borderRadius: '50% 50% 20% 20%' }),
         }
       }
       if (actividadActual === 'jugar_orbe') {
@@ -1501,6 +1829,18 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
   const getBoca = () => {
     const base = (cfgBoca) => ({ scaleY: 1, rotate: 0, ...cfgBoca })
 
+    if (feedbackActivo) {
+      return feedbackActivo.tipo === 'autorizado'
+        ? base({ width: '14px', height: '6.5px', borderRadius: '0 0 10px 10px', y: 2 })
+        : base({ width: '12px', height: '2.8px', borderRadius: '2px', rotate: -8, y: 1 })
+    }
+    if (semaforoActivo === 'seguridad') {
+      return base({ width: '8px', height: '2.5px', borderRadius: '2px', rotate: -4, y: 1.5 })
+    }
+    if (semaforoActivo === 'archivos') {
+      return base({ width: '6px', height: '5px', borderRadius: '50%', y: 1.5 })
+    }
+
     if (estadoReal === 'reposo') {
       if (interaccionActiva === 'escudo') return base({ width: '10px', height: '2.5px', borderRadius: '1px', rotate: -4, y: 1 })
       if (interaccionActiva === 'caricia') return base({ width: '14px', height: '6.5px', borderRadius: '0 0 10px 10px', y: 2 })
@@ -1508,7 +1848,15 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
       if (interaccionActiva === 'fastidio') return base({ width: '11px', height: '3px', borderRadius: '2px', rotate: -8, y: 1 })
       if (interaccionActiva === 'advertencia') return base({ width: '13px', height: '3px', borderRadius: '2px', rotate: -12, y: 1 })
       if (subEstado === 'durmiendo') return base({ width: '6px', height: '2px', borderRadius: '1px', y: 3 })
-      if (subEstado === 'bostezo') return base({ width: '10px', height: '13px', borderRadius: '45%', scaleY: 1.15, y: 1 })
+      if (subEstado === 'somnolienta') return base({ width: '7px', height: '2.5px', borderRadius: '2px', y: 2.5 })
+      if (subEstado === 'bostezo') {
+        return base({
+          width: ['9px', '10.5px', '10px', '8px'],
+          height: ['3px', '13px', '12px', '4.5px'],
+          borderRadius: '45%',
+          y: 1,
+        })
+      }
       if (actividadActual === 'jugar_orbe' || actividadActual === 'accesorio_audio') {
         return base({ width: '13px', height: '5.5px', borderRadius: '0 0 10px 10px', y: 2 })
       }
@@ -1553,10 +1901,15 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
   const bocaCfg = getBoca()
 
   const posturaRotate =
+    feedbackActivo ? 0 :
+    semaforoActivo === 'seguridad' ? 0 :
+    semaforoActivo === 'archivos' ? 3 :
     interaccionActiva === 'escudo' ? -8 :
     interaccionActiva === 'fastidio' ? -10 :
     interaccionActiva === 'advertencia' ? -12 :
     interaccionActiva === 'caricia' ? 4 :
+    subEstado === 'bostezo' ? -4 :
+    subEstado === 'somnolienta' ? 3 :
     escuchandoAhora && !hayVoz
       ? ({ ladeaIzq: -9, ladeaDer: 9 }[gestoEscucha] ?? 0)
       : escribiendoAhora
@@ -1573,10 +1926,16 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
   }
 
   const textoEtiqueta =
+    feedbackActivo
+      ? (feedbackActivo.tipo === 'autorizado'
+          ? (feedbackActivo.origen === 'archivos' ? 'ARCHIVO SELECCIONADO' : 'AUTORIZACIÓN CONCEDIDA')
+          : (feedbackActivo.origen === 'archivos' ? 'BÚSQUEDA CANCELADA' : 'ACCIÓN ABORTADA')) :
+    semaforoActivo === 'seguridad' ? 'ESPERANDO AUTORIZACIÓN...' :
+    semaforoActivo === 'archivos' ? 'ESPERANDO SELECCIÓN...' :
     interaccionActiva && etiquetaTactil ? etiquetaTactil :
     escuchandoAhora ? (hayVoz ? 'ESCUCHANDO...' : 'ESPERANDO VOZ...') :
     subEstado === 'durmiendo' ? 'SUSPENDIDA (REPOSO)' :
-    subEstado === 'bostezo' ? 'MODO REPOSO...' :
+    (subEstado === 'bostezo' || subEstado === 'somnolienta') ? 'ENTRANDO EN REPOSO...' :
     actividadActual ? ETIQUETA_ACTIVIDAD[actividadActual] :
     pensando && mensajeEspera ? mensajeEspera.toUpperCase() :
     pensando && FRASES_PENSAMIENTO[estadoReal]
@@ -1586,10 +1945,16 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
   const zIndexOverride = modoColapso ? { zIndex: 10001, position: 'relative' } : {}
   const c = modoColapso
     ? '#ff0033'
-    : (interaccionActiva === 'advertencia' ? '#f43f5e' : color)
+    : feedbackActivo
+      ? (feedbackActivo.tipo === 'autorizado' ? '#34d399' : '#f43f5e')
+      : (interaccionActiva === 'advertencia' ? '#f43f5e' : color)
   const mostrarLentes =
-    !modoColapso &&
+    mostrarEscenaBase &&
     (estadoReal === 'procesando_doc' || actividadActual === 'leer_libre')
+  const ojoTransicion =
+    !feedbackActivo && !semaforoActivo && subEstado === 'somnolienta'
+      ? { scaleY: { duration: 4.0, times: [0, 0.36, 0.64, 1], ease: 'easeInOut' }, default: { type: 'spring', stiffness: 120, damping: 20 } }
+      : { type: 'spring', stiffness: 280, damping: 22 }
 
   return (
     <div
@@ -1600,28 +1965,34 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
       <motion.div
         className="nucleo-halo"
         style={{ background: `radial-gradient(circle, ${c}30 0%, ${c}12 42%, transparent 72%)` }}
-        animate={{ scale: subEstado === 'durmiendo' ? [0.95, 1.0, 0.95] : [0.96, 1.05, 0.96], opacity: [0.65, 1, 0.65] }}
+        animate={{
+          scale: (subEstado === 'durmiendo' || subEstado === 'somnolienta') ? [0.95, 1.0, 0.95] : [0.96, 1.05, 0.96],
+          opacity: [0.65, 1, 0.65],
+        }}
         transition={{ repeat: Infinity, duration: pulso, ease: 'easeInOut' }}
       />
 
-      {/* MINI-ESCENAS HOLOGRÁFICAS Y ACTIVIDADES AUTÓNOMAS (0 MB VRAM · GPU) */}
+      {/* MINI-ESCENAS HOLOGRÁFICAS, SEMÁFOROS Y ACTIVIDADES AUTÓNOMAS (0 MB VRAM · GPU) */}
       <AnimatePresence>
-        {estadoReal === 'procesando_sistema' && !modoColapso && <EscenaSistema color={c} />}
-        {estadoReal === 'procesando_git' && !modoColapso && <EscenaGit color={c} />}
-        {estadoReal === 'procesando_rag' && !modoColapso && <EscenaRAG color={c} />}
-        {(estadoReal === 'procesando_doc' || actividadActual === 'leer_libre') && !modoColapso && (
+        {mostrarEscenaBase && estadoReal === 'procesando_sistema' && <EscenaSistema color={c} />}
+        {mostrarEscenaBase && estadoReal === 'procesando_git' && <EscenaGit color={c} />}
+        {mostrarEscenaBase && estadoReal === 'procesando_rag' && <EscenaRAG color={c} />}
+        {mostrarEscenaBase && (estadoReal === 'procesando_doc' || actividadActual === 'leer_libre') && (
           <EscenaDoc color={c} />
         )}
         {actividadActual === 'jugar_orbe' && <ActividadOrbe color={c} />}
         {actividadActual === 'explorar_formas' && <ActividadFormas color={c} />}
-        {escuchandoAhora && !modoColapso && <ArcosAcusticos color={c} hayVoz={hayVoz} />}
-        {escribiendoAhora && !modoColapso && <ChispasEscritura color={c} />}
-        {interaccionActiva === 'escudo' && <EscudoHexagonal pulsoRebote={escudoRebote} />}
+        {mostrarEscenaBase && escuchandoAhora && <ArcosAcusticos color={c} hayVoz={hayVoz} />}
+        {mostrarEscenaBase && escribiendoAhora && <ChispasEscritura color={c} />}
+        {mostrarEscenaBase && interaccionActiva === 'escudo' && <EscudoHexagonal pulsoRebote={escudoRebote} />}
+        {semaforoActivo === 'seguridad' && <EscenaAlertaSeguridad color={c} />}
+        {semaforoActivo === 'archivos' && <EscenaOpcionesArchivos color={c} />}
+        {feedbackActivo && <EscenaFeedbackDecision key={`fb-${feedbackActivo.id}`} tipo={feedbackActivo.tipo} />}
       </AnimatePresence>
 
       {/* AUREOLA DE ESCUCHA */}
       <AnimatePresence>
-        {escuchandoAhora && !modoColapso && (
+        {mostrarEscenaBase && escuchandoAhora && (
           <motion.div
             key="aureola"
             className="aureola-escucha"
@@ -1671,7 +2042,7 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
             style={{
               '--i': i,
               background: c,
-              opacity: subEstado === 'durmiendo' ? 0.45 : 0.9,
+              opacity: subEstado === 'durmiendo' ? 0.45 : subEstado === 'somnolienta' ? 0.65 : 0.9,
             }}
           />
         ))}
@@ -1684,11 +2055,11 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
       />
       <motion.div
         className="anillo-medio"
-        style={{ borderTopColor: modoColapso ? '#00ffff' : color, borderBottomColor: c, rotate: rotMed }}
+        style={{ borderTopColor: modoColapso ? '#00ffff' : c, borderBottomColor: c, rotate: rotMed }}
       />
       <motion.div
         className="anillo-interior"
-        style={{ borderTopColor: modoColapso ? '#00ffff' : color, borderBottomColor: modoColapso ? '#00ffff' : color }}
+        style={{ borderTopColor: modoColapso ? '#00ffff' : c, borderBottomColor: modoColapso ? '#00ffff' : c }}
         animate={{ scale: [1, 1.12, 1], opacity: [0.55, 1, 0.55] }}
         transition={{ repeat: Infinity, duration: pulso, ease: 'easeInOut' }}
       />
@@ -1702,11 +2073,13 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
               ? 0
               : subEstado === 'durmiendo'
                 ? [-1, 1, -1]
-                : [-3, 3, -3],
+                : subEstado === 'somnolienta'
+                  ? [-1.8, 1.8, -1.8]
+                  : [-3, 3, -3],
         }}
         transition={{
           repeat: Infinity,
-          duration: subEstado === 'durmiendo' ? 5.0 : 3.6,
+          duration: subEstado === 'durmiendo' ? 5.0 : subEstado === 'somnolienta' ? 4.4 : 3.6,
           ease: 'easeInOut',
         }}
       >
@@ -1715,8 +2088,8 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
             className="nucleo-postura-wrap"
             animate={{
               rotate: actividadActual === 'accesorio_audio' ? [-5, 5, -5] : posturaRotate,
-              scale: escuchandoAhora && hayVoz ? 1.04 : 1,
-              y: escuchandoAhora && hayVoz ? -2 : 0,
+              scale: escuchandoAhora && hayVoz && mostrarEscenaBase ? 1.04 : 1,
+              y: escuchandoAhora && hayVoz && mostrarEscenaBase ? -2 : 0,
             }}
             transition={
               actividadActual === 'accesorio_audio'
@@ -1744,23 +2117,40 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
               }}
               animate={{
                 scale:
+                  feedbackActivo ? 1 :
+                  semaforoActivo === 'seguridad' ? [1, 1.07, 1] :
                   escribiendoAhora ? [1, 1.12, 0.98, 1.07, 1] :
                   escuchandoAhora ? (hayVoz ? 1.06 : [1, 1.03, 1]) :
-                  subEstado === 'bostezo' ? [1, 1.14, 0.96, 1] :
+                  subEstado === 'bostezo' ? [1, 1.11, 1.04, 0.99] :
+                  subEstado === 'somnolienta' ? [1, 1.02, 1] :
                   [1, 1.05, 1],
-                opacity: subEstado === 'durmiendo' ? 0.72 : 1,
+                opacity: subEstado === 'durmiendo' ? 0.72 : subEstado === 'somnolienta' ? 0.84 : 1,
               }}
               transition={{
-                scale: { repeat: Infinity, duration: subEstado === 'bostezo' ? 2.4 : pulso, ease: 'easeInOut' },
-                opacity: { duration: 0.4 },
+                scale: feedbackActivo
+                  ? { duration: 0.25 }
+                  : subEstado === 'bostezo'
+                    ? { duration: 4.6, times: [0, 0.35, 0.75, 1], ease: 'easeInOut' }
+                    : { repeat: Infinity, duration: subEstado === 'somnolienta' ? 4.2 : pulso, ease: 'easeInOut' },
+                opacity: {
+                  duration: (subEstado === 'somnolienta' || subEstado === 'durmiendo') ? 1.5 : 0.4,
+                  ease: 'easeInOut',
+                },
               }}
             >
               {/* ICONOS FLOTANTES DE EMOCIÓN, TÁCTILES Y ACCESORIOS */}
               <AnimatePresence>
-                {interaccionActiva === 'caricia' && <DestellosCaricia />}
+                {mostrarEscenaBase && interaccionActiva === 'caricia' && <DestellosCaricia />}
                 {actividadActual === 'accesorio_audio' && <AccesorioAuriculares color={c} />}
-                {!interaccionActiva && subEstado === 'durmiendo' && (
-                  <div key="zzz-group" style={{ position: 'absolute', top: '-14px', right: '-14px', zIndex: 10, pointerEvents: 'none' }}>
+                {mostrarEscenaBase && !interaccionActiva && subEstado === 'durmiendo' && (
+                  <motion.div
+                    key="zzz-group"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.85 }}
+                    style={{ position: 'absolute', top: '-14px', right: '-14px', zIndex: 10, pointerEvents: 'none' }}
+                  >
                     {[0, 1, 2].map((i) => (
                       <motion.span
                         key={`zzz-${i}`}
@@ -1773,9 +2163,9 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
                         Z
                       </motion.span>
                     ))}
-                  </div>
+                  </motion.div>
                 )}
-                {(interaccionActiva === 'fastidio' || interaccionActiva === 'advertencia') && (
+                {mostrarEscenaBase && (interaccionActiva === 'fastidio' || interaccionActiva === 'advertencia') && (
                   <motion.div
                     key="molesta"
                     className="glifo-molesta"
@@ -1803,7 +2193,7 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
 
               {/* ESCÁNER RAG (100% GPU con translateY) */}
               <AnimatePresence>
-                {!modoColapso && estadoReal === 'procesando_rag' && (
+                {mostrarEscenaBase && estadoReal === 'procesando_rag' && (
                   <motion.div
                     key="escaner-rag"
                     className="escaner-rag"
@@ -1833,7 +2223,7 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
                         className="ojo"
                         style={{ background: colorRostro }}
                         animate={ojosCfg.izq}
-                        transition={{ type: 'spring', stiffness: 280, damping: 22 }}
+                        transition={ojoTransicion}
                       />
                     </motion.div>
                     <motion.div className="ojo-parpado" style={{ scaleY: parpadeoDer }}>
@@ -1841,7 +2231,7 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
                         className="ojo"
                         style={{ background: colorRostro }}
                         animate={ojosCfg.der}
-                        transition={{ type: 'spring', stiffness: 280, damping: 22 }}
+                        transition={ojoTransicion}
                       />
                     </motion.div>
                   </div>
@@ -1869,19 +2259,27 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
 
                 <motion.div
                   className="boca-audio-wrap"
-                  style={escuchandoAhora ? { scaleY: escalaBocaVoz, scaleX: escalaBocaAnchoVoz } : undefined}
+                  style={escuchandoAhora && mostrarEscenaBase ? { scaleY: escalaBocaVoz, scaleX: escalaBocaAnchoVoz } : undefined}
                 >
                   <motion.div
                     className="boca"
                     style={{ background: colorRostro }}
                     animate={bocaCfg}
                     transition={
-                      escribiendoAhora
-                        ? {
-                            scaleY: { repeat: Infinity, duration: 0.42, ease: 'easeInOut' },
-                            default: { type: 'spring', stiffness: 260, damping: 20 },
-                          }
-                        : { type: 'spring', stiffness: 260, damping: 20 }
+                      feedbackActivo || semaforoActivo
+                        ? { type: 'spring', stiffness: 260, damping: 20 }
+                        : subEstado === 'bostezo'
+                          ? {
+                              width: { duration: 4.6, times: [0, 0.3, 0.72, 1], ease: 'easeInOut' },
+                              height: { duration: 4.6, times: [0, 0.3, 0.72, 1], ease: 'easeInOut' },
+                              default: { type: 'spring', stiffness: 160, damping: 22 },
+                            }
+                          : escribiendoAhora
+                            ? {
+                                scaleY: { repeat: Infinity, duration: 0.42, ease: 'easeInOut' },
+                                default: { type: 'spring', stiffness: 260, damping: 20 },
+                              }
+                            : { type: 'spring', stiffness: 260, damping: 20 }
                     }
                   />
                 </motion.div>
@@ -1893,7 +2291,7 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
 
       {/* BARRAS DE VOZ (GPU scaleY) */}
       <AnimatePresence>
-        {escribiendoAhora && (
+        {mostrarEscenaBase && escribiendoAhora && (
           <motion.div
             key="barras-voz"
             className="barras-voz"
@@ -1932,7 +2330,7 @@ export default function NucleoLIA({ estado, mensajeEspera, modoColapso = false, 
       {/* ETIQUETA */}
       <AnimatePresence mode="wait">
         <motion.div
-          key={`${estadoReal}-${subEstado}-${estadoReal === 'procesando_pregunta' ? rondaGesto : 0}-${interaccionActiva ?? 'none'}-${etiquetaTactil ?? ''}-${modoColapso}`}
+          key={`${estadoReal}-${subEstado === 'somnolienta' ? 'bostezo' : subEstado}-${estadoReal === 'procesando_pregunta' ? rondaGesto : 0}-${interaccionActiva ?? 'none'}-${etiquetaTactil ?? ''}-${semaforoActivo ?? 'none'}-${feedbackActivo?.id ?? 0}-${modoColapso}`}
           className="etiqueta-estado"
           style={{ color: c, textShadow: `0 0 8px ${c}88` }}
           initial={{ opacity: 0, y: 6 }}

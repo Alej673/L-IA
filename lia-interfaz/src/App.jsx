@@ -264,6 +264,8 @@ export default function App() {
   const [semaforo, setSemaforo] = useState({ activa: false, herramienta: '', argumentos: '' })
   const [cargando, setCargando] = useState(false)
   const [semaforoArchivos, setSemaforoArchivos] = useState({ activa: false, opciones: [] }) // NUEVO
+  const [feedbackDecision, setFeedbackDecision] = useState(null)
+  const feedbackTimerRef = useRef(null)
 
   const finalDelChatRef = useRef(null)
   const archivoInputRef = useRef(null)
@@ -471,6 +473,24 @@ export default function App() {
     if (data.activa) setSemaforoArchivos(data)
   }, 1000, piensaOEscribe && !semaforoArchivos.activa)
 
+  useEffect(() => () => clearTimeout(feedbackTimerRef.current), [])
+
+  const dispararFeedbackDecision = useCallback((tipo, origen) => {
+    clearTimeout(feedbackTimerRef.current)
+    setFeedbackDecision({ tipo, origen, id: Date.now() })
+    feedbackTimerRef.current = setTimeout(() => {
+      setFeedbackDecision(null)
+    }, 1100)
+  }, [])
+
+  // Solo 'caricia' reduce corrupción; 'poke_advertencia' y 'escudo_paciencia' quedan libres para eventos futuros
+  const manejarInteraccionNucleo = useCallback((evento) => {
+    if (evento?.tipo !== 'caricia') return
+    fetch(`${API}/interaccion/caricia`, { method: 'POST' }).catch((e) => {
+      console.warn('No se pudo registrar caricia en el núcleo:', e)
+    })
+  }, [])
+
   const responderSemaforoArchivos = async (rutaSeleccionada) => {
     try {
       const res = await fetch(`${API}/semaforo/archivos/responder`, {
@@ -480,6 +500,7 @@ export default function App() {
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       setSemaforoArchivos({ activa: false, opciones: [] })
+      dispararFeedbackDecision(rutaSeleccionada ? 'autorizado' : 'denegado', 'archivos')
     } catch (e) {
       console.error('Fallo al enviar decisión de archivo al núcleo', e)
     }
@@ -494,6 +515,7 @@ export default function App() {
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       setSemaforo({ activa: false, herramienta: '', argumentos: '' })
+      dispararFeedbackDecision(autorizado ? 'autorizado' : 'denegado', 'seguridad')
     } catch (e) {
       // Si falla, el modal queda abierto para poder reintentar
       console.error('Fallo al enviar decisión al núcleo', e)
@@ -1101,7 +1123,13 @@ export default function App() {
           {vozGlobal ? <Volume2 size={16} /> : <VolumeX size={16} />}
         </button>
 
-        <NucleoLIA estado={estadoLIA} mensajeEspera={mensajeEspera} />
+        <NucleoLIA
+          estado={estadoLIA}
+          mensajeEspera={mensajeEspera}
+          onInteraccion={manejarInteraccionNucleo}
+          semaforoVisual={semaforo.activa ? 'seguridad' : semaforoArchivos.activa ? 'archivos' : null}
+          feedbackDecision={feedbackDecision}
+        />
         {/* INDICADOR DE WORKSPACE ACTIVO */}
         <AnimatePresence>
           {workspaceActivo && (

@@ -592,6 +592,127 @@
 }
 
 /* ==========================================================================
+   ESCENAS DE SEMÁFORO (ALERTA NIVEL 2 / ARCHIVOS) Y FEEDBACK DE DECISIÓN
+   (0 MB VRAM · solo transform/opacity)
+   ========================================================================== */
+
+/* 1. Alerta Nivel 2: pulso de seguridad + escudo con '!' */
+.nucleo-lia .escena-alerta-seguridad {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.nucleo-lia .alerta-anillo-pulso {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 126px;
+  height: 126px;
+  margin-left: -63px;
+  margin-top: -63px;
+  border-radius: 50%;
+  border: 1.8px solid currentColor;
+  will-change: transform, opacity;
+}
+
+.nucleo-lia .alerta-escudo-badge {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin-left: 62px;
+  margin-top: -34px;
+  width: 38px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.55));
+  will-change: transform, opacity;
+}
+
+/* 2. Semáforo de archivos: mini-tarjetas holográficas en espera */
+.nucleo-lia .escena-opciones-archivos {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin-left: 66px;
+  margin-top: -34px;
+  width: 58px;
+  height: 68px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.nucleo-lia .opcion-holo-card {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  background: rgba(8, 22, 34, 0.78);
+  border: 1px solid rgba(34, 211, 238, 0.48);
+  will-change: transform, opacity;
+}
+
+.nucleo-lia .opcion-holo-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.nucleo-lia .opcion-holo-bar {
+  height: 2.5px;
+  border-radius: 999px;
+  opacity: 0.85;
+}
+
+/* 3. Feedback de decisión (~1s): Check ✓ esmeralda / Cruz ✕ carmesí */
+.nucleo-lia .escena-feedback-decision {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 6;
+}
+
+.nucleo-lia .feedback-onda {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 112px;
+  height: 112px;
+  margin-left: -56px;
+  margin-top: -56px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  will-change: transform, opacity;
+}
+
+.nucleo-lia .feedback-badge {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin-left: 46px;
+  margin-top: -46px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 12, 20, 0.88);
+  border: 1.6px solid currentColor;
+  box-shadow: 0 0 14px currentColor;
+  will-change: transform, opacity;
+}
+
+/* ==========================================================================
    RESPONSIVE MINI-HUD (450 x 700 px)
    ========================================================================== */
 @media (max-width: 800px) {
@@ -617,5 +738,22 @@
 
   .nucleo-lia .particula {
     transform-origin: center;
+  }
+
+  .nucleo-lia .alerta-anillo-pulso {
+    width: 98px;
+    height: 98px;
+    margin-left: -49px;
+    margin-top: -49px;
+  }
+
+  .nucleo-lia .alerta-escudo-badge,
+  .nucleo-lia .escena-opciones-archivos {
+    margin-left: 52px;
+  }
+
+  .nucleo-lia .feedback-badge {
+    margin-left: 36px;
+    margin-top: -42px;
   }
 }

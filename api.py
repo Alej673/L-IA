@@ -787,6 +787,41 @@ def esperar_archivo_interno(req: SolicitudDesambiguacion):
     return {"ruta": ruta}
 
 
+# --- Interacciones táctiles con el núcleo (sin chat/SSE ni colapso) --------
+# Cooldown en servidor complementa el de NucleoLIA.jsx para evitar spam sobre SQLite
+# sin pasar por cerebro.py ni disparar respuestas de chat o el guion de colapso.
+router_interacciones = APIRouter(prefix="/interaccion", tags=["interacciones"])
+CARICIA_DELTA_CORRUPCION = -5
+CARICIA_COOLDOWN_SEG = 4.5
+_candado_caricia = threading.Lock()
+_ultima_caricia_ts = 0.0
+
+
+@router_interacciones.post("/caricia")
+def registrar_caricia():
+    """Reduce moderadamente la hostilidad/corrupción acumulada al acariciar el núcleo."""
+    global _ultima_caricia_ts
+    ahora = time.monotonic()
+    with _candado_caricia:
+        if ahora - _ultima_caricia_ts < CARICIA_COOLDOWN_SEG:
+            return {
+                "status": "ok",
+                "aplicado": False,
+                "delta": 0,
+                "nivel_corrupcion": database.obtener_nivel_corrupcion(),
+            }
+        _ultima_caricia_ts = ahora
+
+    nuevo_nivel = database.modificar_nivel_corrupcion(CARICIA_DELTA_CORRUPCION)
+    logger.info("[API] Caricia recibida -> nivel_corrupcion=%s", nuevo_nivel)
+    return {
+        "status": "ok",
+        "aplicado": True,
+        "delta": CARICIA_DELTA_CORRUPCION,
+        "nivel_corrupcion": nuevo_nivel,
+    }
+
+
 # --- Registro de routers (SIEMPRE al final, ya con todas las rutas definidas) ---
-for _router in (router_sesiones, router_semaforo, router_chat, router_voz, router_debug):
+for _router in (router_sesiones, router_semaforo, router_chat, router_voz, router_debug, router_interacciones):
     app.include_router(_router)
