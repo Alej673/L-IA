@@ -191,8 +191,8 @@ function useLectorVoz() {
     tokenRef.current += 1
     setIdLeyendo(null)
     try {
-      // Ideal: un endpoint propio (/lector/detener) para no tocar el chat
-      await fetch(`${API}/cancelar`, { method: 'POST' })
+      // Silencia solo la salida de voz sin abortar el chat
+      await fetch(`${API}/voz/silenciar`, { method: 'POST' })
     } catch (e) {
       console.error('Error al detener lectura:', e)
     }
@@ -886,6 +886,10 @@ export default function App() {
   const cargandoRef = useRef(false)
   cargandoRef.current = cargando
   const enviarOrdenRef = useRef(null)
+  const vozGlobalRef = useRef(vozGlobal)
+  vozGlobalRef.current = vozGlobal
+  const escuchaTokenRef = useRef(0)
+  const escucharAbortRef = useRef(null)
 
   // Lector de voz
   const { idLeyendo, alternar: alternarLectura, detener: detenerLectura } = useLectorVoz()
@@ -1265,34 +1269,78 @@ export default function App() {
     }
   }
 
+  const alternarVozGlobal = async () => {
+    const nuevoEstado = !vozGlobal
+    setVozGlobal(nuevoEstado)
+    vozGlobalRef.current = nuevoEstado
+
+    if (!nuevoEstado) {
+      try {
+        await fetch(`${API}/voz/silenciar`, { method: 'POST' })
+      } catch (error) {
+        console.error('Error al silenciar la voz:', error)
+      }
+    }
+  }
+
   // Micrófono manual (Conectado a Whisper local)
   const manejarMicrofono = async () => {
-    if (escuchando || cargando) return
+    if (escuchando) {
+      escuchaTokenRef.current += 1
+      escucharAbortRef.current?.abort()
+      escucharAbortRef.current = null
+      setEscuchando(false)
+      setEstadoLIA('reposo')
+      try {
+        await fetch(`${API}/escuchar/cancelar`, { method: 'POST' })
+      } catch (error) {
+        console.error('Error al cancelar la escucha:', error)
+      }
+      return
+    }
+
+    if (cargando) return
+
+    const miToken = ++escuchaTokenRef.current
+    const controller = new AbortController()
+    escucharAbortRef.current = controller
+
     setEscuchando(true)
     setEstadoLIA('escuchando') // Cambiamos la cara de L-IA a rojo al instante
-    setVozGlobal(true)
+    if (!vozGlobal) {
+      setVozGlobal(true)
+      vozGlobalRef.current = true
+    }
     
     try {
       // Ordenamos a Python que abra el canal de audio
-      const res = await fetch(`${API}/escuchar`, { method: 'POST' })
+      const res = await fetch(`${API}/escuchar`, {
+        method: 'POST',
+        signal: controller.signal
+      })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       
       const data = await res.json()
+      if (miToken !== escuchaTokenRef.current) return
       
       // Si capturó palabras, las mandamos automáticamente
       if (data.texto && data.texto.trim() !== '') {
-        enviarOrden(data.texto, true)
+        enviarOrden(data.texto, vozGlobalRef.current)
       } else {
         // Si fue silencio o ruido nulo, regresamos a la normalidad
         setEstadoLIA('reposo')
       }
     } catch (error) {
+      if (error.name === 'AbortError' || miToken !== escuchaTokenRef.current) return
       console.error('Error con el micrófono local:', error)
       agregarSistema('[ERROR] Fallo en el canal de audio (Whisper no respondió).')
       setEstadoLIA('error')
       setTimeout(() => setEstadoLIA('reposo'), 1600)
     } finally {
-      setEscuchando(false)
+      if (miToken === escuchaTokenRef.current) {
+        escucharAbortRef.current = null
+        setEscuchando(false)
+      }
     }
   }
 
@@ -1718,7 +1766,7 @@ export default function App() {
         <button 
           type="button" 
           className="hud-btn" 
-          onClick={() => setVozGlobal(!vozGlobal)} 
+          onClick={alternarVozGlobal} 
           style={{ 
             position: 'absolute',
             top: '15px',
@@ -1843,7 +1891,7 @@ export default function App() {
             onChange={manejarSeleccionArchivo}
           />
           <button type="button" className="hud-btn" onClick={manejarClickArchivo}><Paperclip size={18} /></button>
-          <button type="button" className="hud-btn" onClick={manejarMicrofono} style={{ color: escuchando ? '#ff0055' : '#00ffff', boxShadow: escuchando ? 'inset 0 0 10px rgba(255,0,85,0.5)' : '' }}>
+          <button type="button" className="hud-btn" onClick={manejarMicrofono} title={escuchando ? "Cancelar escucha" : "Activar micrófono"} style={{ color: escuchando ? '#ff0055' : '#00ffff', boxShadow: escuchando ? 'inset 0 0 10px rgba(255,0,85,0.5)' : '' }}>
             <Mic size={18} />
           </button>
           

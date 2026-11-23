@@ -2,6 +2,7 @@
 gestor_memoria.py — El Orquestador del Segundo Cerebro.
 Sincroniza las escrituras, lecturas y borrados entre ChromaDB (vectores) y SQLite (metadatos).
 """
+import threading
 import uuid
 from core import database
 from core import tools
@@ -9,12 +10,15 @@ from core import config
 
 # Carga perezosa del motor vectorial para no bloquear el arranque general de L-IA
 _rag_instancia = None
+_rag_lock = threading.Lock()
 
 def _obtener_rag():
     global _rag_instancia
     if _rag_instancia is None:
-        from core.memoria_rag import MemoriaRAG
-        _rag_instancia = MemoriaRAG()
+        with _rag_lock:
+            if _rag_instancia is None:
+                from core.memoria_rag import MemoriaRAG
+                _rag_instancia = MemoriaRAG()
     return _rag_instancia
 
 def asimilar_archivo(ruta_absoluta, grupo="general", tipo="documento"):

@@ -409,89 +409,117 @@ def _generar_respuesta_con_voz(generador_texto, motor="kokoro", nivel_distorsion
     if hablar:
         cola_texto = queue.Queue()
         cola_audio = queue.Queue(maxsize=3)
+        cancelar_local = threading.Event()
+
+        def _voz_detenida() -> bool:
+            return evento_interrupcion.is_set() or voz.esta_silenciada() or cancelar_local.is_set()
 
         def hilo_sintetizador():
-            while True:
-                frase = cola_texto.get()
-                if frase is None:
-                    cola_audio.put(None)
-                    break
-                if evento_interrupcion.is_set():
-                    continue
-                try:
-                    archivo = voz.preparar_voz(frase, motor=motor, nivel_distorsion=nivel_distorsion)
-                except Exception:
-                    archivo = None
-                if archivo:
-                    cola_audio.put(archivo)
+            try:
+                while True:
+                    frase = cola_texto.get()
+                    if frase is None:
+                        break
+                    if _voz_detenida():
+                        continue
+                    try:
+                        archivo = voz.preparar_voz(frase, motor=motor, nivel_distorsion=nivel_distorsion)
+                    except Exception:
+                        archivo = None
+                    if archivo:
+                        if _voz_detenida():
+                            voz.descartar_audio(archivo)
+                            continue
+                        cola_audio.put(archivo)
+            finally:
+                cola_audio.put(None)
 
         def hilo_reproductor():
             while True:
                 archivo = cola_audio.get()
                 if archivo is None:
                     break
-                if evento_interrupcion.is_set():
+                if _voz_detenida():
                     voz.descartar_audio(archivo)
                     continue
                 try:
                     voz.reproducir_voz(archivo)
                 except Exception:
-                    pass
+                    voz.descartar_audio(archivo)
 
         t_sintetizador = threading.Thread(target=hilo_sintetizador, daemon=True)
         t_reproductor = threading.Thread(target=hilo_reproductor, daemon=True)
         t_sintetizador.start()
         t_reproductor.start()
 
-    for fragmento_entrante in generador_texto:
-        if evento_interrupcion.is_set():
-            print("\n🛑 [Interrupción táctica: Generación abortada por el usuario]")
-            break
+    hubo_error = False
+    try:
+        for fragmento_entrante in generador_texto:
+            if evento_interrupcion.is_set():
+                print("\n🛑 [Interrupción táctica: Generación abortada por el usuario]")
+                break
 
-        if not fragmento_entrante:
-            continue
-
-        respuesta_completa += fragmento_entrante
-
-        # 1. SIEMPRE imprimimos a la consola y a React (Frontend)
-        print(fragmento_entrante, end="", flush=True)
-        if callback_stream and not texto_para_mostrar:
-            callback_stream(fragmento_entrante)
-
-        # 2. FILTRO EXCLUSIVO PARA LA VOZ
-        if hablar:
-            # Si el modelo escribe "```", cambiamos el estado del interruptor
-            conteo_comillas = fragmento_entrante.count("```")
-            if conteo_comillas > 0:
-                if conteo_comillas % 2 != 0:
-                    en_bloque_codigo = not en_bloque_codigo
-                continue  # Saltamos este trozo para que TTS no lea las comillas ni el "json/python"
-
-            # Dentro de un bloque de código, la voz lo ignora
-            if en_bloque_codigo:
+            if not fragmento_entrante:
                 continue
 
-            # Limpiamos asteriscos sueltos que el TTS pronuncia mal
-            fragmento_limpio = fragmento_entrante.replace("*", "")
-            bloque_actual += fragmento_limpio
+            respuesta_completa += fragmento_entrante
 
-            largo = len(bloque_actual.strip())
-            minimo = MIN_CHARS_PRIMER_FRAGMENTO if primer_fragmento else MIN_CHARS_FRAGMENTO
-            fin_de_oracion = any(p in fragmento_limpio for p in PUNTUACION_CORTE) and largo >= minimo
-            demasiado_largo = largo > MAX_CHARS_FRAGMENTO and ',' in fragmento_limpio
+            # 1. SIEMPRE imprimimos a la consola y a React (Frontend)
+            print(fragmento_entrante, end="", flush=True)
+            if callback_stream and not texto_para_mostrar:
+                callback_stream(fragmento_entrante)
 
-            if fin_de_oracion or demasiado_largo:
-                cola_texto.put(bloque_actual.strip())
-                bloque_actual = ""
-                primer_fragmento = False
+            # 2. FILTRO EXCLUSIVO PARA LA VOZ
+            if hablar:
+                if voz.esta_silenciada():
+                    bloque_actual = ""
+                    continue
 
-    if hablar:
-        resto = bloque_actual.strip()
-        if len(resto) > 2:
-            cola_texto.put(resto)
-        cola_texto.put(None)
-        t_sintetizador.join()
-        t_reproductor.join()
+                # Si el modelo escribe "```", cambiamos el estado del interruptor
+                conteo_comillas = fragmento_entrante.count("```")
+                if conteo_comillas > 0:
+                    if conteo_comillas % 2 != 0:
+                        en_bloque_codigo = not en_bloque_codigo
+                    continue  # Saltamos este trozo para que TTS no lea las comillas ni el "json/python"
+
+                # Dentro de un bloque de código, la voz lo ignora
+                if en_bloque_codigo:
+                    continue
+
+                # Limpiamos asteriscos sueltos que el TTS pronuncia mal
+                fragmento_limpio = fragmento_entrante.replace("*", "")
+                bloque_actual += fragmento_limpio
+
+                largo = len(bloque_actual.strip())
+                minimo = MIN_CHARS_PRIMER_FRAGMENTO if primer_fragmento else MIN_CHARS_FRAGMENTO
+                fin_de_oracion = any(p in fragmento_limpio for p in PUNTUACION_CORTE) and largo >= minimo
+                demasiado_largo = largo > MAX_CHARS_FRAGMENTO and ',' in fragmento_limpio
+
+                if fin_de_oracion or demasiado_largo:
+                    cola_texto.put(bloque_actual.strip())
+                    bloque_actual = ""
+                    primer_fragmento = False
+    except Exception:
+        hubo_error = True
+        if hablar:
+            cancelar_local.set()
+        raise
+    finally:
+        if hablar:
+            if not hubo_error and not _voz_detenida():
+                resto = bloque_actual.strip()
+                if len(resto) > 2:
+                    cola_texto.put(resto)
+            cola_texto.put(None)
+            t_sintetizador.join()
+            t_reproductor.join()
+            while not cola_audio.empty():
+                try:
+                    sobrante = cola_audio.get_nowait()
+                    if sobrante:
+                        voz.descartar_audio(sobrante)
+                except queue.Empty:
+                    break
 
     print()
     return respuesta_completa if not texto_para_mostrar else texto_para_mostrar

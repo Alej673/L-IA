@@ -161,6 +161,12 @@ class SemaforoAutorizacion:
         self.evento.set()
         return True
 
+    def cancelar(self) -> None:
+        """Despierta un hilo esperando autorización denegándola y limpia el estado pendiente."""
+        self.autorizacion_concedida = False
+        self.alerta_actual = None
+        self.evento.set()
+
     def estado_actual(self) -> dict:
         alerta = self.alerta_actual
         if alerta:
@@ -186,9 +192,10 @@ class SemaforoArchivos:
             self.evento.clear()
 
             logger.info("Esperando selección de archivo desde React...")
-            self.evento.wait(timeout=TIMEOUT_AUTORIZACION_SEGUNDOS)
-            
-            self.opciones_actuales = None
+            try:
+                self.evento.wait(timeout=TIMEOUT_AUTORIZACION_SEGUNDOS)
+            finally:
+                self.opciones_actuales = None
             return self.ruta_seleccionada
 
     def registrar_respuesta(self, ruta: Optional[str]) -> bool:
@@ -197,6 +204,12 @@ class SemaforoArchivos:
         self.ruta_seleccionada = ruta
         self.evento.set()
         return True
+
+    def cancelar(self) -> None:
+        """Despierta un hilo esperando selección de archivo devolviendo None."""
+        self.ruta_seleccionada = None
+        self.opciones_actuales = None
+        self.evento.set()
 
     def estado_actual(self) -> dict:
         if self.opciones_actuales:
@@ -649,11 +662,13 @@ def recibir_chat(mensaje: MensajeUsuario):
 
     if entrada == COMANDO_DEBUG_COLAPSO:
         # Trigger manual (comando de debug)
+        voz.limpiar_silencio()
         _colapso_en_hilo(cola_streaming)
     else:
         # Flujo normal y trigger orgánico. Se limpia una posible cancelación
         # previa para que /cancelar no deje cortados los chats siguientes.
         evento_interrupcion.clear()
+        voz.limpiar_silencio()
         threading.Thread(
             target=renombrar_sesion_silenciosamente,
             args=(sesion_actual, entrada),
@@ -686,13 +701,26 @@ def leer_pantalla(req: PeticionLector):
 @router_voz.post("/cancelar")
 async def cancelar_generacion():
     """Botón de pánico: detiene la inferencia del LLM y silencia cualquier audio."""
-    logger.info("[API] Orden de abortar recibida. Deteniendo LLM y audio...")
+    logger.info("[API] Orden de abortar recibida. Deteniendo LLM, semáforos y audio...")
     evento_interrupcion.set()  # el Cerebro deja de generar texto
+    semaforo.cancelar()
+    semaforo_archivos.cancelar()
     try:
         voz.detener_audio_global()  # apaga los altavoces de golpe
     except Exception as e:
         logger.warning("No se pudo silenciar el audio: %s", e)
     return {"status": "abortado"}
+
+
+@router_voz.post("/voz/silenciar")
+async def silenciar_voz_turno():
+    """Corta CANAL_VOZ, limpia temporales pendientes y silencia el turno actual sin abortar el texto."""
+    logger.info("[API] Silenciando salida de voz del turno actual...")
+    try:
+        voz.silenciar_voz()
+    except Exception as e:
+        logger.warning("No se pudo silenciar el canal de voz: %s", e)
+    return {"status": "silenciado"}
 
 
 @router_voz.post("/escuchar")
@@ -704,6 +732,14 @@ def escuchar_manual():
     except Exception as e:
         logger.error("[API] Error crítico de micrófono: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router_voz.post("/escuchar/cancelar")
+async def cancelar_escucha_manual():
+    """Interrumpe inmediatamente la grabación del micrófono sin transcribir ni enviar al chat."""
+    logger.info("[API] Cancelando escucha activa del micrófono...")
+    voz.cancelar_escucha()
+    return {"status": "cancelado"}
 
 
 @router_voz.get("/radar/leer")

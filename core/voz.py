@@ -69,6 +69,10 @@ pygame.mixer.set_num_channels(8)
 _canal_pensando = None
 _cache_efectos = {}
 _lock_kokoro = threading.Lock()  # Kokoro no debe usarse desde dos hilos a la vez
+evento_silencio = threading.Event()
+_cancelar_escucha = threading.Event()
+_lock_escucha = threading.Lock()
+_evento_corte_activo = None
 
 
 def _cargar(nombre, fabrica):
@@ -136,6 +140,7 @@ def detener_efecto_pensando():
 # =========================================================
 def escuchar(duracion_maxima: float = 20.0, silencio_para_cortar: float = 1.2,
              timeout_inicio: float = 6.0, umbral_voz: float = UMBRAL_VOZ_ESCUCHA) -> str:
+    global _evento_corte_activo
     if not _whisper_model:
         return ""
 
@@ -145,7 +150,14 @@ def escuchar(duracion_maxima: float = 20.0, silencio_para_cortar: float = 1.2,
     estado = {"hablando": False, "ultimo_voz": 0.0, "inicio": 0.0, "gracia_hasta": float("inf")}
     evento_corte = threading.Event()
 
+    with _lock_escucha:
+        _cancelar_escucha.clear()
+        _evento_corte_activo = evento_corte
+
     def callback(indata, frames, time_info, status):
+        if _cancelar_escucha.is_set():
+            evento_corte.set()
+            return
         ahora = time.time()
         bloques.append(indata.copy())  # se graba siempre, para no perder la primera sílaba
 
@@ -168,14 +180,24 @@ def escuchar(duracion_maxima: float = 20.0, silencio_para_cortar: float = 1.2,
     stream = sd.InputStream(samplerate=SAMPLE_RATE_STT, channels=1, dtype="float32",
                             callback=callback, blocksize=int(SAMPLE_RATE_STT * 0.1))
 
-    with stream:
-        # El pitido suena con el micro ya grabando.
-        duracion_pitido = min(reproducir_efecto("activacion"), GRACIA_MAX_PITIDO)
-        estado["inicio"] = time.time() + duracion_pitido
-        estado["gracia_hasta"] = estado["inicio"]
-        evento_corte.wait(timeout=duracion_maxima + timeout_inicio + 2)  # red de seguridad
+    try:
+        with stream:
+            # El pitido suena con el micro ya grabando.
+            duracion_pitido = min(reproducir_efecto("activacion"), GRACIA_MAX_PITIDO)
+            estado["inicio"] = time.time() + duracion_pitido
+            estado["gracia_hasta"] = estado["inicio"]
+            if not _cancelar_escucha.is_set():
+                evento_corte.wait(timeout=duracion_maxima + timeout_inicio + 2)  # red de seguridad
+    finally:
+        with _lock_escucha:
+            if _evento_corte_activo is evento_corte:
+                _evento_corte_activo = None
 
     reproducir_efecto("apagado")
+
+    if _cancelar_escucha.is_set():
+        print("🛑 Escucha cancelada manualmente por el usuario.")
+        return ""
 
     if not estado["hablando"] or not bloques:
         print("🤫 No se detectó voz, cancelando.")
@@ -189,7 +211,18 @@ def escuchar(duracion_maxima: float = 20.0, silencio_para_cortar: float = 1.2,
         condition_on_previous_text=False,
         vad_filter=True,  # descarta tramos sin voz (el bip, ruido) y reduce alucinaciones
     )
+    if _cancelar_escucha.is_set():
+        print("🛑 Transcripción descartada: escucha cancelada por el usuario.")
+        return ""
     return " ".join(segment.text for segment in segments).strip()
+
+
+def cancelar_escucha():
+    """Interrumpe de inmediato una grabación activa en escuchar()."""
+    _cancelar_escucha.set()
+    with _lock_escucha:
+        if _evento_corte_activo is not None:
+            _evento_corte_activo.set()
 
 
 def esperar_palabra_clave() -> bool:
@@ -389,6 +422,10 @@ def reproducir_voz(archivo):
     if not archivo or not os.path.exists(archivo):
         return
 
+    if evento_silencio.is_set():
+        descartar_audio(archivo)
+        return
+
     detener_efecto_pensando()
 
     try:
@@ -433,11 +470,37 @@ def detener_audio_global():
     """Freno de emergencia: corta cualquier voz o sonido en reproducción."""
     pygame.mixer.stop()
 
+
+def limpiar_silencio():
+    """Resetea la bandera de silencio al comenzar un nuevo turno o lectura manual."""
+    evento_silencio.clear()
+
+
+def esta_silenciada() -> bool:
+    """Indica si la voz del turno actual fue silenciada."""
+    return evento_silencio.is_set()
+
+
+def silenciar_voz():
+    """Detiene CANAL_VOZ al instante, limpia temporales TTS y silencia el turno actual."""
+    evento_silencio.set()
+    try:
+        pygame.mixer.Channel(CANAL_VOZ).stop()
+    except Exception as e:
+        print(f"⚠️ Error deteniendo CANAL_VOZ: {e}")
+    try:
+        for archivo in rutas.CARPETA_TEMP_AUDIO.glob("temp_tts_*"):
+            descartar_audio(str(archivo))
+    except Exception as e:
+        print(f"⚠️ Error limpiando audios temporales: {e}")
+
+
 def leer_pantalla_directo(texto, motor="edge"):
     """
     Función envoltorio para el botón del lector de la GUI.
     Renderiza y reproduce de un solo golpe.
     """
+    limpiar_silencio()
     archivo_audio = preparar_voz(texto, motor=motor)
     if archivo_audio:
         reproducir_voz(archivo_audio)
