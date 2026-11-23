@@ -1,35 +1,69 @@
+/* ==========================================================================
+   L-IA HUD — Propuesta A (Glassmorphism Táctico / Raycast Dark)
+   + Filetes verticales izquierdos de 2px por origen (Propuesta B)
+   ========================================================================== */
+
+/* ---------- Contenedor Principal y Paneles ---------- */
 .hud-container {
+  position: relative;
   display: grid;
-  grid-template-columns: 250px 1fr 250px;
-  gap: 20px;
+  grid-template-columns: 260px 1fr 250px;
+  gap: 16px;
   width: 95vw;
   height: 90vh;
+  box-sizing: border-box;
 }
 
 .panel {
-  background: rgba(0, 20, 30, 0.4);
-  border: 1px solid rgba(0, 255, 255, 0.1);
-  border-radius: 10px;
-  padding: 20px;
-  backdrop-filter: blur(5px);
-  box-shadow: inset 0 0 20px rgba(0,0,0,0.5);
+  background: var(--lia-surface);
+  border: 1px solid var(--lia-border);
+  border-radius: 14px;
+  padding: 16px;
+  backdrop-filter: var(--lia-blur);
+  -webkit-backdrop-filter: var(--lia-blur);
+  box-shadow: var(--lia-inset-top), 0 20px 44px rgba(0, 0, 0, 0.42);
   display: flex;
   flex-direction: column;
+  box-sizing: border-box;
+  min-height: 0;
+}
+
+.panel.central {
+  position: relative;
+  height: 100%;
+  padding: 0;
+  overflow: hidden;
 }
 
 .hud-title {
-  font-size: 12px;
-  letter-spacing: 2px;
-  color: #44aaff;
-  border-bottom: 1px solid #44aaff;
-  padding-bottom: 5px;
-  margin-top: 0;
+  font-family: var(--lia-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--lia-muted);
+  border-bottom: 1px solid var(--lia-border);
+  padding-bottom: 10px;
+  margin: 0;
 }
 
-/* =========================================
+.telemetria-placeholder {
+  font-family: var(--lia-font-mono);
+  color: var(--lia-muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+  margin-top: 12px;
+}
+
+/* ==========================================================================
    NÚCLEO CENTRAL — extras del HUD
    (base del núcleo y cara: ver NucleoColapso.css)
-   ========================================= */
+   ========================================================================== */
+.panel.central .etiqueta-estado {
+  font-family: var(--lia-font-mono);
+  letter-spacing: 0.14em;
+  font-weight: 600;
+}
+
 /* Anillo que contiene las partículas orbitales */
 .anillo-particulas {
   position: absolute;
@@ -64,6 +98,7 @@
   gap: 2px;
   z-index: 3;
 }
+
 .lente {
   width: 18px;
   height: 12px;
@@ -72,6 +107,7 @@
   background: rgba(0, 255, 255, 0.1);
   backdrop-filter: blur(2px);
 }
+
 .puente-lentes {
   width: 4px;
   height: 2px;
@@ -104,7 +140,7 @@
   left: 0;
   width: 100%;
   height: 30%;
-  background: linear-gradient(to bottom, transparent, rgba(255,255,255,0.85), transparent);
+  background: linear-gradient(to bottom, transparent, rgba(255, 255, 255, 0.85), transparent);
 }
 
 /* Barras tipo ecualizador — aparecen solo al escribir */
@@ -134,427 +170,1158 @@
   pointer-events: none;
 }
 
-/* Chat y Controles */
-.chat-terminal {
-  flex: 1;
-  border: 1px solid rgba(0,255,255,0.2);
-  background: rgba(0,0,0,0.6);
-  padding: 15px;
-  overflow-y: auto;
-  margin-bottom: 15px;
-}
-
-.controles-input {
+.aureola-escucha {
+  position: absolute;
+  inset: 0;
   display: flex;
-  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
 }
 
-/* Botones Neumorfismo Oscuro */
+.aureola-voz,
+.onda-escucha {
+  position: absolute;
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  border: 2px solid;
+}
+
+.onda-escucha {
+  border-width: 1px;
+}
+
+/* ==========================================================================
+   FRANJA DE ARRASTRE Y BOTONES HUD FLAT
+   ========================================================================== */
+.franja-arrastre {
+  position: fixed;
+  top: 0;
+  left: calc(50% - 90px);
+  width: 180px;
+  height: 26px;
+  z-index: 50;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.franja-grip {
+  width: 48px;
+  height: 3.5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  transition: background 0.2s ease, width 0.2s ease, box-shadow 0.2s ease;
+  pointer-events: none;
+}
+
+.franja-arrastre:hover .franja-grip {
+  width: 64px;
+  background: var(--lia-accent);
+  box-shadow: 0 0 10px rgba(34, 211, 238, 0.5);
+}
+
 .hud-btn {
-  background: #0a1526;
-  border: none;
-  color: #00ffff;
-  padding: 12px;
-  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--lia-surface);
+  border: 1px solid var(--lia-border);
+  box-shadow: var(--lia-inset-top);
+  backdrop-filter: var(--lia-blur);
+  -webkit-backdrop-filter: var(--lia-blur);
+  color: var(--lia-muted);
+  padding: 8px;
+  border-radius: 9px;
   cursor: pointer;
-  box-shadow: 
-    3px 3px 6px rgba(0,0,0,0.8), 
-    -2px -2px 5px rgba(0,255,255,0.1); /* Efecto relieve 3D */
-  transition: all 0.2s;
+  font-family: inherit;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease, transform 0.14s ease;
+}
+
+.hud-btn:hover {
+  color: var(--lia-text-strong);
+  background: var(--lia-surface-elevated);
+  border-color: var(--lia-border-strong);
 }
 
 .hud-btn:active {
-  box-shadow: 
-    inset 3px 3px 6px rgba(0,0,0,0.8), 
-    inset -2px -2px 5px rgba(0,255,255,0.1);
+  transform: scale(0.96);
+}
+
+.hud-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-menu-sidebar,
+.sidebar-backdrop {
+  display: none;
+}
+
+.btn-voz-global {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+}
+
+.btn-voz-global.activo {
+  color: var(--lia-success);
+  border-color: rgba(52, 211, 153, 0.4);
+  background: rgba(52, 211, 153, 0.12);
+}
+
+.btn-debug-colapso {
+  position: absolute;
+  top: 12px;
+  right: 54px;
+  z-index: 15;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  color: var(--lia-danger-soft);
+  border-color: rgba(244, 63, 94, 0.3);
+  background: rgba(244, 63, 94, 0.1);
+}
+
+.btn-debug-colapso:hover {
+  color: #ffffff;
+  border-color: rgba(244, 63, 94, 0.55);
+  background: rgba(244, 63, 94, 0.24);
+}
+
+/* ==========================================================================
+   CHIP FLOTANTE DE WORKSPACE ACTIVO (opaco para evitar traslape al scrollear)
+   ========================================================================== */
+.workspace-chip {
+  position: relative;
+  z-index: 6;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 14px 4px;
+  padding: 7px 11px;
+  border-radius: 9px;
+  background: rgba(10, 18, 26, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(52, 211, 153, 0.28);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35), var(--lia-inset-top);
+  color: var(--lia-success);
+  font-family: var(--lia-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.workspace-chip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--lia-success);
+  box-shadow: 0 0 8px var(--lia-success);
+  flex-shrink: 0;
+}
+
+.workspace-chip-texto {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-chip-cerrar {
+  background: none;
+  border: none;
+  color: var(--lia-muted);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.workspace-chip-cerrar:hover {
+  color: var(--lia-danger);
+  background: rgba(244, 63, 94, 0.14);
+}
+
+/* ==========================================================================
+   FEED DEL CHAT (sin doble encajonamiento) Y BURBUJAS CON FILETES 2px
+   ========================================================================== */
+.chat-terminal {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 14px 14px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.burbuja-mensaje {
+  display: flex;
+  flex-direction: column;
+  max-width: 100%;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
+.burbuja-mensaje.usuario {
+  align-self: flex-end;
+  max-width: 86%;
+  padding: 9px 13px;
+  border-radius: 13px 13px 4px 13px;
+  background: var(--lia-accent-soft);
+  border: 1px solid var(--lia-accent-border);
+  color: var(--lia-text-strong);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.burbuja-mensaje.ia {
+  align-self: stretch;
+  max-width: 100%;
+  padding: 8px 4px 10px 12px;
+  border-radius: 0 8px 8px 0;
+  background: transparent;
+  border-left: 2px solid var(--lia-origen-local);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  color: var(--lia-text);
+}
+
+/* Filetes verticales izquierdos de 2px por origen (mayúscula o minúscula) */
+.burbuja-mensaje.ia.origen-local,
+.burbuja-mensaje.ia.origen-Local,
+.burbuja-mensaje.ia.local,
+.burbuja-mensaje.ia.Local {
+  border-left-color: var(--lia-origen-local);
+}
+
+.burbuja-mensaje.ia.origen-nube,
+.burbuja-mensaje.ia.origen-Nube,
+.burbuja-mensaje.ia.nube,
+.burbuja-mensaje.ia.Nube {
+  border-left-color: var(--lia-origen-nube);
+}
+
+.burbuja-mensaje.ia.origen-dolphin,
+.burbuja-mensaje.ia.origen-Dolphin,
+.burbuja-mensaje.ia.dolphin,
+.burbuja-mensaje.ia.Dolphin {
+  border-left-color: var(--lia-origen-dolphin);
+}
+
+.burbuja-mensaje.ia.origen-sistema,
+.burbuja-mensaje.ia.origen-Sistema {
+  border-left-color: var(--lia-muted);
+}
+
+.burbuja-mensaje.sistema {
+  align-self: stretch;
+  font-family: var(--lia-font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--lia-muted);
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--lia-border);
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+
+.burbuja-mensaje.mensaje-abortado {
+  opacity: 0.4;
+  filter: grayscale(0.75);
+  border: 1px dashed rgba(244, 63, 94, 0.45);
+  border-radius: 8px;
+  padding: 8px 12px;
+  transition: all 0.25s ease;
+}
+
+.burbuja-mensaje.mensaje-abortado .contenido-markdown {
+  color: rgba(226, 232, 240, 0.55);
+}
+
+/* Cabecera de mensaje + badges */
+.remitente {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+
+.remitente-nombre {
+  font-family: var(--lia-font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--lia-muted);
+}
+
+.burbuja-mensaje.ia .remitente-nombre {
+  color: var(--lia-accent);
+}
+
+.badge-origen,
+.badge-doc {
+  font-family: var(--lia-font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.badge-origen.local,
+.badge-origen.Local {
+  background: rgba(34, 211, 238, 0.12);
+  color: #22d3ee;
+  border: 1px solid rgba(34, 211, 238, 0.28);
+}
+
+.badge-origen.nube,
+.badge-origen.Nube {
+  background: rgba(167, 139, 250, 0.13);
+  color: #c4b5fd;
+  border: 1px solid rgba(167, 139, 250, 0.3);
+}
+
+.badge-origen.dolphin,
+.badge-origen.Dolphin {
+  background: rgba(244, 63, 94, 0.13);
+  color: #fda4af;
+  border: 1px solid rgba(244, 63, 94, 0.3);
+}
+
+.badge-origen.sistema,
+.badge-origen.Sistema {
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--lia-muted);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+}
+
+.badge-doc {
+  background: rgba(251, 191, 36, 0.11);
+  color: #fcd34d;
+  border: 1px solid rgba(251, 191, 36, 0.26);
+  max-width: 145px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ==========================================================================
+   TIPOGRAFÍA MARKDOWN Y TARJETAS DE CÓDIGO
+   ========================================================================== */
+.contenido-markdown {
+  font-size: 13.5px;
+  line-height: 1.62;
+  color: var(--lia-text);
+}
+
+.contenido-markdown p {
+  margin: 0 0 8px 0;
+}
+
+.contenido-markdown p:last-child {
+  margin-bottom: 0;
+}
+
+.contenido-markdown strong {
+  color: var(--lia-text-strong);
+  font-weight: 600;
+}
+
+.contenido-markdown ul,
+.contenido-markdown ol {
+  margin: 4px 0 8px 0;
+  padding-left: 18px;
+}
+
+.contenido-markdown li {
+  margin-bottom: 4px;
+}
+
+.contenido-markdown li::marker {
+  color: var(--lia-accent);
+}
+
+.contenido-markdown pre {
+  background: var(--lia-code-bg);
+  padding: 12px;
+  border-radius: 9px;
+  border: 1px solid var(--lia-border);
+  overflow-x: auto;
+  color: var(--lia-text);
+}
+
+.contenido-markdown code {
+  font-family: var(--lia-font-mono);
+}
+
+.codigo-inline {
+  font-family: var(--lia-font-mono);
+  font-size: 0.87em;
+  background: var(--lia-inline-bg);
+  color: var(--lia-inline-text);
+  border: 1px solid var(--lia-inline-border);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.bloque-codigo {
+  position: relative;
+  margin: 10px 0 4px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--lia-border);
+  background: var(--lia-code-bg);
+}
+
+.bloque-codigo-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 10px;
+  background: var(--lia-code-header);
+  border-bottom: 1px solid var(--lia-border);
+}
+
+.bloque-codigo-lang {
+  font-family: var(--lia-font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--lia-muted);
+}
+
+.bloque-codigo-copiar {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--lia-muted);
+  font-family: var(--lia-font-mono);
+  font-size: 10px;
+  padding: 2px 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.16s ease;
+}
+
+.bloque-codigo-copiar:hover {
+  color: var(--lia-text-strong);
+  background: var(--lia-surface-hover);
+}
+
+.bloque-codigo-copiar.copiado {
+  color: var(--lia-success);
+}
+
+/* ==========================================================================
+   COMMAND BAR UNIFICADA INFERIOR
+   ========================================================================== */
+.controles-input {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  margin: 6px 14px 12px;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--lia-surface);
+  border: 1px solid var(--lia-border-strong);
+  box-shadow: var(--lia-inset-top), 0 10px 28px rgba(0, 0, 0, 0.32);
+  backdrop-filter: var(--lia-blur);
+  -webkit-backdrop-filter: var(--lia-blur);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.controles-input:focus-within {
+  border-color: var(--lia-accent-border);
+  box-shadow: var(--lia-inset-top), 0 0 0 2px rgba(34, 211, 238, 0.12);
 }
 
 .hud-input {
   flex: 1;
-  background: #060d1a;
-  border: 1px solid rgba(0,255,255,0.2);
-  color: #00ffff;
-  padding: 10px;
-  border-radius: 8px;
-  font-family: inherit;
-  box-shadow: inset 2px 2px 5px rgba(0,0,0,0.8);
+  min-width: 0;
+  height: 42px;
+  min-height: 42px;
+  max-height: 100px;
+  padding: 11px 8px;
+  line-height: 20px;
+  background: transparent;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  resize: none;
+  overflow-y: auto;
+  box-sizing: border-box;
+  color: var(--lia-text-strong);
+  font-family: var(--lia-font-sans);
+  font-size: 13px;
 }
 
-/* =========================================
-   MODO VENTANA FLOTANTE (Mini-HUD L-IA)
-   ========================================= */
+.hud-input::placeholder {
+  color: var(--lia-muted);
+}
+
+.btn-composer {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  margin-bottom: 3px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  color: var(--lia-muted);
+}
+
+.btn-composer:hover {
+  background: var(--lia-surface-hover);
+  border-color: transparent;
+  color: var(--lia-text-strong);
+}
+
+.btn-composer-mic.escuchando {
+  color: var(--lia-danger-soft);
+  background: rgba(244, 63, 94, 0.16);
+  border-color: rgba(244, 63, 94, 0.42);
+}
+
+.btn-composer-detener {
+  color: var(--lia-danger-soft);
+  background: rgba(244, 63, 94, 0.16);
+  border-color: rgba(244, 63, 94, 0.42);
+}
+
+.btn-composer-detener:hover {
+  background: var(--lia-danger);
+  border-color: var(--lia-danger);
+  color: #ffffff;
+}
+
+.btn-composer-enviar {
+  background: var(--lia-accent-soft);
+  color: var(--lia-accent);
+  border-color: var(--lia-accent-border);
+}
+
+.btn-composer-enviar:hover:not(:disabled) {
+  background: var(--lia-accent);
+  border-color: var(--lia-accent);
+  color: #061018;
+}
+
+.btn-composer-enviar:disabled {
+  background: transparent;
+  border-color: transparent;
+  color: var(--lia-muted);
+  opacity: 0.35;
+}
+
+/* ==========================================================================
+   OVERLAY DRAG & DROP
+   ========================================================================== */
+.capa-drag {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 14, 23, 0.78);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 2px dashed var(--lia-accent);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  color: var(--lia-accent);
+  pointer-events: none;
+}
+
+.capa-drag p {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--lia-text-strong);
+}
+
+/* ==========================================================================
+   PANEL LATERAL (GESTOR DE SESIONES / DRAWER)
+   ========================================================================== */
+.panel.lateral-izquierdo {
+  height: 90vh;
+  padding: 14px;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-nueva-sesion {
+  padding: 5px 9px;
+  border-radius: 7px;
+  gap: 4px;
+  font-family: var(--lia-font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--lia-accent-soft);
+  color: var(--lia-accent);
+  border-color: var(--lia-accent-border);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.btn-nueva-sesion:hover:not(:disabled) {
+  background: var(--lia-accent);
+  border-color: var(--lia-accent);
+  color: #061018;
+}
+
+.lista-sesiones {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  padding-right: 3px;
+}
+
+.item-sesion {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--lia-border);
+  padding: 9px 10px;
+  border-radius: 8px;
+  cursor: default;
+  transition: background 0.16s ease, border-color 0.16s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.item-sesion.clickeable {
+  cursor: pointer;
+}
+
+.item-sesion.clickeable:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--lia-border-strong);
+}
+
+.item-sesion.activa {
+  background: var(--lia-accent-soft);
+  border-color: var(--lia-accent-border);
+}
+
+.sesion-editar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+}
+
+.sesion-editar-input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(7, 11, 20, 0.85);
+  color: var(--lia-text-strong);
+  border: 1px solid var(--lia-accent-border);
+  border-radius: 6px;
+  padding: 4px 7px;
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.btn-sesion-confirmar,
+.btn-sesion-cancelar {
+  padding: 4px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.btn-sesion-confirmar {
+  color: var(--lia-success);
+}
+
+.btn-sesion-confirmar:hover {
+  color: var(--lia-success);
+  background: rgba(52, 211, 153, 0.14);
+  border-color: transparent;
+}
+
+.btn-sesion-cancelar {
+  color: var(--lia-danger-soft);
+}
+
+.btn-sesion-cancelar:hover {
+  color: var(--lia-danger);
+  background: rgba(244, 63, 94, 0.14);
+  border-color: transparent;
+}
+
+.sesion-fila {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  gap: 8px;
+}
+
+.sesion-titulo-wrap {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  color: var(--lia-text);
+  font-size: 12.5px;
+}
+
+.item-sesion.activa .sesion-titulo-wrap {
+  color: var(--lia-text-strong);
+  font-weight: 600;
+}
+
+.sesion-titulo-wrap svg {
+  flex-shrink: 0;
+  color: var(--lia-muted);
+}
+
+.item-sesion.activa .sesion-titulo-wrap svg {
+  color: var(--lia-accent);
+}
+
+.sesion-titulo-wrap span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+
+.acciones-sesion {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+
+.item-sesion:hover .acciones-sesion {
+  opacity: 1;
+}
+
+.btn-sesion-accion {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--lia-muted);
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.btn-sesion-accion.editar:hover {
+  color: var(--lia-accent);
+  background: var(--lia-accent-soft);
+}
+
+.btn-sesion-accion.eliminar:hover {
+  color: var(--lia-danger);
+  background: rgba(244, 63, 94, 0.14);
+}
+
+.sesion-workspace {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding-left: 20px;
+  font-family: var(--lia-font-mono);
+  font-size: 10px;
+  color: var(--lia-success);
+}
+
+.sesion-workspace svg {
+  flex-shrink: 0;
+}
+
+.sesion-workspace span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ==========================================================================
+   PANEL DERECHO (TELEMETRÍA)
+   ========================================================================== */
+.panel.lateral-derecho {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ==========================================================================
+   MODALES GLASS (NIVEL 2 Y DESAMBIGUACIÓN DE ARCHIVOS)
+   ========================================================================== */
+.modal-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 6, 12, 0.72);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  z-index: 100;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 18px;
+}
+
+.modal-overlay-archivos {
+  z-index: 10000;
+}
+
+.modal-drag-wrap {
+  width: 90%;
+  max-width: 390px;
+}
+
+.modal-semaforo {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--lia-surface-elevated);
+  border: 1px solid rgba(244, 63, 94, 0.42);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(244, 63, 94, 0.12);
+  border-radius: 14px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.modal-archivos {
+  width: 92%;
+  max-width: 560px;
+  border-color: rgba(34, 211, 238, 0.35);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.72), var(--lia-inset-top);
+}
+
+.modal-cabecera-arrastre {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.modal-cabecera-arrastre:active {
+  cursor: grabbing;
+}
+
+.modal-cabecera-archivos {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.modal-icono-alerta,
+.modal-icono-archivos {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-icono-alerta {
+  background: rgba(244, 63, 94, 0.14);
+  border: 1px solid rgba(244, 63, 94, 0.35);
+  color: var(--lia-danger-soft);
+}
+
+.modal-icono-archivos {
+  background: var(--lia-accent-soft);
+  border: 1px solid var(--lia-accent-border);
+  color: var(--lia-accent);
+}
+
+.modal-titulo-alerta {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--lia-danger-soft);
+  text-align: center;
+}
+
+.modal-titulo-archivos {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--lia-accent);
+  text-align: center;
+}
+
+.modal-texto {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--lia-muted);
+  text-align: center;
+}
+
+.codigo-alerta {
+  background: rgba(244, 63, 94, 0.08);
+  color: var(--lia-danger-soft);
+  border: 1px solid rgba(244, 63, 94, 0.24);
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-family: var(--lia-font-mono);
+  font-size: 12px;
+  width: 100%;
+  box-sizing: border-box;
+  word-wrap: break-word;
+  text-align: center;
+}
+
+.codigo-alerta-pre {
+  background: var(--lia-code-bg);
+  color: var(--lia-text);
+  border: 1px solid var(--lia-border);
+  text-align: left;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  max-height: 165px;
+  overflow-y: auto;
+  font-size: 11.5px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.lista-archivos-opciones {
+  max-height: 280px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+.opcion-archivo-btn {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--lia-border);
+  border-radius: 9px;
+  padding: 10px 12px;
+  cursor: pointer;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.opcion-archivo-btn:hover {
+  background: var(--lia-accent-soft);
+  border-color: var(--lia-accent-border);
+}
+
+.opcion-archivo-nombre {
+  color: var(--lia-text-strong);
+  font-size: 13px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.opcion-archivo-ruta {
+  font-family: var(--lia-font-mono);
+  color: var(--lia-muted);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.opcion-archivo-meta {
+  display: flex;
+  gap: 14px;
+  font-family: var(--lia-font-mono);
+  color: var(--lia-success);
+  font-size: 10.5px;
+  margin-top: 2px;
+}
+
+.botones-alerta {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  margin-top: 6px;
+}
+
+.botones-alerta button {
+  flex: 1;
+  padding: 9px 12px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+
+.btn-denegar {
+  background: rgba(244, 63, 94, 0.1);
+  border: 1px solid rgba(244, 63, 94, 0.42);
+  color: var(--lia-danger-soft);
+}
+
+.btn-denegar:hover {
+  background: rgba(244, 63, 94, 0.22);
+  color: #ffffff;
+}
+
+.btn-autorizar {
+  background: var(--lia-accent);
+  border: 1px solid var(--lia-accent-border);
+  color: #061018;
+  font-weight: 700;
+}
+
+.btn-autorizar:hover {
+  filter: brightness(1.08);
+}
+
+/* ==========================================================================
+   SCROLLBAR DELGADO TRANSLÚCIDO (4px)
+   ========================================================================== */
+.chat-terminal::-webkit-scrollbar,
+.custom-scrollbar::-webkit-scrollbar,
+.lista-sesiones::-webkit-scrollbar,
+.codigo-alerta-pre::-webkit-scrollbar,
+.lista-archivos-opciones::-webkit-scrollbar {
+  width: var(--lia-scroll-width);
+}
+
+.chat-terminal::-webkit-scrollbar-track,
+.custom-scrollbar::-webkit-scrollbar-track,
+.lista-sesiones::-webkit-scrollbar-track,
+.codigo-alerta-pre::-webkit-scrollbar-track,
+.lista-archivos-opciones::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-terminal::-webkit-scrollbar-thumb,
+.custom-scrollbar::-webkit-scrollbar-thumb,
+.lista-sesiones::-webkit-scrollbar-thumb,
+.codigo-alerta-pre::-webkit-scrollbar-thumb,
+.lista-archivos-opciones::-webkit-scrollbar-thumb {
+  background: var(--lia-scroll-thumb);
+  border-radius: 999px;
+}
+
+.chat-terminal:hover::-webkit-scrollbar-thumb,
+.custom-scrollbar:hover::-webkit-scrollbar-thumb,
+.lista-sesiones:hover::-webkit-scrollbar-thumb,
+.codigo-alerta-pre:hover::-webkit-scrollbar-thumb,
+.lista-archivos-opciones:hover::-webkit-scrollbar-thumb {
+  background: var(--lia-scroll-thumb-hover);
+}
+
+/* ==========================================================================
+   MODO VENTANA FLOTANTE (Mini-HUD 450 x 700 px) + DRAWER
+   ========================================================================== */
 @media (max-width: 800px) {
   .hud-container {
     display: flex;
     flex-direction: column;
     width: 100vw;
     height: 100vh;
-    padding: 10px;
-    box-sizing: border-box;
-    gap: 10px;
+    padding: 0;
+    gap: 0;
     margin: 0;
   }
 
-  .panel:not(:has(.chat-terminal)) {
+  .panel.lateral-derecho {
     display: none;
   }
 
-  .panel:has(.chat-terminal) {
-    flex: 1;
-    border: 1px solid rgba(0, 255, 255, 0.4);
-    box-shadow: inset 0 0 15px rgba(0, 255, 255, 0.1);
-  }
-
-  .chat-terminal {
-    flex: 1;
-    min-height: 0;
-    padding: 10px;
-  }
-
-  .particula { transform-origin: center; }
-}
-
-/* Scrollbar futurista (aplica a ambas interfaces) */
-.chat-terminal::-webkit-scrollbar {
-  width: 6px;
-}
-.chat-terminal::-webkit-scrollbar-track {
-  background: rgba(0, 20, 30, 0.4);
-}
-.chat-terminal::-webkit-scrollbar-thumb {
-  background: #00ffff;
-  border-radius: 3px;
-}
-
-/* ESTRUCTURA DEL PANEL CENTRAL */
-.panel.central {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  padding: 15px;
-  box-sizing: border-box;
-  overflow: hidden;
-}
-
-.controles-input {
-  flex-shrink: 0;
-  margin-top: 15px;
-}
-
-/* EL CUADRO OSCURO SCROLLABLE */
-.chat-terminal {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  border: 1px solid rgba(0,255,255,0.2);
-  background: rgba(0,0,0,0.6);
-  padding: 15px;
-  border-radius: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 15px;
-}
-
-/* ESTILOS DE LOS MENSAJES Y MARKDOWN */
-.burbuja-mensaje {
-  display: flex;
-  flex-direction: column;
-  padding: 8px 12px;
-  border-radius: 5px;
-  max-width: 95%;
-  word-wrap: break-word;
-}
-
-.burbuja-mensaje.usuario {
-  align-self: flex-end;
-  background: rgba(0, 255, 255, 0.05);
-  color: #fff;
-}
-
-.burbuja-mensaje.ia {
-  align-self: flex-start;
-  background: transparent;
-  color: #00ffff;
-}
-
-.burbuja-mensaje.sistema {
-  align-self: flex-start;
-  color: #ff00ff;
-  opacity: 0.8;
-}
-
-.remitente {
-  font-size: 11px;
-  opacity: 0.6;
-  margin-bottom: 4px;
-}
-
-/* Formato de Markdown para parecer IA profesional */
-.contenido-markdown p { margin: 0 0 8px 0; }
-.contenido-markdown pre {
-  background: #060d1a;
-  padding: 10px;
-  border-radius: 5px;
-  border: 1px solid rgba(0, 255, 255, 0.2);
-  overflow-x: auto;
-  color: #aaddff;
-}
-.contenido-markdown code {
-  background: rgba(0, 0, 0, 0.5);
-  padding: 2px 4px;
-  border-radius: 3px;
-  font-family: 'Consolas', monospace;
-}
-.contenido-markdown ul, .contenido-markdown ol { margin: 0; padding-left: 20px; }
-
-/* ==============================
-   MODAL SEMÁFORO (NIVEL 2)
-   ============================== */
-.modal-overlay {
-  position: absolute;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0, 5, 10, 0.85);
-  backdrop-filter: blur(10px);
-  z-index: 100;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-}
-
-.modal-semaforo {
-  background: #030811;
-  border: 1px solid #ff0055;
-  box-shadow: 0 0 30px rgba(255, 0, 85, 0.2), inset 0 0 20px rgba(255, 0, 85, 0.1);
-  border-radius: 10px;
-  padding: 30px;
-  width: 85%;
-  max-width: 400px;
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.codigo-alerta {
-  background: #000;
-  color: #ff0055;
-  border: 1px dashed rgba(255, 0, 85, 0.5);
-  padding: 10px;
-  border-radius: 5px;
-  font-family: 'Consolas', monospace;
-  font-size: 13px;
-  width: 100%;
-  word-wrap: break-word;
-}
-
-.botones-alerta {
-  display: flex;
-  gap: 15px;
-  width: 100%;
-  margin-top: 25px;
-}
-
-.botones-alerta button {
-  flex: 1;
-  padding: 12px;
-  font-family: inherit;
-  font-weight: bold;
-  letter-spacing: 1px;
-  border-radius: 5px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.btn-denegar {
-  background: transparent;
-  border: 1px solid #ff0055;
-  color: #ff0055;
-}
-.btn-denegar:hover {
-  background: rgba(255, 0, 85, 0.1);
-  box-shadow: 0 0 15px rgba(255, 0, 85, 0.4);
-}
-
-.btn-autorizar {
-  background: #00ffff;
-  border: none;
-  color: #030811;
-}
-.btn-autorizar:hover {
-  box-shadow: 0 0 20px rgba(0, 255, 255, 0.6);
-  transform: translateY(-2px);
-}
-
-/* ==============================
-   ETIQUETAS HOLOGRÁFICAS (HUD)
-   ============================== */
-.badge-origen, .badge-doc {
-  font-size: 9px;
-  padding: 3px 6px;
-  border-radius: 4px;
-  font-family: 'Consolas', monospace;
-  font-weight: bold;
-  letter-spacing: 1px;
-  white-space: nowrap;
-  box-shadow: 0 0 10px rgba(0,0,0,0.5);
-}
-
-.badge-origen.local {
-  background: rgba(0, 255, 255, 0.1);
-  color: #00ffff;
-  border: 1px solid #00ffff;
-}
-
-.badge-origen.nube {
-  background: rgba(170, 0, 255, 0.1);
-  color: #c44dff;
-  border: 1px solid #c44dff;
-}
-
-.badge-origen.dolphin {
-  background: rgba(255, 0, 85, 0.1);
-  color: #ff0055;
-  border: 1px solid #ff0055;
-}
-
-.badge-doc {
-  background: rgba(255, 170, 0, 0.1);
-  color: #ffaa00;
-  border: 1px solid rgba(255, 170, 0, 0.6);
-  max-width: 150px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* =========================================
-   SCROLLBAR CIBERPUNK PARA EL TEXTAREA
-   ========================================= */
-.custom-scrollbar::-webkit-scrollbar {
-  width: 6px;
-}
-
-.custom-scrollbar::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.3);
-  border-radius: 4px;
-}
-
-.custom-scrollbar::-webkit-scrollbar-thumb {
-  background: #00ffff;
-  border-radius: 4px;
-  opacity: 0.8;
-}
-
-.custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #00cccc;
-}
-
-/* =========================================
-   ESTILO PARA MENSAJES CANCELADOS
-   ========================================= */
-.burbuja-mensaje.mensaje-abortado {
-  opacity: 0.35;
-  filter: grayscale(0.8);
-  border: 1px dashed rgba(255, 0, 85, 0.4);
-  transition: all 0.3s ease;
-}
-
-.burbuja-mensaje.mensaje-abortado .contenido-markdown {
-  color: rgba(255, 255, 255, 0.5) !important;
-}
-
-/* ARRASTAR ARCHIVOS (Fusionado) */
-.capa-drag {
-  position: absolute; 
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(255, 0, 255, 0.15); 
-  backdrop-filter: blur(8px);
-  border: 2px dashed #ff00ff; 
-  z-index: 9999; 
-  display: flex; flex-direction: column;
-  justify-content: center; align-items: center; 
-  color: #00ffaa;
-
-  /* ESTA ES LA LÍNEA MÁGICA */
-  pointer-events: none; 
-}
-
-/* =========================================
-   PANEL LATERAL (GESTOR DE SESIONES)
-   ========================================= */
-.lateral-izquierdo {
-  display: flex;
-  flex-direction: column;
-  gap: 15px;
-  overflow: hidden;
-}
-
-.lista-sesiones {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  overflow-y: auto;
-  flex: 1;
-  padding-right: 5px;
-}
-
-/* Efecto hover cibernético para las sesiones inactivas */
-.lista-sesiones > div:hover {
-  background: rgba(0, 255, 255, 0.05) !important;
-  border-color: rgba(0, 255, 255, 0.3) !important;
-  transform: translateX(3px);
-}
-
-/* Título de la sesión (recorte si es muy largo) */
-.lista-sesiones span {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
-}
-
-/* =========================================
-   PANEL DERECHO (RESERVADO / TELEMETRÍA)
-   ========================================= */
-.lateral-derecho {
-  display: flex;
-  flex-direction: column;
-}
-
-/* =========================================
-   SIDEBAR: botón y fondo (ocultos en pantalla ancha)
-   ========================================= */
-.btn-menu-sidebar,
-.sidebar-backdrop {
-  display: none;
-}
-
-/* En pantalla ancha el panel izquierdo no debe desbordar el grid */
-.panel.lateral-izquierdo {
-  height: 90vh;
-  box-sizing: border-box;
-  min-height: 0;
-}
-
-/* =========================================
-   SIDEBAR COMO DRAWER EN MODO MINI-HUD
-   ========================================= */
-@media (max-width: 800px) {
   .panel.central {
-    position: relative;
-    height: auto;
+    flex: 1;
+    height: 100%;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    padding: 0;
+  }
+
+  .panel.central .nucleo-wrapper {
+    margin-top: 10px;
+    margin-bottom: 6px;
+  }
+
+  .aureola-voz,
+  .onda-escucha {
+    width: 150px;
+    height: 150px;
+  }
+
+  .particula {
+    transform-origin: center;
   }
 
   .btn-menu-sidebar {
-    display: flex;
+    display: inline-flex;
     position: absolute;
     top: 12px;
     left: 12px;
-    z-index: 5;
-    padding: 8px;
+    z-index: 10;
+    width: 34px;
+    height: 34px;
+    padding: 0;
   }
 
-  /* Este bloque va después del "display: none" de los paneles,
-     con igual especificidad, para que gane por orden */
   .panel.lateral-izquierdo {
     display: flex;
     position: fixed;
@@ -562,53 +1329,36 @@
     left: 0;
     bottom: 0;
     height: 100vh;
-    width: 260px;
-    max-width: 80vw;
+    width: 268px;
+    max-width: 82vw;
     z-index: 200;
-    background: #030811;
-    border-radius: 0 10px 10px 0;
+    background: var(--lia-surface-elevated);
+    border: none;
+    border-right: 1px solid var(--lia-border-strong);
+    border-radius: 0 14px 14px 0;
     transform: translateX(-105%);
-    transition: transform 0.25s ease;
+    transition: transform 0.24s ease;
   }
 
   .panel.lateral-izquierdo.abierto {
     transform: translateX(0);
-    box-shadow: 0 0 30px rgba(0, 255, 255, 0.2);
+    box-shadow: 18px 0 40px rgba(0, 0, 0, 0.55);
   }
 
   .sidebar-backdrop {
     display: block;
     position: fixed;
     inset: 0;
-    background: rgba(0, 5, 10, 0.6);
+    background: rgba(4, 6, 12, 0.58);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
     z-index: 150;
   }
 }
 
-/* Oculta los botones de edición/borrado por defecto */
-.item-sesion .acciones-sesion {
-  opacity: 0;
-  transition: opacity 0.2s ease;
-}
-
-/* Los muestra al pasar el ratón */
-.item-sesion:hover .acciones-sesion {
-  opacity: 1;
-}
-
-/* Efecto hover ligero para los propios botones */
-.acciones-sesion button:hover {
-  transform: scale(1.15);
-}
-
-/* =========================================
+/* ==========================================================================
    REGLAS DE ARRASTRE PARA TAURI
-   ========================================= */
-
-/* ELIMINADO: .panel { -webkit-app-region: drag; } para evitar congelamientos del sistema */
-
-/* DESACTIVAR ARRASTRE EN ELEMENTOS INTERACTIVOS:
-   (Es buena práctica dejar esto como seguridad extra para evitar bugs al seleccionar texto) */
+   ========================================================================== */
 button,
 input,
 textarea,
@@ -618,69 +1368,49 @@ a,
 .lista-sesiones,
 .item-sesion,
 .modal-semaforo,
+.modal-archivos,
 .burbuja-mensaje,
+.bloque-codigo,
+.workspace-chip,
+.controles-input,
 .hud-btn,
 .hud-input,
 .custom-scrollbar {
   -webkit-app-region: no-drag;
 }
 
-.franja-grip {
-  width: 60px;
-  height: 4px;
-  border-radius: 999px;
-  background: rgba(0, 229, 255, 0.25);
-  transition: background 0.2s, box-shadow 0.2s;
-  pointer-events: none;
-}
-
-.franja-arrastre:hover .franja-grip {
-  background: rgba(0, 229, 255, 0.8);
-  box-shadow: 0 0 8px rgba(0, 229, 255, 0.6);
-}
-
-/* =========================================
+/* ==========================================================================
    BOTÓN DE LECTURA EN VOZ ALTA
-   (ponlo al final: debe ir después de .hud-btn para ganar por orden)
-   ========================================= */
+   (después de .hud-btn para conservar prioridad por orden de cascada)
+   ========================================================================== */
 .btn-leer {
   margin-left: auto;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 6px;
-  font-size: 10px;
-  color: #00ffff;
-  background: none;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-family: var(--lia-font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--lia-muted);
+  background: transparent;
   border: 1px solid transparent;
   box-shadow: none;
-  transition: all 0.2s ease;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transition: all 0.16s ease;
 }
 
 .btn-leer:hover {
-  border-color: rgba(0, 255, 255, 0.4);
+  color: var(--lia-text-strong);
+  background: var(--lia-surface-hover);
+  border-color: var(--lia-border);
 }
 
 .btn-leer.leyendo {
-  color: #ff0055;
-  border-color: #ff0055;
-  background: rgba(255, 0, 85, 0.1);
+  color: var(--lia-danger-soft);
+  border-color: rgba(244, 63, 94, 0.38);
+  background: rgba(244, 63, 94, 0.12);
 }
-
-.aureola-escucha {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-}
-.aureola-voz,
-.onda-escucha {
-  position: absolute;
-  width: 200px;   /* ajústalo al tamaño de tu .anillo-exterior */
-  height: 200px;
-  border-radius: 50%;
-  border: 2px solid;
-}
-.onda-escucha { border-width: 1px; }

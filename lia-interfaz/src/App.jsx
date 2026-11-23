@@ -4,7 +4,7 @@ import './App.css'
 import './NucleoColapso.css'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import { Mic, Paperclip, Terminal, Cpu, Database, Upload, AlertTriangle, Activity, ShieldAlert, MessageSquare, Plus, Folder, Pencil, Trash2, Check, X, Menu, Volume2, VolumeX } from 'lucide-react'
+import { Mic, Paperclip, Terminal, Cpu, Database, Upload, AlertTriangle, Activity, ShieldAlert, MessageSquare, Plus, Folder, Pencil, Trash2, Check, X, Menu, Volume2, VolumeX, Copy, Square } from 'lucide-react'
 import { motion, AnimatePresence, useDragControls, useMotionValue, useTransform } from 'framer-motion'
 import ColapsoSistema from './ColapsoSistema'
 import { invoke } from '@tauri-apps/api/core';
@@ -708,18 +708,7 @@ function BloqueDeCodigo({ node, className, children, ...props }) {
 
   if (!esBloque) {
     return (
-      <code
-        style={{
-          background: 'rgba(0, 255, 255, 0.12)',
-          color: '#39ff88',
-          padding: '2px 6px',
-          borderRadius: '4px',
-          fontSize: '13px',
-          fontFamily: 'monospace',
-          border: '1px solid rgba(0, 255, 255, 0.25)'
-        }}
-        {...props}
-      >
+      <code className="codigo-inline" {...props}>
         {children}
       </code>
     )
@@ -736,32 +725,17 @@ function BloqueDeCodigo({ node, className, children, ...props }) {
   }
 
   return (
-    <div style={{ position: 'relative', marginTop: '12px', marginBottom: '12px', borderRadius: '6px', overflow: 'hidden', border: '1px solid rgba(0,255,255,0.2)' }}>
-      <div style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        background: '#041c26',
-        padding: '6px 12px',
-        borderBottom: '1px solid rgba(0,255,255,0.1)'
-      }}>
-        <span style={{ color: '#00ffff', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1px', opacity: 0.8 }}>
+    <div className="bloque-codigo">
+      <div className="bloque-codigo-header">
+        <span className="bloque-codigo-lang">
           {lenguaje}
         </span>
         <button
           type="button"
           onClick={manejarCopia}
-          style={{
-            background: 'none',
-            border: 'none',
-            color: copiado ? '#39ff88' : '#00ffff',
-            cursor: 'pointer',
-            fontSize: '11px',
-            letterSpacing: '1px',
-            transition: 'all 0.2s'
-          }}
+          className={`bloque-codigo-copiar ${copiado ? 'copiado' : ''}`}
         >
-          {copiado ? '✓ COPIADO' : 'COPIAR'}
+          {copiado ? <><Check size={12} /> COPIADO</> : <><Copy size={12} /> COPIAR</>}
         </button>
       </div>
 
@@ -772,10 +746,10 @@ function BloqueDeCodigo({ node, className, children, ...props }) {
         PreTag="div"
         customStyle={{
           margin: 0,
-          padding: '14px',
-          background: '#010a0f',
-          fontSize: '13px',
-          lineHeight: '1.4'
+          padding: '12px 14px',
+          background: 'transparent',
+          fontSize: '12.5px',
+          lineHeight: '1.5'
         }}
       >
         {codigoString}
@@ -1476,66 +1450,44 @@ export default function App() {
       <div
         data-tauri-drag-region
         className="franja-arrastre"
-        style={{
-          position: 'fixed',
-          top: 0,
-          left: 'calc(50% - 90px)',
-          width: '180px',
-          height: '30px',
-          zIndex: 50,
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center'
-        }}
       >
         <div className="franja-grip" data-tauri-drag-region />
       </div>
 
       {/* CAPA DE DRAG & DROP */}
       {isDragging && (
-        <div className="capa-drag" style={{ pointerEvents: 'none' }}>
+        <div className="capa-drag">
           <Upload size={40} />
           <p>Suelta el archivo para ingestarlo</p>
         </div>
       )}
 
       {/* BOTÓN TEMPORAL DE PRUEBA DE COLAPSO */}
-        <button 
-          type="button" 
-          className="hud-btn" 
-          onClick={simularColapsoVisual} 
-          style={{ 
-            position: 'absolute',
-            top: '15px',
-            right: '65px', /* Al lado del botón de voz */
-            zIndex: 10,
-            color: '#ff0000', 
-            borderColor: '#ff0000',
-            boxShadow: 'inset 0 0 10px rgba(255, 0, 0, 0.5)',
-            padding: '8px'
-          }}
+        <button
+          type="button"
+          className="hud-btn btn-debug-colapso"
+          onClick={simularColapsoVisual}
           title="SIMULAR COLAPSO"
         >
-          <ShieldAlert size={20} />
+          <ShieldAlert size={16} />
         </button>
 
       {/* --- SIDEBAR MULTI-SESIÓN --- */}
       {sidebarAbierto && <div className="sidebar-backdrop" onClick={() => setSidebarAbierto(false)} />}
-      <div className={`panel lateral-izquierdo ${sidebarAbierto ? 'abierto' : ''}`} style={{ padding: '15px' }}>
-        <h2 className="hud-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div className={`panel lateral-izquierdo ${sidebarAbierto ? 'abierto' : ''}`}>
+        <h2 className="hud-title sidebar-header">
           HISTORIAL DE CONVERSACIÓN
           <button
             type="button"
             onClick={crearNuevaSesion}
             disabled={cargando}
-            className="hud-btn"
-            style={{ padding: '6px 10px', display: 'flex', alignItems: 'center', gap: '5px', fontSize: '10px' }}
+            className="hud-btn btn-nueva-sesion"
           >
             <Plus size={12} /> NUEVA
           </button>
         </h2>
 
-        <div className="lista-sesiones custom-scrollbar" style={{ display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto', flex: 1 }}>
+        <div className="lista-sesiones custom-scrollbar">
           {sesiones.map(s => {
             const isActiva = s.id === sesionActual
             const nombreArchivo = nombreDeRuta(s.workspace_activo)
@@ -1544,21 +1496,10 @@ export default function App() {
               <div
                 key={s.id}
                 onClick={() => puedeCambiar && cargarContextoSesion(s.id)}
-                className="item-sesion"
-                style={{
-                  background: isActiva ? 'rgba(0, 255, 255, 0.15)' : 'rgba(0, 0, 0, 0.4)',
-                  border: `1px solid ${isActiva ? '#00ffff' : 'rgba(0,255,255,0.1)'}`,
-                  padding: '10px',
-                  borderRadius: '6px',
-                  cursor: puedeCambiar ? 'pointer' : 'default',
-                  transition: 'all 0.2s ease',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '5px'
-                }}
+                className={`item-sesion ${isActiva ? 'activa' : ''} ${puedeCambiar ? 'clickeable' : ''}`}
               >
                 {editandoSesion === s.id ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px', width: '100%' }}>
+                  <div className="sesion-editar-wrap">
                     <input
                       autoFocus
                       value={tituloTemp}
@@ -1570,33 +1511,33 @@ export default function App() {
                         }
                         if (e.key === 'Escape') setEditandoSesion(null)
                       }}
-                      style={{ flex: 1, minWidth: 0, background: '#021017', color: '#00ffff', border: '1px solid #00ffff', borderRadius: '4px', padding: '4px', fontSize: '11px', outline: 'none' }}
+                      className="sesion-editar-input"
                       onClick={e => e.stopPropagation()}
                     />
-                    <button type="button" onClick={(e) => guardarNuevoTitulo(s.id, e)} className="hud-btn" style={{ padding: '4px', border: 'none', flexShrink: 0 }}><Check size={14} color="#39ff88" /></button>
-                    <button type="button" onClick={(e) => { e.stopPropagation(); setEditandoSesion(null) }} className="hud-btn" style={{ padding: '4px', border: 'none', flexShrink: 0 }}><X size={14} color="#ff0055" /></button>
+                    <button type="button" onClick={(e) => guardarNuevoTitulo(s.id, e)} className="hud-btn btn-sesion-confirmar"><Check size={14} /></button>
+                    <button type="button" onClick={(e) => { e.stopPropagation(); setEditandoSesion(null) }} className="hud-btn btn-sesion-cancelar"><X size={14} /></button>
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', gap: '8px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0, color: isActiva ? '#fff' : '#88ccff', fontSize: '12px' }}>
-                      <MessageSquare size={14} style={{ flexShrink: 0 }} />
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: isActiva ? 'bold' : 'normal' }}>
+                  <div className="sesion-fila">
+                    <div className="sesion-titulo-wrap">
+                      <MessageSquare size={13} />
+                      <span>
                         {s.titulo || 'Conversación'}
                       </span>
                     </div>
                     {s.id !== 'default' && (
-                      <div className="acciones-sesion" style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
-                        <button type="button" onClick={(e) => { e.stopPropagation(); setEditandoSesion(s.id); setTituloTemp(s.titulo || '') }} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }} title="Editar Título"><Pencil size={13} color="#00ffff" /></button>
-                        <button type="button" onClick={(e) => eliminarSesion(s.id, e)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }} title="Borrar Historial"><Trash2 size={13} color="#ff0055" /></button>
+                      <div className="acciones-sesion">
+                        <button type="button" className="btn-sesion-accion editar" onClick={(e) => { e.stopPropagation(); setEditandoSesion(s.id); setTituloTemp(s.titulo || '') }} title="Editar Título"><Pencil size={13} /></button>
+                        <button type="button" className="btn-sesion-accion eliminar" onClick={(e) => eliminarSesion(s.id, e)} title="Borrar Historial"><Trash2 size={13} /></button>
                       </div>
                     )}
                   </div>
                 )}
 
                 {nombreArchivo && !editandoSesion && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px', color: '#39ff88', fontSize: '10px', paddingLeft: '22px' }}>
-                    <Folder size={12} style={{ flexShrink: 0 }} />
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nombreArchivo}</span>
+                  <div className="sesion-workspace">
+                    <Folder size={11} />
+                    <span>{nombreArchivo}</span>
                   </div>
                 )}
               </div>
@@ -1620,47 +1561,31 @@ export default function App() {
               dragMomentum={false}
               dragElastic={0}
               dragConstraints={overlayRef}
-              style={{ width: '85%', maxWidth: '400px' }}
+              className="modal-drag-wrap"
             >
               <motion.div
                 className="modal-semaforo"
-                style={{ width: '100%', maxWidth: 'none', boxSizing: 'border-box' }}
                 initial={{ scale: 0.8, y: 50 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.8, opacity: 0 }}
                 transition={{ type: 'spring', bounce: 0.5 }}
               >
                 {/* CABECERA = MANIJA DE ARRASTRE */}
                 <div
                   onPointerDown={(e) => dragControls.start(e)}
-                  style={{
-                    cursor: 'grab',
-                    touchAction: 'none',
-                    userSelect: 'none',
-                    width: '100%',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center'
-                  }}
+                  className="modal-cabecera-arrastre"
                   title="Arrastra para mover"
                 >
-                  <AlertTriangle color="#ff0055" size={50} style={{ marginBottom: '10px' }} />
-                  <h3 style={{ color: '#ff0055', margin: '0 0 15px 0', letterSpacing: '2px' }}>ALERTA NIVEL 2</h3>
+                  <div className="modal-icono-alerta">
+                    <AlertTriangle size={22} />
+                  </div>
+                  <h3 className="modal-titulo-alerta">ALERTA NIVEL 2</h3>
                 </div>
 
-                <p style={{ color: '#fff', fontSize: '14px', marginBottom: '10px' }}>L-IA requiere autorización crítica para ejecutar:</p>
+                <p className="modal-texto">L-IA requiere autorización crítica para ejecutar:</p>
 
                 <div className="codigo-alerta">{semaforo.herramienta}</div>
-                <p style={{ color: '#fff', fontSize: '14px', margin: '15px 0 10px 0' }}>Argumentos detectados:</p>
+                <p className="modal-texto">Argumentos detectados:</p>
 
-                <pre className="codigo-alerta custom-scrollbar" style={{
-                  whiteSpace: 'pre-wrap',
-                  wordWrap: 'break-word',
-                  textAlign: 'left',
-                  maxHeight: '180px',
-                  overflowY: 'auto',
-                  fontSize: '13px',
-                  lineHeight: '1.5',
-                  margin: '0 0 20px 0'
-                }}>
+                <pre className="codigo-alerta codigo-alerta-pre custom-scrollbar">
                   {(() => {
                     if (!semaforo.argumentos) return 'Ninguno'
                     try {
@@ -1688,55 +1613,42 @@ export default function App() {
       <AnimatePresence>
         {semaforoArchivos.activa && (
           <motion.div
-            className="modal-overlay"
+            className="modal-overlay modal-overlay-archivos"
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            style={{ zIndex: 10000 }}
           >
             <motion.div
-              className="modal-semaforo"
-              style={{ width: '90%', maxWidth: '600px', boxSizing: 'border-box' }}
+              className="modal-semaforo modal-archivos"
               initial={{ scale: 0.8, y: 50 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.8, opacity: 0 }}
               transition={{ type: 'spring', bounce: 0.5 }}
             >
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                <Folder color="#00ffff" size={40} style={{ marginBottom: '10px' }} />
-                <h3 style={{ color: '#00ffff', margin: '0 0 15px 0', letterSpacing: '2px', textAlign: 'center' }}>
+              <div className="modal-cabecera-archivos">
+                <div className="modal-icono-archivos">
+                  <Folder size={22} />
+                </div>
+                <h3 className="modal-titulo-archivos">
                   MÚLTIPLES ARCHIVOS ENCONTRADOS
                 </h3>
               </div>
 
-              <p style={{ color: '#fff', fontSize: '13px', marginBottom: '15px', textAlign: 'center' }}>
+              <p className="modal-texto">
                 Se encontraron {semaforoArchivos.opciones.length} coincidencias. Selecciona el archivo exacto que deseas leer:
               </p>
 
-              <div className="custom-scrollbar" style={{ maxHeight: '300px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
+              <div className="lista-archivos-opciones custom-scrollbar">
                 {semaforoArchivos.opciones.map((archivo, idx) => (
                   <button
                     key={idx}
                     type="button"
                     onClick={() => responderSemaforoArchivos(archivo.ruta)}
-                    style={{
-                      background: 'rgba(0, 0, 0, 0.4)',
-                      border: '1px solid rgba(0, 255, 255, 0.3)',
-                      borderRadius: '6px',
-                      padding: '12px',
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                      transition: 'all 0.2s',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '4px'
-                    }}
-                    onMouseOver={(e) => e.currentTarget.style.background = 'rgba(0, 255, 255, 0.15)'}
-                    onMouseOut={(e) => e.currentTarget.style.background = 'rgba(0, 0, 0, 0.4)'}
+                    className="opcion-archivo-btn"
                   >
-                    <span style={{ color: '#00ffff', fontSize: '13px', fontWeight: 'bold', wordBreak: 'break-all' }}>
+                    <span className="opcion-archivo-nombre">
                       {archivo.ruta.split(/[\\/]/).pop()}
                     </span>
-                    <span style={{ color: '#88ccff', fontSize: '11px', wordBreak: 'break-all' }}>
+                    <span className="opcion-archivo-ruta">
                       Ruta: {archivo.ruta}
                     </span>
-                    <div style={{ display: 'flex', gap: '15px', color: '#39ff88', fontSize: '11px', marginTop: '4px' }}>
+                    <div className="opcion-archivo-meta">
                       <span>🗓️ {archivo.fecha}</span>
                       <span>⚖️ {archivo.tamano_kb.toFixed(2)} KB</span>
                     </div>
@@ -1744,7 +1656,7 @@ export default function App() {
                 ))}
               </div>
 
-              <div className="botones-alerta" style={{ justifyContent: 'center' }}>
+              <div className="botones-alerta">
                 <button type="button" className="btn-denegar" onClick={() => responderSemaforoArchivos(null)}>
                   CANCELAR BÚSQUEDA
                 </button>
@@ -1755,33 +1667,21 @@ export default function App() {
       </AnimatePresence>
 
       {/* --- PANEL CENTRAL --- */}
-      <div className="panel central" style={{ position: 'relative' }}>
+      <div className="panel central">
         
         {/* MENÚ LATERAL (Izquierda) */}
         <button type="button" className="hud-btn btn-menu-sidebar" onClick={() => setSidebarAbierto(true)} title="Sesiones">
-          <Menu size={18} />
+          <Menu size={16} />
         </button>
 
         {/* INTERRUPTOR GLOBAL DE VOZ (Derecha) */}
-        <button 
-          type="button" 
-          className="hud-btn" 
-          onClick={alternarVozGlobal} 
-          style={{ 
-            position: 'absolute',
-            top: '15px',
-            right: '15px',
-            zIndex: 10,
-            color: vozGlobal ? '#39ff88' : '#00ffff', 
-            opacity: vozGlobal ? 1 : 0.5,
-            borderColor: vozGlobal ? '#39ff88' : 'transparent',
-            boxShadow: vozGlobal ? 'inset 0 0 10px rgba(57, 255, 136, 0.2)' : 'none',
-            transition: 'all 0.2s ease',
-            padding: '8px'
-          }}
+        <button
+          type="button"
+          className={`hud-btn btn-voz-global ${vozGlobal ? 'activo' : ''}`}
+          onClick={alternarVozGlobal}
           title={vozGlobal ? "Respuestas por voz ACTIVADAS" : "Respuestas por voz DESACTIVADAS"}
         >
-          {vozGlobal ? <Volume2 size={20} /> : <VolumeX size={20} />}
+          {vozGlobal ? <Volume2 size={16} /> : <VolumeX size={16} />}
         </button>
 
         <NucleoLIA estado={estadoLIA} mensajeEspera={mensajeEspera} />
@@ -1792,42 +1692,23 @@ export default function App() {
               initial={{ opacity: 0, y: -8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '10px',
-                margin: '0 0 8px 0',
-                padding: '6px 12px',
-                background: 'rgba(57, 255, 136, 0.08)',
-                border: '1px solid rgba(57, 255, 136, 0.35)',
-                borderRadius: '6px',
-                color: '#39ff88',
-                fontSize: '12px',
-                letterSpacing: '1px'
-              }}
+              className="workspace-chip"
             >
               <motion.span
-                style={{
-                  width: '8px',
-                  height: '8px',
-                  borderRadius: '50%',
-                  background: '#39ff88',
-                  boxShadow: '0 0 8px #39ff88',
-                  flexShrink: 0
-                }}
+                className="workspace-chip-dot"
                 animate={{ opacity: [0.5, 1, 0.5] }}
                 transition={{ repeat: Infinity, duration: 1.6, ease: 'easeInOut' }}
               />
-              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span className="workspace-chip-texto">
                 TRABAJANDO EN: {workspaceActivo}
               </span>
               <button
                 type="button"
                 onClick={limpiarWorkspace}
                 title="Liberar workspace"
-                style={{ background: 'none', border: 'none', color: '#ff0055', cursor: 'pointer', fontSize: '14px' }}
+                className="workspace-chip-cerrar"
               >
-                ✕
+                <X size={13} />
               </button>
             </motion.div>
           )}
@@ -1839,17 +1720,18 @@ export default function App() {
             const esUltimo = idx === mensajes.length - 1
             const leyendo = idLeyendo === msg.id
             const puedeLeerse = msg.rol === 'ia' && !msg.cancelado && msg.texto && !(cargando && esUltimo)
+            const origenClase = msg.origen ? msg.origen.toLowerCase() : ''
 
             return (
-              <div key={msg.id} className={`burbuja-mensaje ${msg.rol} ${msg.cancelado ? 'mensaje-abortado' : ''}`}>
-                <div className="remitente" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                  <span>{msg.rol === 'ia' ? '> L-IA:' : msg.rol === 'sistema' ? '> SYS:' : '> TÚ:'}</span>
+              <div key={msg.id} className={`burbuja-mensaje ${msg.rol}${origenClase ? ` origen-${origenClase}` : ''}${msg.cancelado ? ' mensaje-abortado' : ''}`}>
+                <div className="remitente">
+                  <span className="remitente-nombre">{msg.rol === 'ia' ? '> L-IA:' : msg.rol === 'sistema' ? '> SYS:' : '> TÚ:'}</span>
 
                   {msg.rol === 'ia' && msg.documento && (
                     <span className="badge-doc">📄 {nombreDeRuta(msg.documento)}</span>
                   )}
                   {msg.rol === 'ia' && msg.origen && (
-                    <span className={`badge-origen ${msg.origen}`}>{msg.origen.toUpperCase()}</span>
+                    <span className={`badge-origen ${origenClase}`}>{msg.origen.toUpperCase()}</span>
                   )}
 
                   {puedeLeerse && (
@@ -1890,9 +1772,9 @@ export default function App() {
             accept={EXTENSIONES_VALIDAS.map(e => `.${e}`).join(',')}
             onChange={manejarSeleccionArchivo}
           />
-          <button type="button" className="hud-btn" onClick={manejarClickArchivo}><Paperclip size={18} /></button>
-          <button type="button" className="hud-btn" onClick={manejarMicrofono} title={escuchando ? "Cancelar escucha" : "Activar micrófono"} style={{ color: escuchando ? '#ff0055' : '#00ffff', boxShadow: escuchando ? 'inset 0 0 10px rgba(255,0,85,0.5)' : '' }}>
-            <Mic size={18} />
+          <button type="button" className="hud-btn btn-composer" onClick={manejarClickArchivo} title="Adjuntar archivo"><Paperclip size={17} /></button>
+          <button type="button" className={`hud-btn btn-composer btn-composer-mic ${escuchando ? 'escuchando' : ''}`} onClick={manejarMicrofono} title={escuchando ? "Cancelar escucha" : "Activar micrófono"}>
+            <Mic size={17} />
           </button>
           
           <textarea
@@ -1907,15 +1789,6 @@ export default function App() {
             }}
             readOnly={cargando} // readOnly (no disabled): un textarea disabled no recibe eventos de arrastre
             rows={1}
-            style={{
-              resize: 'none',
-              overflowY: 'auto',
-              height: '42px',
-              padding: '10px 15px',
-              lineHeight: '20px',
-              fontFamily: 'inherit',
-              boxSizing: 'border-box'
-            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
@@ -1927,16 +1800,15 @@ export default function App() {
           {cargando ? (
             <button
               type="button"
-              className="hud-btn"
+              className="hud-btn btn-composer btn-composer-detener"
               onClick={detenerGeneracion}
-              style={{ color: '#ff0055', borderColor: '#ff0055', boxShadow: '0 0 10px rgba(255,0,85,0.5)' }}
               title="Abortar Generación"
             >
-              🛑
+              <Square size={15} />
             </button>
           ) : (
-            <button type="submit" className="hud-btn animado" disabled={!input.trim()}>
-              <Terminal size={18} />
+            <button type="submit" className="hud-btn btn-composer btn-composer-enviar animado" disabled={!input.trim()} title="Enviar">
+              <Terminal size={17} />
             </button>
           )}
         </form>
@@ -1945,7 +1817,7 @@ export default function App() {
       {/* PANEL DERECHO */}
       <div className="panel lateral-derecho">
         <h2 className="hud-title">SISTEMA L-IA</h2>
-        <div style={{ color: '#00ffff', opacity: 0.7, fontSize: '11px', marginTop: '10px' }}>
+        <div className="telemetria-placeholder">
           Módulos en línea.<br />
           Esperando telemetría...
         </div>

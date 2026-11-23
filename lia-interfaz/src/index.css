@@ -1,15 +1,72 @@
+:root {
+  --lia-font-sans: 'Segoe UI Variable', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --lia-font-mono: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+
+  /* Base Raycast Dark + Halo radial suave tras el avatar */
+  --lia-bg-base: #0a0e17;
+  --lia-bg-halo: radial-gradient(
+    circle at 50% 10%,
+    rgba(34, 211, 238, 0.11) 0%,
+    rgba(15, 23, 42, 0.35) 36%,
+    #0a0e17 72%
+  );
+
+  /* Superficies Glass y bordes hairline */
+  --lia-surface: rgba(18, 24, 38, 0.72);
+  --lia-surface-elevated: rgba(16, 22, 36, 0.92);
+  --lia-surface-hover: rgba(255, 255, 255, 0.06);
+  --lia-border: rgba(255, 255, 255, 0.08);
+  --lia-border-strong: rgba(255, 255, 255, 0.14);
+  --lia-inset-top: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  --lia-blur: blur(18px);
+
+  /* Texto y acentos semánticos */
+  --lia-text: #e2e8f0;
+  --lia-text-strong: #f8fafc;
+  --lia-muted: #94a3b8;
+  --lia-accent: #22d3ee;
+  --lia-accent-soft: rgba(34, 211, 238, 0.13);
+  --lia-accent-border: rgba(34, 211, 238, 0.28);
+  --lia-success: #34d399;
+  --lia-danger: #f43f5e;
+  --lia-danger-soft: #fda4af;
+
+  /* Filetes y badges por origen (Propuesta B) */
+  --lia-origen-local: #22d3ee;
+  --lia-origen-nube: #a78bfa;
+  --lia-origen-dolphin: #f43f5e;
+
+  /* Código y Markdown */
+  --lia-code-bg: rgba(7, 11, 20, 0.88);
+  --lia-code-header: rgba(15, 23, 42, 0.9);
+  --lia-inline-bg: rgba(34, 211, 238, 0.1);
+  --lia-inline-text: #67e8f9;
+  --lia-inline-border: rgba(34, 211, 238, 0.22);
+
+  /* Scrollbar translúcido */
+  --lia-scroll-width: 4px;
+  --lia-scroll-thumb: rgba(148, 163, 184, 0.28);
+  --lia-scroll-thumb-hover: rgba(34, 211, 238, 0.55);
+}
+
 body {
-  background-color: #030811; /* Fondo marino super oscuro */
-  color: #00ffff;
+  background-color: var(--lia-bg-base);
+  background-image: var(--lia-bg-halo);
+  color: var(--lia-text);
   margin: 0;
-  font-family: 'Consolas', monospace;
+  font-family: var(--lia-font-sans);
+  -webkit-font-smoothing: antialiased;
   display: flex;
   justify-content: center;
   align-items: center;
   height: 100vh;
   overflow: hidden;
-  background-image: 
-    linear-gradient(rgba(0, 255, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 255, 255, 0.03) 1px, transparent 1px);
-  background-size: 30px 30px; /* Cuadrícula de fondo táctico */
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
 }
