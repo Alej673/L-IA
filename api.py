@@ -503,15 +503,13 @@ def _workspace_activo(sesion_id: str) -> tuple[Optional[str], Optional[str]]:
 
 @app.post("/workspace/limpiar")
 async def api_limpiar_workspace(request: Request):
-    import core.database as database
-    
     # 1. Atrapamos el sesion_id que envía React
     datos = await request.json()
     sesion_id = datos.get("sesion_id", "default")
-    
+
     # 2. Limpiamos esa sesión específica
     database.limpiar_workspace_activo(sesion_id)
-    
+
     # 3. Respondemos EXACTAMENTE lo que React espera ("ok")
     return {"status": "ok", "message": "Workspace liberado"}
 
@@ -732,15 +730,11 @@ def disparar_evento_anomalo():
     _colapso_en_hilo(cola_streaming, al_terminar=_candado_colapso.release)
     return respuesta_sse(cola_streaming)
 
-
-# --- Registro de routers ----------------------------------------------------
-for _router in (router_sesiones, router_semaforo, router_chat, router_voz, router_debug):
-    app.include_router(_router)
-
 @router_semaforo.get("/archivos")
 async def verificar_semaforo_archivos():
     """React hace polling aquí para saber si debe mostrar el modal de archivos."""
     return semaforo_archivos.estado_actual()
+
 
 @router_semaforo.post("/archivos/responder")
 async def responder_semaforo_archivos(respuesta: RespuestaSeleccionArchivo):
@@ -748,8 +742,14 @@ async def responder_semaforo_archivos(respuesta: RespuestaSeleccionArchivo):
     aceptada = semaforo_archivos.registrar_respuesta(respuesta.ruta)
     return {"status": "ok" if aceptada else "ignorado"}
 
+
 @router_semaforo.post("/interno/esperar_archivo")
 def esperar_archivo_interno(req: SolicitudDesambiguacion):
     """tools.py llama a este endpoint interno y se queda congelado esperando a React."""
     ruta = semaforo_archivos.solicitar_seleccion(req.opciones)
     return {"ruta": ruta}
+
+
+# --- Registro de routers (SIEMPRE al final, ya con todas las rutas definidas) ---
+for _router in (router_sesiones, router_semaforo, router_chat, router_voz, router_debug):
+    app.include_router(_router)

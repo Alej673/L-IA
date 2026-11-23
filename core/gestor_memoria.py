@@ -54,7 +54,12 @@ def asimilar_archivo(ruta_absoluta, grupo="general", tipo="documento"):
         total_chunks=total_chunks
     )
 
-    return f"✅ Archivo '{nombre_archivo}' asimilado correctamente en {total_chunks} fragmentos matemáticos."
+    # NUEVO: Devolvemos un diccionario en lugar de un string
+    return {
+        "estado": "ok",
+        "archivo": nombre_archivo,
+        "chunks": total_chunks
+    }
 
 def consultar_memoria(consulta, n_resultados=config.MAX_RAG_RESULTS):
     """Busca en ChromaDB, filtra por distancia y actualiza estadísticas."""

@@ -1243,26 +1243,32 @@ def _procesar_archivo(ruta_o_nombre, contexto_historico):
 # aunque reutiliza `contexto.obtener_ventana_activa()` y
 # `tools.leer_archivo_local()` para no duplicar la detección del archivo.
 
+# EN: core/cerebro.py
 def asimilar_documento_maestro(ruta_absoluta: str, origen_texto: str = "archivo", sesion_id="default") -> str:
     """
     Función unificada para procesar un documento (Orquestada).
     1. Indexa y registra (Gestor de Memoria).
     2. Fija la ruta en SQLite como Workspace activo.
     3. Genera el Micro-Resumen.
+    4. Devuelve Feedback en Markdown para React.
     """
     import core.gestor_memoria as gestor_memoria
+    import os
     
     print(f"\n🧠 [Asimilación Maestra] Procesando: '{ruta_absoluta}'")
 
-    # 1. Asimilación Vectorial y Administrativa (ChromaDB + SQLite sincronizados)
+    # 1. Asimilación Vectorial y Administrativa
     resultado_gestor = gestor_memoria.asimilar_archivo(
         ruta_absoluta, 
         grupo="general", 
         tipo="documento"
     )
     
-    if "❌" in resultado_gestor:
-        return resultado_gestor
+    if isinstance(resultado_gestor, str) and "❌" in resultado_gestor:
+        return resultado_gestor # Retorna el error si falló
+
+    nombre_archivo = resultado_gestor["archivo"]
+    total_chunks = resultado_gestor["chunks"]
 
     # 2. Generar Micro-Resumen (Atención a corto plazo)
     datos = tools.leer_archivo_local(ruta_absoluta)
@@ -1291,11 +1297,18 @@ def asimilar_documento_maestro(ruta_absoluta: str, origen_texto: str = "archivo"
     database.establecer_workspace_activo(ruta_absoluta, sesion_id)
     database.actualizar_workspace_resumen(resumen_tecnico, sesion_id)
 
-    return (
-        f"Asimilación completa. {resultado_gestor.replace('✅ ', '')} "
-        f"Además, lo he fijado como mi entorno activo. "
-        f"Resumen generado: {resumen_tecnico}"
+    # 4. Construir respuesta Markdown para React
+    respuesta_markdown = (
+        f"✅ **Asimilación Completada**\n\n"
+        f"El documento ha sido guardado permanentemente en la memoria a largo plazo (ChromaDB) y fijado como el entorno activo actual.\n\n"
+        f"**Metadatos de Ingesta:**\n"
+        f"- 📂 **Archivo:** `{nombre_archivo}`\n"
+        f"- 🧩 **Fragmentos vectoriales:** `{total_chunks}`\n"
+        f"- 💡 **Micro-Resumen:** {resumen_tecnico}\n\n"
+        f"Ya puedes hacerme preguntas específicas sobre este documento."
     )
+
+    return respuesta_markdown
 
 def _procesar_ingesta_documento(callback_ui=None, sesion_id="default"):
     """Vectoriza en el Segundo Cerebro el archivo de la ventana activa."""
@@ -1678,35 +1691,40 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     tipo_intencion_principal = "casual"
     contexto_recuperado = None
 
-    # PARCHE OBLIGATORIO: Forzar bandera de RAG si el usuario menciona la memoria
-    if re.search(r'\b(memoria\s+t[eé]cnica|segundo\s+cerebro|bit[aá]cora|apuntes?|recuerdas?)\b', msg_lower):
+    # PARCHE 2.0: Ampliamos el gatillo para atrapar peticiones de resumen
+    if re.search(r'\b(memoria\s+t[eé]cnica|segundo\s+cerebro|bit[aá]cora|apuntes?|recuerdas?|resumen|res[uú]meme|de qu[eé] trata|expl[ií]came\s+este)\b', msg_lower):
         intenciones["memoria_tecnica"] = True
 
     if intenciones.get("memoria_tecnica"):
         print("💡 [Semáforo] Consultando Segundo Cerebro (ChromaDB)...")
 
-        # ELIMINAR OTRAS RUTAS INMEDIATAMENTE
-        # Esto mata la intención de buscar_archivo que Gemma enciende erróneamente
+        # APAGADO FORZADO de otras rutas para evitar colisiones
         intenciones["buscar_archivo"] = False
         intenciones["abrir_app"] = False
         intenciones["codigo"] = False
         intenciones["web"] = False
 
-        # Se quitan las muletillas que sirvieron de gatillo
+        # Limpiamos las muletillas
         query_limpia = re.sub(
-            r'\b(en\s+tus\s+apuntes|de\s+la\s+bit[aá]cora|en\s+la\s+bit[aá]cora|bit[aá]cora\s+t[eé]cnica|documentaci[oó]n|recuerdas?|segundo\s+cerebro|apuntes?|memoria\s+t[eé]cnica|busca\s+en\s+tu)\b',
+            r'\b(en\s+tus\s+apuntes|de\s+la\s+bit[aá]cora|en\s+la\s+bit[aá]cora|bit[aá]cora\s+t[eé]cnica|documentaci[oó]n|recuerdas?|segundo\s+cerebro|apuntes?|memoria\s+t[eé]cnica|busca\s+en\s+tu|hazme\s+un|dame\s+un)\b',
             '',
             msg_lower,
             flags=re.IGNORECASE
         ).strip()
 
-        consulta = query_limpia if len(query_limpia) > 5 else msg_lower
-        
+        # 🧠 EL TRUCO VECTORIAL (Query Translation)
+        if re.search(r'\b(resumen|res[uú]meme|de qu[eé] trata)\b', msg_lower):
+            # En vez de buscar la palabra "resumen", buscamos los cimientos del documento
+            consulta = "introducción, propósito general, objetivo principal, arquitectura, descripción del sistema"
+            print(f"🔍 [RAG] Petición de resumen detectada. Optimizando consulta vectorial a: '{consulta}'")
+        else:
+            consulta = query_limpia if len(query_limpia) > 5 else msg_lower
+            
         try:
             import core.gestor_memoria as gestor_memoria
+            # Para resúmenes, pedimos explícitamente 5 fragmentos robustos
             resultados_rag = gestor_memoria.consultar_memoria(consulta, n_resultados=5)
         except Exception as e:
-            # Si ChromaDB no carga, se responde sin RAG en vez de romper el turno.
             print(f"❌ [RAG] No se pudo consultar el Segundo Cerebro: {e}")
             resultados_rag = None
 
@@ -1717,15 +1735,18 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
             bloque_rag += "1. Responde ÚNICAMENTE con los hechos técnicos explícitos de los fragmentos de abajo.\n"
             bloque_rag += "2. Si se menciona una solución técnica, nombra las herramientas, tablas, funciones o métodos concretos que aparecen en el texto.\n"
             bloque_rag += "3. PROHIBIDO deducir o inventar soluciones no descritas.\n"
+            bloque_rag += "4. El contenido del documento YA FUE EXTRAÍDO aquí abajo; NO digas que no tienes acceso a archivos.\n"
 
             for i in range(len(resultados_rag['documents'][0])):
-                origen = resultados_rag['metadatas'][0][i]['origen']
+                origen = resultados_rag['metadatas'][0][i].get('origen', 'documento')
                 texto = resultados_rag['documents'][0][i]
                 contexto_recuperado.append({"origen": origen, "texto": texto})
                 bloque_rag += f"\n--- FRAGMENTO {i+1} ({origen}) ---\n{texto}\n"
 
-            tipo_intencion_principal = "casual"
-            contexto_recuperado = None
+            # ¡EL CABLE QUE FALTABA CONECTAR!
+            contexto_historico += bloque_rag
+            tipo_intencion_principal = "rag_tecnico"
+            print(f"✅ [RAG] {len(contexto_recuperado)} fragmentos inyectados al contexto.")
 
             if intenciones.get("memoria_tecnica"):
                 print("💡 [Semáforo] Consultando Segundo Cerebro (ChromaDB)...")
