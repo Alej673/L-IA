@@ -38,7 +38,7 @@ _RAICES = {
 
 _EXCLUSIONES = {
     "abrir_app": ["abril", "abriles", "abrigo", "abrigos", "abrigad[oa]s?", "abrazo", "abrazos", "abrupt[oa]s?", "inicial", "iniciales", "iniciativ[a]s?", "ejecutiv[oa]s?", "cargador", "cargadores", "cargamento", "cargamentos", "levantamiento", "levantamientos", "montaña", "montañas", "montaje", "montajes"],
-    "estado_pc": ["procesion", "procesiones", "procesional", "procesión", "procesiones"],
+    "estado_pc": ["procesion", "procesiones", "procesional", "procesión"],
     "codigo": ["mejoramiento", "mejoramientos", "rendimiento"],
     "clima": ["temperamento", "temperamentos", "temperamental"],
 }
@@ -48,9 +48,12 @@ PATRONES_CLAVE = {
     for clave, raices in _RAICES.items()
 }
 
+# gpu/vram/recursos/disco van con límite de palabra exacto (\b) para evitar
+# colisiones de prefijo como "discord", "discoteca" o "recursividad".
 PATRONES_CLAVE["estado_pc"] = re.compile(
     PATRONES_CLAVE["estado_pc"].pattern
-    + r'|\b(estado|rendimiento|consumo|diagn[oó]stico)\s+(del?\s+|de\s+la\s+|mi\s+|de\s+mi\s+)?(pc|sistema|compu|cpu|ram|memoria|máquina|laptop)\b|\b(cpu|ram|bater[ií]a|llama-server)\b',
+    + r'|\b(estado|rendimiento|consumo|diagn[oó]stico|uso)\s+(del?\s+|de\s+la\s+|de\s+los\s+|mi\s+|de\s+mi\s+)?(pc|sistema|compu|cpu|ram|gpu|vram|memoria|disco|recursos|m[aá]quina|laptop|equipo)\b'
+    + r'|\b(cpu|ram|gpu|vram|bater[ií]a|llama-server|recursos(?!\s+humanos)|disco(?!\s+(?:de\s+)?(?:vinilo|m[uú]sica|compacto)))\b',
     re.IGNORECASE
 )
 PATRONES_CLAVE["web"] = re.compile(

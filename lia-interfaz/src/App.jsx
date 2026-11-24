@@ -14,6 +14,15 @@ const API = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:10500'
 // Extensiones que el backend sabe leer (ajústalas a tu /ingestar)
 const EXTENSIONES_VALIDAS = ['txt', 'md', 'py', 'js', 'php', 'html', 'css', 'json', 'docx', 'pdf', 'pptx', 'xlsx']
 
+// Estados visuales permitidos que el backend (SSOT) puede sincronizar vía SSE
+const ESTADOS_VISUALES_BACKEND = new Set([
+  'procesando_pregunta',
+  'procesando_sistema',
+  'procesando_git',
+  'procesando_doc',
+  'procesando_rag',
+])
+
 const MENSAJE_INICIAL = 'L-IA v3.2.1 inicializada. Esperando directivas...'
 
 const nuevoId = () =>
@@ -542,13 +551,8 @@ export default function App() {
     setInput('')
     if (textareaRef.current) textareaRef.current.style.height = '42px'
 
-    let estadoTemporal = 'procesando_pregunta'
-    const textoMinusculas = textoAEnviar.toLowerCase()
-    if (/\b(git|github|commit|commits|push|sube|subir|ramas?|repo|repositorio)\b/.test(textoMinusculas)) estadoTemporal = 'procesando_git'
-    else if (/\b(sistema|hardware|ram)\b/.test(textoMinusculas)) estadoTemporal = 'procesando_sistema'
-    else if (/(archivo|documento|workspace|\blee\b|\brevisa)/.test(textoMinusculas)) estadoTemporal = 'procesando_doc'
-
-    setEstadoLIA(estadoTemporal)
+    // Estado neutro inicial; el backend (SSOT) sincroniza el estado visual real vía SSE
+    setEstadoLIA('procesando_pregunta')
     setMensajeEspera(null)
     let huboError = false
 
@@ -614,7 +618,14 @@ export default function App() {
             if (data.perfil === 'error_critico') {
               setModoColapso(true);
             }
-            if (!yaEscribiendo) setMensajeEspera(data.mensaje_espera || null)
+            if (!yaEscribiendo) {
+              if (data.estado_visual && ESTADOS_VISUALES_BACKEND.has(data.estado_visual)) {
+                setEstadoLIA(data.estado_visual)
+              }
+              if (data.mensaje_espera !== undefined) {
+                setMensajeEspera(data.mensaje_espera || null)
+              }
+            }
           } else if (data.tipo === 'chunk') {
             if (!yaEscribiendo) {
               yaEscribiendo = true

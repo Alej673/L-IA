@@ -627,7 +627,7 @@ def _ejecutar_con_reintentos(accion, callback_stream, emitidos, etiqueta="Nube",
 
 def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, buscar_web=False,
                         modelo_nube=config.MODELO_NUBE_FLASH, callback_ui=None, callback_stream=None,
-                        usar_herramientas=True, motor_voz=config.MOTOR_VOZ_DEFAULT, usar_voz=False):
+                        callback_estado=None, usar_herramientas=True, motor_voz=config.MOTOR_VOZ_DEFAULT, usar_voz=False):
     """Responde con Gemini (Flash o Pro). Hay tres caminos:
 
       CASO 1  buscar_web=True          google_search + streaming real.
@@ -732,6 +732,11 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
             llamada = response.function_calls[0]
             argumentos = dict(llamada.args) if llamada.args else {}
 
+            # Etapa 2 (dinámica): sincroniza el avatar según la herramienta real invocada por el LLM
+            estado_tool = _ESTADO_VISUAL_POR_HERRAMIENTA.get(llamada.name)
+            if estado_tool:
+                _notificar_estado(callback_estado, {"estado_visual": estado_tool})
+
             resultado_sistema = _ejecutar_herramienta_segura(
                 llamada.name,
                 callback_ui_permiso=callback_ui,
@@ -803,7 +808,7 @@ def _extraer_llamada_manual(texto):
 
     return None
 
-def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir, quiere_estado, quiere_entorno, quiere_buscar, callback_ui=None, callback_stream=None, motor_voz=config.MOTOR_VOZ_DEFAULT, usar_voz=False):
+def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir, quiere_estado, quiere_entorno, quiere_buscar, callback_ui=None, callback_stream=None, callback_estado=None, motor_voz=config.MOTOR_VOZ_DEFAULT, usar_voz=False):
     print(f"\n[🏠 Enrutando al Cerebro Local ({config.MODELO_LOCAL})...]")
 
     requiere_herramienta = quiere_abrir or quiere_estado or quiere_entorno or quiere_buscar
@@ -881,6 +886,10 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
 
             if accion in ("abrir_aplicacion", "obtener_estado_sistema", "comando_cambiar_entorno", "buscar_archivo_local"):
                 print(f"\n⚙️ [L-IA Local solicitando ejecución de: {accion}]")
+                # Etapa 2 (dinámica): sincroniza el avatar justo antes de ejecutar la herramienta
+                estado_tool = _ESTADO_VISUAL_POR_HERRAMIENTA.get(accion)
+                if estado_tool:
+                    _notificar_estado(callback_estado, {"estado_visual": estado_tool})
                 resultado = _ejecutar_herramienta_segura(
                     accion,
                     callback_ui_permiso=callback_ui,
@@ -1470,6 +1479,27 @@ def _describir_ruta(ruta: str, modelo_nube, motivo: str) -> dict:
             "motivo": motivo, "mensaje_espera": None}
 
 
+_ESTADO_VISUAL_POR_HERRAMIENTA = {
+    "obtener_estado_sistema": "procesando_sistema",
+    "leer_repositorio_git": "procesando_git",
+    "guardar_en_git": "procesando_git",
+    "buscar_archivo_local": "procesando_doc",
+}
+
+
+def _resolver_estado_visual(intenciones: dict, tipo_intencion_principal: str, hay_documento: bool) -> str | None:
+    """SSOT de estado visual del núcleo según la intención resuelta por el backend."""
+    if intenciones.get("guardar_git") or intenciones.get("git"):
+        return "procesando_git"
+    if intenciones.get("estado_pc"):
+        return "procesando_sistema"
+    if tipo_intencion_principal == "rag_tecnico" or intenciones.get("memorizar_documento"):
+        return "procesando_rag"
+    if intenciones.get("buscar_archivo") or hay_documento:
+        return "procesando_doc"
+    return None
+
+
 def _notificar_estado(callback_estado, info: dict):
     """Avisa a la GUI qué ruta va a responder, ANTES del primer token. Un fallo
     en el callback nunca debe romper la respuesta."""
@@ -1565,6 +1595,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     # con `return`: no debe mezclarse con el pipeline de contexto/streaming,
     # pensado para lecturas de un solo turno.
     if intenciones.get("memorizar_documento"):
+        _notificar_estado(callback_estado, {"estado_visual": "procesando_rag"})
         texto_respuesta = _procesar_ingesta_documento(callback_ui=callback_ui, sesion_id=sesion_id)
 
         database.guardar_mensaje("model", texto_respuesta, sesion_id=sesion_id)
@@ -1595,6 +1626,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
 
     documento_cargado = False
     if intentando_leer_documento:
+        _notificar_estado(callback_estado, {"estado_visual": "procesando_doc"})
         contenido_doc, nombre_doc, origen_doc = _resolver_documento_referenciado(
             ruta_workspace, prioridad_workspace=menciona_workspace
         )
@@ -1650,6 +1682,9 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     # 2. Filtro para evitar colisión de "estado"
     if intenciones["git"]:
         intenciones["estado_pc"] = False
+    elif intenciones.get("estado_pc") and not intenciones.get("guia_capacidades"):
+        # Etapa 1 (inmediata): muestra los engranajes antes de posibles interceptores de red/contexto
+        _notificar_estado(callback_estado, {"estado_visual": "procesando_sistema"})
 
     if documento_cargado:
         archivo_detectado = None  # ya lo leímos completo arriba
@@ -1657,6 +1692,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     if intenciones["portapapeles"]:
         contexto_historico, _ = _procesar_portapapeles(contexto_historico)
     elif archivo_detectado:
+        _notificar_estado(callback_estado, {"estado_visual": "procesando_doc"})
         contexto_historico, _ = _procesar_archivo(archivo_detectado, contexto_historico)
 
     if intenciones["hora"]:
@@ -1669,10 +1705,12 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     # Guardar en Git responde directo (no pasa por el LLM); solo consultar Git
     # inyecta su salida como contexto del turno.
     if intenciones["guardar_git"]:
+        _notificar_estado(callback_estado, {"estado_visual": "procesando_git"})
         texto_respuesta = _ejecutar_guardado_git(msg_lower, callback_ui=callback_ui)
         print(f"\n🤖 L-IA (Local/Git): {texto_respuesta}\n")
         return texto_respuesta, "Local"
     elif intenciones["git"]:
+        _notificar_estado(callback_estado, {"estado_visual": "procesando_git"})
         intenciones["estado_pc"] = False
         contexto_historico = _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=callback_ui)
 
@@ -1723,6 +1761,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
 
     if intenciones.get("memoria_tecnica"):
         print("💡 [Semáforo] Consultando Segundo Cerebro (ChromaDB)...")
+        _notificar_estado(callback_estado, {"estado_visual": "procesando_rag"})
 
         # APAGADO FORZADO de otras rutas para evitar colisiones
         intenciones["buscar_archivo"] = False
@@ -1807,6 +1846,13 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
 
     # La GUI se entera de quién va a responder ANTES del primer token; con Pro
     # esto le permite mostrar "Analizando arquitectura..." mientras piensa.
+    estado_visual = _resolver_estado_visual(
+        intenciones,
+        tipo_intencion_principal,
+        hay_documento=bool(documento_cargado or archivo_detectado),
+    )
+    if estado_visual:
+        info_ruta["estado_visual"] = estado_visual
     _notificar_estado(callback_estado, info_ruta)
 
     # Pro en una tarea de código recibe instrucciones de "arquitecta senior".
@@ -1830,6 +1876,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
             modelo_nube=modelo_nube_seleccionado,
             callback_ui=callback_ui,
             callback_stream=callback_stream,
+            callback_estado=callback_estado,
             # Pro solo usa herramientas locales si el usuario pidió abrir algo;
             # si no, va en streaming directo (ver CASO 2 de responder_con_nube).
             usar_herramientas=(not es_pro) or intenciones["abrir_app"],
@@ -1850,6 +1897,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
             intenciones.get("buscar_archivo", False),
             callback_ui=callback_ui,
             callback_stream=callback_stream,
+            callback_estado=callback_estado,
             motor_voz=motor_voz_elegido,
             usar_voz=usar_voz
         )
