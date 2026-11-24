@@ -735,38 +735,29 @@ def hacer_commit_git(ruta_repo, titulo_commit, descripcion_commit=""):
         return f"❌ Error inesperado: {e}"
 
 def comando_cambiar_entorno(escena: str) -> str:
-    """
-    Nivel 1. Cambia la iluminación física de la habitación de Alejandro.
-    Opciones válidas: 'trabajo', 'gaming', 'descanso', 'apagado', 'corrupcion', 'encendido'.
-    """
+    """Nivel 1. Cambia la iluminación física de la habitación de Alejandro."""
     escena_normalizada = escena.lower().strip()
-    
-    # 1. Filtros de Apagado (Captura el error del string vacío '')
-    if not escena_normalizada or "apaga" in escena_normalizada or "off" in escena_normalizada:
-        escena_final = "apagado"
-        
-    # 2. Filtros de Encendido básico
-    elif "encend" in escena_normalizada or "prend" in escena_normalizada or escena_normalizada == "on":
-        escena_final = "encendido"
-        
-    # 3. Modos Específicos
-    elif "trabajo" in escena_normalizada or "estudio" in escena_normalizada:
-        escena_final = "trabajo"
-    elif "gaming" in escena_normalizada or "juego" in escena_normalizada:
-        escena_final = "gaming"
-    elif "descanso" in escena_normalizada or "dormir" in escena_normalizada:
-        escena_final = "descanso"
-    elif "corrup" in escena_normalizada or "glitch" in escena_normalizada or "hack" in escena_normalizada:
-        escena_final = "corrupcion"
-        
-    # 4. Fallback: Si manda solo la palabra "luces", las encendemos
-    elif "luz" in escena_normalizada or "luces" in escena_normalizada:
-        escena_final = "encendido"
+    escena_final = None
+
+    if not escena_normalizada:
+        escena_final = control_iot.ESCENA_VACIA_FALLBACK
+    elif escena_normalizada in control_iot.ESCENAS_INTERACTIVAS:
+        escena_final = escena_normalizada
+    elif escena_normalizada in control_iot.ALIAS_EXACTOS:
+        escena_final = control_iot.ALIAS_EXACTOS[escena_normalizada]
     else:
-        return f"Error: La escena '{escena_normalizada}' no está configurada. Intenta con: apagado, encendido, gaming, trabajo."
-    
+        for escena_objetivo, palabras_clave in control_iot.ALIAS_ESCENAS.items():
+            if any(palabra in escena_normalizada for palabra in palabras_clave):
+                escena_final = escena_objetivo
+                break
+
+    if not escena_final:
+        opciones = ", ".join(control_iot.ESCENAS_INTERACTIVAS)
+        return f"Error: La escena '{escena_normalizada}' no está configurada. Intenta con: {opciones}."
+
     control_iot.aplicar_escena(escena_final)
     return f"Éxito: Escena física de iluminación cambiada a '{escena_final}'."
+
 # ==========================================
 # TOOL MANAGER (Capa de Permisos y Seguridad)
 # ==========================================
@@ -880,7 +871,7 @@ def _ejecutar_dinamico(nombre_herramienta, **kwargs):
             kwargs.get("descripcion_commit", "")
         )
     elif nombre_herramienta == "comando_cambiar_entorno":
-        return comando_cambiar_entorno(kwargs.get("escena", "trabajo"))
+        return comando_cambiar_entorno(kwargs.get("escena", control_iot.ESCENA_POR_DEFECTO))
     elif nombre_herramienta == "leer_cambios_git":
         return leer_cambios_git(kwargs.get("ruta_repo", ""))
     else:

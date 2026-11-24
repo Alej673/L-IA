@@ -53,37 +53,10 @@ import core.contexto as contexto
 import core.intenciones as nlp
 import core.bozales as bozales
 from core import config
-
-# ==========================================
-# 0.5 CARGA PEREZOSA (LAZY LOADING) DE MÓDULOS PESADOS
-# ==========================================
-# `core.memoria_rag` (ChromaDB + embeddings) y `core.voz` (Edge TTS / Whisper)
-# reservan RAM/VRAM en el instante de importarse. Si se importaran en la
-# cabecera, ese costo se pagaría en CADA arranque, aunque el usuario solo
-# chatee por texto. Por eso se cargan bajo demanda, la primera vez que una
-# ruta los necesita:
-#   - RAG: mediante `_obtener_rag()`, que crea una instancia única.
-#   - Voz: mediante un import local dentro de `_generar_respuesta_con_voz`.
-_memoria_rag_instancia = None
-_rag_lock = threading.Lock()
+import core.control_iot as control_iot
 
 # Bandera táctica de interrupción
 evento_interrupcion = threading.Event()
-
-def _obtener_rag():
-    """Devuelve la instancia única de MemoriaRAG, creándola en el primer uso.
-
-    El lock con doble chequeo evita que dos hilos inicialicen ChromaDB a la vez.
-    """
-    global _memoria_rag_instancia
-    if _memoria_rag_instancia is None:
-        with _rag_lock:
-            if _memoria_rag_instancia is None:
-                print("🧠 [Despertando Segundo Cerebro (ChromaDB) por primera vez...]")
-                from core.memoria_rag import MemoriaRAG
-                _memoria_rag_instancia = MemoriaRAG()
-    return _memoria_rag_instancia
-
 
 # ==========================================
 # 1. CONFIGURACIÓN INICIAL Y SEMÁFORO
@@ -234,7 +207,7 @@ _DESCRIPCIONES_CAPACIDADES = {
     "uncensored":        "cambiar temporalmente a un modo sin filtros para conversación más directa, si se lo pides explícitamente",
     "memoria_tecnica":   "consultar tu memoria a largo plazo (segundo cerebro) sobre problemas técnicos pasados, bitácoras y documentación",
     "memorizar_documento": "leer el archivo o documento que tienes abierto en pantalla y vectorizarlo en su memoria a largo plazo, para poder consultarlo técnicamente después",
-    "entorno_iot":       "controlar las luces físicas y el ambiente de tu habitación (modos: trabajo, gaming, descanso, apagado) ",
+    "entorno_iot": f"controlar las luces físicas y el ambiente de tu habitación (modos: {', '.join(control_iot.ESCENAS_INTERACTIVAS)})",
 }
 
 def _generar_nota_guia_capacidades():
@@ -550,11 +523,12 @@ def leer_repositorio_git(ruta_repo: str) -> str:
     pass
 
 def comando_cambiar_entorno(escena: str) -> str:
-    """
-    Cambia la iluminación física de la habitación de Alejandro.
-    Opciones válidas: 'trabajo', 'gaming', 'descanso', 'apagado'.
-    """
-    pass
+    """Cambia la iluminación física de la habitación de Alejandro."""
+
+comando_cambiar_entorno.__doc__ = (
+    "Cambia la iluminación física de la habitación de Alejandro.\n"
+    f"Opciones válidas: {', '.join(repr(e) for e in control_iot.ESCENAS_INTERACTIVAS)}."
+)
 
 def _reportar_error(mensaje: str, callback_stream=None) -> str:
     """Envía `mensaje` a la GUI y lo devuelve.
@@ -845,7 +819,11 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
                 'Responde ÚNICAMENTE el JSON, nada más.'
             )
         if quiere_entorno:
-            instrucciones_finales += 'Formato EXACTO: {"accion": "comando_cambiar_entorno", "escena": ""}. '
+            escenas_str = "|".join(control_iot.ESCENAS_INTERACTIVAS)
+            instrucciones_finales += (
+                f'Formato EXACTO: {{"accion": "comando_cambiar_entorno", "escena": "{escenas_str}"}} '
+                f'(elige ÚNICAMENTE una de esas {len(control_iot.ESCENAS_INTERACTIVAS)} escenas). '
+            )
 
         instrucciones_finales += 'Responde ÚNICAMENTE el JSON, nada más.'
 
@@ -880,7 +858,7 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
             if accion == "abrir_aplicacion":
                 kwargs_herramienta = {"nombres_apps": llamada_manual.get("nombres_apps", "")}
             elif accion == "comando_cambiar_entorno":
-                kwargs_herramienta = {"escena": llamada_manual.get("escena", "trabajo")}
+                kwargs_herramienta = {"escena": llamada_manual.get("escena", control_iot.ESCENA_POR_DEFECTO)}
             elif accion == "buscar_archivo_local":
                 kwargs_herramienta = {"nombre_archivo": llamada_manual.get("nombre_archivo", "")}
 
@@ -1482,7 +1460,7 @@ def _describir_ruta(ruta: str, modelo_nube, motivo: str) -> dict:
 _ESTADO_VISUAL_POR_HERRAMIENTA = {
     "obtener_estado_sistema": "procesando_sistema",
     "leer_repositorio_git": "procesando_git",
-    "guardar_en_git": "procesando_git",
+    "hacer_commit_git": "procesando_git",
     "buscar_archivo_local": "procesando_doc",
 }
 

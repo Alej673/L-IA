@@ -53,6 +53,39 @@ def enviar_comando_raw(dispositivo, encender: bool, modo=None, color_hex=None, e
     except Exception as e:
         print(f"⚠️ [IoT Error] Fallo al enviar comando RAW: {e}")
 
+# ==========================================
+# FUENTE ÚNICA DE VERDAD (SSOT) DE ESCENAS IOT
+# ==========================================
+ESCENA_POR_DEFECTO = "trabajo"
+ESCENA_VACIA_FALLBACK = "apagado"
+
+# Escenas públicas de usuario expuestas a los LLMs (Ollama / Gemini)
+ESCENAS_INTERACTIVAS = (
+    "trabajo",
+    "gaming",
+    "descanso",
+    "apagado",
+    "encendido",
+)
+
+# Escenas reservadas para el sistema / narrativa de corrupción y colapso
+ESCENAS_INTERNAS = (
+    "corrupcion",
+    "blanco_frio_100",
+    "respiracion_ia",
+)
+
+ESCENAS_VALIDAS = ESCENAS_INTERACTIVAS + ESCENAS_INTERNAS
+
+# Orden importa: apagado y modos específicos van ANTES que el fallback genérico de encendido
+ALIAS_ESCENAS = {
+    "apagado": ("apagado", "apaga", "off"),
+    "trabajo": ("trabajo", "estudio"),
+    "gaming": ("gaming", "juego"),
+    "descanso": ("descanso", "dormir"),
+    "encendido": ("encendido", "encend", "prend", "luz", "luces"),
+}
+
 def aplicar_escena(nombre_escena: str):
     def _cambiar_luces():
         try:
