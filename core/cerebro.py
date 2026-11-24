@@ -1539,9 +1539,9 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None, cal
 
 
 def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_estado, sesion_id="default", usar_voz=False):
-    # 1. Guardamos el mensaje y armamos historial
-    database.guardar_mensaje("user", mensaje_usuario, sesion_id=sesion_id)
+    # 1. Armamos el historial previo (sin duplicar el turno actual) y luego persistimos el mensaje
     contexto_historico = prompt_builder.armar_historial_usuario(mensaje_usuario, sesion_id=sesion_id)
+    database.guardar_mensaje("user", mensaje_usuario, sesion_id=sesion_id)
     contexto_historico = _procesar_entorno_automatico(contexto_historico)
 
     mensaje_real = mensaje_usuario.split("[CONTEXTO DEL SISTEMA")[0].strip() if "[CONTEXTO" in mensaje_usuario else mensaje_usuario.strip()
@@ -1775,24 +1775,15 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
             resultados_rag = None
 
         if resultados_rag and len(resultados_rag['documents'][0]) > 0:
-            contexto_recuperado = []
-            bloque_rag = "\n\n[MEMORIA TÉCNICA DOCUMENTAL - SEGUNDO CEREBRO]\n"
-            bloque_rag += "INSTRUCCIONES ESTRICTAS:\n"
-            bloque_rag += "1. Responde ÚNICAMENTE con los hechos técnicos explícitos de los fragmentos de abajo.\n"
-            bloque_rag += "2. Si se menciona una solución técnica, nombra las herramientas, tablas, funciones o métodos concretos que aparecen en el texto.\n"
-            bloque_rag += "3. PROHIBIDO deducir o inventar soluciones no descritas.\n"
-            bloque_rag += "4. El contenido del documento YA FUE EXTRAÍDO aquí abajo; NO digas que no tienes acceso a archivos.\n"
-
-            for i in range(len(resultados_rag['documents'][0])):
-                origen = resultados_rag['metadatas'][0][i].get('origen', 'documento')
-                texto = resultados_rag['documents'][0][i]
-                contexto_recuperado.append({"origen": origen, "texto": texto})
-                bloque_rag += f"\n--- FRAGMENTO {i+1} ({origen}) ---\n{texto}\n"
-
-            # ¡EL CABLE QUE FALTABA CONECTAR!
-            contexto_historico += bloque_rag
+            contexto_recuperado = [
+                {
+                    "origen": resultados_rag['metadatas'][0][i].get('origen', 'documento'),
+                    "texto": resultados_rag['documents'][0][i],
+                }
+                for i in range(len(resultados_rag['documents'][0]))
+            ]
             tipo_intencion_principal = "rag_tecnico"
-            print(f"✅ [RAG] {len(contexto_recuperado)} fragmentos inyectados al contexto.")
+            print(f"✅ [RAG] {len(contexto_recuperado)} fragmentos recuperados para el System Prompt.")
 
     # --- FASE 8 — GUÍA DE CAPACIDADES ---
     if intenciones.get("guia_capacidades"):

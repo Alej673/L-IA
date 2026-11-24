@@ -155,12 +155,19 @@ def obtener_instrucciones_sistema(intencion_detectada="casual", contexto_rag=Non
     # Tono según la intención + Nivel de Corrupción
     matriz_tono_dinamica = _aplicar_semaforo_tono(intencion_detectada, contexto_rag, nivel_corrupcion)
 
-    # 2. Bloque de conocimiento recuperado, si hay RAG
+    # 2. Bloque de conocimiento recuperado, si hay RAG (única inyección SSOT)
     rag_texto = ""
     if contexto_rag:
-        rag_texto = "\n[--- CONOCIMIENTO RECUPERADO DE MEMORIA TÉCNICA (CHROMADB) ---]\n"
-        for doc in contexto_rag:
-            rag_texto += f"Fuente: {doc['origen']}\nFragmento: {doc['texto']}\n---\n"
+        rag_texto = (
+            "\n[--- CONOCIMIENTO RECUPERADO DE MEMORIA TÉCNICA (CHROMADB) ---]\n"
+            "INSTRUCCIONES ESTRICTAS:\n"
+            "1. Responde ÚNICAMENTE con los hechos técnicos explícitos de los fragmentos de abajo.\n"
+            "2. Si se menciona una solución técnica, nombra las herramientas, tablas, funciones o métodos concretos que aparecen en el texto.\n"
+            "3. PROHIBIDO deducir o inventar soluciones no descritas.\n"
+            "4. El contenido del documento YA FUE EXTRAÍDO aquí abajo; NO digas que no tienes acceso a archivos.\n"
+        )
+        for i, doc in enumerate(contexto_rag, start=1):
+            rag_texto += f"\n--- FRAGMENTO {i} (Fuente: {doc['origen']}) ---\n{doc['texto']}\n"
 
     prompt_sistema = f"""Eres {estado['nombre']}, la Inteligencia Artificial personal y {estado['proposito']} de {perfil['nombre']}.
 Fuiste creada por {estado['creador']} y te ejecutas localmente en su hardware.
