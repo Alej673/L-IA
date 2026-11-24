@@ -60,6 +60,11 @@ const TIEMPOS_REPOSO_MS = {
   somnolienta: 4200,
 }
 
+// Umbrales de caricia: toleran cruces breves del borde sin activar falsos positivos al cruzar de paso
+const CARICIA_UMBRAL_MS = 850
+const CARICIA_GRACE_LEAVE_MS = 350
+const CARICIA_PAUSA_RESET_MS = 900
+
 function aleatorioEntre(min, max) {
   return min + Math.random() * (max - min)
 }
@@ -968,6 +973,7 @@ export default function NucleoLIA({
   const decayTimerRef = useRef(null)
   const interaccionTimerRef = useRef(null)
   const glitchTimerRef = useRef(null)
+  const cariciaLeaveTimerRef = useRef(null)
   const cariciaRef = useRef({ lastX: null, lastY: null, lastTs: 0, acumMs: 0, lastDecayAt: 0 })
   const ultimaEmisionCariciaRef = useRef(0)
 
@@ -1007,6 +1013,7 @@ export default function NucleoLIA({
     clearTimeout(decayTimerRef.current)
     clearTimeout(interaccionTimerRef.current)
     clearTimeout(glitchTimerRef.current)
+    clearTimeout(cariciaLeaveTimerRef.current)
   }, [])
 
   useEffect(() => limpiarTimersTactiles, [limpiarTimersTactiles])
@@ -1068,6 +1075,7 @@ export default function NucleoLIA({
 
     reiniciarCicloReposo()
     setSubEstadoReposo('normal')
+    clearTimeout(cariciaLeaveTimerRef.current)
     cariciaRef.current.acumMs = 0
 
     if (interaccionRef.current === 'escudo') {
@@ -1140,47 +1148,55 @@ export default function NucleoLIA({
     }
   }, [estadoReal, modoColapso, controlesGesto, activarEscudo, programarDecayPokes, fijarInteraccion, onInteraccion, reiniciarCicloReposo])
 
-  // Interacción 100% positiva al acariciar suavemente la esfera
+  // Interacción 100% positiva al acariciar suavemente la esfera o su halo inmediato
   const manejarPointerMoveEsfera = useCallback((e) => {
     if (estadoReal !== 'reposo' || modoColapso || interaccionRef.current === 'escudo') return
+
+    // Cancelar el reset pendiente si el cursor reentra rápido tras rozar el borde
+    clearTimeout(cariciaLeaveTimerRef.current)
 
     const ahora = performance.now()
     const cRef = cariciaRef.current
     if (cRef.lastX !== null) {
-      const dt = Math.min(ahora - cRef.lastTs, 120)
-      const dist = Math.hypot(e.clientX - cRef.lastX, e.clientY - cRef.lastY)
-      if (dist >= 0.6) {
-        cRef.acumMs += dt
-        if (cRef.acumMs >= 1200) {
-          const recienActivada = interaccionRef.current !== 'caricia'
-          if (recienActivada) {
-            setSubEstadoReposo('normal')
-            fijarInteraccion('caricia', 'ESO SE SIENTE BIEN')
-            if (ahora - ultimaEmisionCariciaRef.current >= 5000) {
-              ultimaEmisionCariciaRef.current = ahora
-              onInteraccion?.({ tipo: 'caricia' })
-            }
-            if (pokesRef.current > 0) {
-              const reducido = Math.max(0, pokesRef.current - 3)
+      const deltaReal = ahora - cRef.lastTs
+      if (deltaReal > CARICIA_PAUSA_RESET_MS) {
+        cRef.acumMs = 0
+      } else {
+        const dt = Math.min(deltaReal, 150)
+        const dist = Math.hypot(e.clientX - cRef.lastX, e.clientY - cRef.lastY)
+        if (dist >= 0.4) {
+          cRef.acumMs += dt
+          if (cRef.acumMs >= CARICIA_UMBRAL_MS) {
+            const recienActivada = interaccionRef.current !== 'caricia'
+            if (recienActivada) {
+              setSubEstadoReposo('normal')
+              fijarInteraccion('caricia', 'ESO SE SIENTE BIEN')
+              if (ahora - ultimaEmisionCariciaRef.current >= 5000) {
+                ultimaEmisionCariciaRef.current = ahora
+                onInteraccion?.({ tipo: 'caricia' })
+              }
+              if (pokesRef.current > 0) {
+                const reducido = Math.max(0, pokesRef.current - 3)
+                pokesRef.current = reducido
+                cRef.lastDecayAt = ahora
+                if (reducido === 0) clearTimeout(decayTimerRef.current)
+              }
+            } else if (pokesRef.current > 0 && ahora - cRef.lastDecayAt > 420) {
+              const reducido = Math.max(0, pokesRef.current - 1)
               pokesRef.current = reducido
               cRef.lastDecayAt = ahora
               if (reducido === 0) clearTimeout(decayTimerRef.current)
             }
-          } else if (pokesRef.current > 0 && ahora - cRef.lastDecayAt > 420) {
-            const reducido = Math.max(0, pokesRef.current - 1)
-            pokesRef.current = reducido
-            cRef.lastDecayAt = ahora
-            if (reducido === 0) clearTimeout(decayTimerRef.current)
-          }
 
-          clearTimeout(interaccionTimerRef.current)
-          interaccionTimerRef.current = setTimeout(() => {
-            if (interaccionRef.current === 'caricia') {
-              fijarInteraccion(null, null)
-              reiniciarCicloReposo()
-            }
-            cariciaRef.current.acumMs = 0
-          }, 1300)
+            clearTimeout(interaccionTimerRef.current)
+            interaccionTimerRef.current = setTimeout(() => {
+              if (interaccionRef.current === 'caricia') {
+                fijarInteraccion(null, null)
+                reiniciarCicloReposo()
+              }
+              cariciaRef.current.acumMs = 0
+            }, 1300)
+          }
         }
       }
     }
@@ -1192,7 +1208,10 @@ export default function NucleoLIA({
   const manejarPointerLeaveEsfera = useCallback(() => {
     cariciaRef.current.lastX = null
     cariciaRef.current.lastY = null
-    cariciaRef.current.acumMs = 0
+    clearTimeout(cariciaLeaveTimerRef.current)
+    cariciaLeaveTimerRef.current = setTimeout(() => {
+      cariciaRef.current.acumMs = 0
+    }, CARICIA_GRACE_LEAVE_MS)
   }, [])
 
   // Inercia angular continua (60 FPS)
@@ -2101,12 +2120,15 @@ export default function NucleoLIA({
                 : { type: 'spring', stiffness: 165, damping: 16 }
             }
           >
-            <motion.div
-              className="centro-nucleo"
-              onClick={manejarClickNucleo}
+            <div
+              className="zona-caricia"
               onPointerMove={manejarPointerMoveEsfera}
               onPointerLeave={manejarPointerLeaveEsfera}
-              style={{
+            >
+              <motion.div
+                className="centro-nucleo"
+                onClick={manejarClickNucleo}
+                style={{
                 x: esferaX,
                 y: esferaY,
                 background: modoColapso
@@ -2284,7 +2306,8 @@ export default function NucleoLIA({
                   />
                 </motion.div>
               </motion.div>
-            </motion.div>
+              </motion.div>
+            </div>
           </motion.div>
         </motion.div>
       </motion.div>

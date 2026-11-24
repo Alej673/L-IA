@@ -7,10 +7,12 @@
   font-family: var(--lia-font-mono, 'Cascadia Code', monospace);
   letter-spacing: 0.14em;
   font-weight: 600;
+  pointer-events: none;
 }
 
 .nucleo-lia .nucleo-halo {
   filter: none;
+  pointer-events: none;
   will-change: transform, opacity;
 }
 
@@ -29,10 +31,12 @@
 
 .nucleo-lia .anillo-exterior,
 .nucleo-lia .anillo-medio {
+  pointer-events: none;
   will-change: transform;
 }
 
 .nucleo-lia .anillo-interior {
+  pointer-events: none;
   will-change: transform, opacity;
 }
 
@@ -47,6 +51,17 @@
   will-change: transform;
 }
 
+/* Área ampliada y transparente para detectar caricias sin exigir precisión milimétrica sobre 64px */
+.nucleo-lia .zona-caricia {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 26px;
+  margin: -26px;
+  border-radius: 50%;
+  -webkit-app-region: no-drag;
+}
+
 .nucleo-lia .centro-nucleo {
   cursor: pointer;
   user-select: none;
@@ -58,6 +73,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  pointer-events: none;
 }
 
 .nucleo-lia .ojo-parpado,
@@ -66,6 +82,7 @@
   align-items: center;
   justify-content: center;
   transform-origin: center;
+  pointer-events: none;
   will-change: transform;
 }
 
@@ -107,6 +124,7 @@
   width: 1px;
   height: 1px;
   --lia-radio-orbita: 88px;
+  pointer-events: none;
   will-change: transform;
 }
 
@@ -119,6 +137,7 @@
   border-radius: 50%;
   transform: rotate(calc(var(--i) * 60deg)) translateX(var(--lia-radio-orbita));
   transition: background 0.8s ease, opacity 0.6s ease;
+  pointer-events: none;
   will-change: transform;
 }
 
@@ -169,6 +188,7 @@
   align-items: flex-end;
   gap: 4px;
   height: 20px;
+  pointer-events: none;
   z-index: 3;
 }
 
@@ -209,6 +229,7 @@
   height: 200px;
   border-radius: 50%;
   border: 2px solid;
+  pointer-events: none;
   will-change: transform, opacity;
 }
 
