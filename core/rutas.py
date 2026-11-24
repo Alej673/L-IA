@@ -29,10 +29,11 @@ RUTA_GOOGLE_JSON = CARPETA_CONFIG / "l-ia-tts-11c82ae533db.json"
 # NUEVAS RUTAS DE MEMORIA (SQLite y ChromaDB)
 SQLITE_DB_PATH = CARPETA_DATA / "lia_memoria.db"
 CHROMA_DB_PATH = CARPETA_DATA / "lia_chroma_db"
+CARPETA_INGESTAS = CARPETA_DATA / "ingestas"
 
 # --- 3. Carpetas que el programa puede crear solo ---
 # (sonidos/ y config/ NO se crean: si faltan, es un error real que debes ver)
-for _carpeta in (CARPETA_TEMP_AUDIO, CARPETA_DATA):
+for _carpeta in (CARPETA_TEMP_AUDIO, CARPETA_DATA, CARPETA_INGESTAS):
     _carpeta.mkdir(parents=True, exist_ok=True)
 
 # --- 4. Verificación de recursos ---

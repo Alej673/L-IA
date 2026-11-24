@@ -40,6 +40,7 @@ Organización del archivo:
 import json
 import logging
 import os
+import shutil
 import queue
 import subprocess
 import threading
@@ -50,15 +51,15 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
 import ollama
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 import core.eventos_anomalos as eventos_anomalos
 import core.voz as voz
-from core import database
-from core.cerebro import charlar_con_lia, evento_interrupcion
+from core import database, rutas
+from core.cerebro import asimilar_documento_maestro, charlar_con_lia, evento_interrupcion
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("lia.api")
@@ -821,7 +822,60 @@ def registrar_caricia():
         "nivel_corrupcion": nuevo_nivel,
     }
 
+# --- Ingesta directa al Segundo Cerebro (Drag & Drop / Clip en React) ------
+router_ingesta = APIRouter(tags=["ingesta"])
+
+@router_ingesta.post("/ingestar")
+def ingestar_documento(
+    archivo: UploadFile = File(...),
+    sesion_id: str = Form("default"),
+):
+    """Recibe un archivo desde React, lo persiste en data/ingestas y lo asimila en ChromaDB + SQLite."""
+    vigilante_ram.marcar_uso()
+    nombre_seguro = os.path.basename(archivo.filename or "documento.txt")
+    sesion_segura = os.path.basename(sesion_id or "default")
+    carpeta_sesion = rutas.CARPETA_INGESTAS / sesion_segura
+    carpeta_sesion.mkdir(parents=True, exist_ok=True)
+    ruta_destino = str(carpeta_sesion / nombre_seguro)
+
+    try:
+        with open(ruta_destino, "wb") as buffer:
+            shutil.copyfileobj(archivo.file, buffer)
+
+        with vigilante_ram.generacion_activa():
+            recibo_markdown = asimilar_documento_maestro(
+                ruta_absoluta=ruta_destino,
+                origen_texto="archivo",
+                sesion_id=sesion_id,
+            )
+
+        if isinstance(recibo_markdown, str) and "❌" in recibo_markdown:
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "mensaje": recibo_markdown},
+            )
+
+        return {
+            "status": "completado",
+            "mensaje": recibo_markdown,
+        }
+    except Exception as e:
+        logger.exception("[API] Error al ingestar archivo '%s'", nombre_seguro)
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "mensaje": f"Error al procesar documento: {e}"},
+        )
+    finally:
+        archivo.file.close()
 
 # --- Registro de routers (SIEMPRE al final, ya con todas las rutas definidas) ---
-for _router in (router_sesiones, router_semaforo, router_chat, router_voz, router_debug, router_interacciones):
+for _router in (
+    router_sesiones,
+    router_semaforo,
+    router_chat,
+    router_voz,
+    router_debug,
+    router_interacciones,
+    router_ingesta,
+):
     app.include_router(_router)

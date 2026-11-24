@@ -719,20 +719,23 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
             print(f"✅ [Sistema: {resultado_sistema}]")
 
             prompt_bozal = bozales.generar_prompt_bozal(llamada.name, resultado_sistema)
-            contenidos_api.append(prompt_bozal)
+            contenidos_finales = contenidos_api + [prompt_bozal]
 
             # PASO 2: con la herramienta ya ejecutada, la respuesta final en
             # lenguaje natural SÍ va con streaming real, para que voz y GUI
             # se comporten igual que en Local.
-            print("\n🤖 L-IA (Nube, hablando en bloques)...")
-            generador = _dividir_en_fragmentos_hablables(response.text)
+            print("\n🤖 L-IA (Nube, streaming post-herramienta)...")
+            stream = client.models.generate_content_stream(
+                model=modelo_nube,
+                contents=contenidos_finales,
+            )
+            generador = (chunk.text for chunk in stream if chunk.text)
             return _generar_respuesta_con_voz(
                 generador,
                 motor=motor_voz,
                 callback_stream=_stream_contado,
-                texto_para_mostrar=response.text,
-                usar_voz=usar_voz
-            )
+                usar_voz=usar_voz,
+            )   
 
         # Sin tool-call: la llamada del PASO 1 ya trajo la respuesta completa.
         # Se reutiliza ese texto (troceado en oraciones para hablar en
