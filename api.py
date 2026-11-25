@@ -58,7 +58,7 @@ from pydantic import BaseModel
 
 import core.eventos_anomalos as eventos_anomalos
 import core.voz as voz
-from core import database, rutas
+from core import config, database, rutas
 from core.cerebro import asimilar_documento_maestro, charlar_con_lia, evento_interrupcion
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -77,8 +77,7 @@ MICROSERVICIOS_GO = {
 }
 
 TIMEOUT_AUTORIZACION_SEGUNDOS = 120    # tiempo máximo esperando el clic del usuario
-TIMEOUT_COLA_STREAMING_SEGUNDOS = 180  # corta la conexión SSE si el hilo de la IA se traba
-MODELO_OLLAMA = "gemma2"               # debe coincidir con el modelo que usa core.cerebro
+TIMEOUT_COLA_STREAMING_SEGUNDOS = 180  # corta la conexión SSE si el hilo de la IA se traba             # debe coincidir con el modelo que usa core.cerebro
 INACTIVIDAD_RAM_SEGUNDOS = 300         # 5 min sin uso -> se descarga el modelo
 INTERVALO_VIGILANTE_SEGUNDOS = 30      # cada cuánto revisa el centinela
 
@@ -232,8 +231,8 @@ class VigilanteRAM:
       terminar (así los 5 minutos cuentan desde el final de la respuesta).
     """
 
-    def __init__(self, modelo: str, inactividad_s: float, intervalo_s: float):
-        self.modelo = modelo
+    def __init__(self, modelos: tuple[str, ...], inactividad_s: float, intervalo_s: float):
+        self.modelos = modelos
         self.inactividad_s = inactividad_s
         self.intervalo_s = intervalo_s
         self._lock = threading.Lock()
@@ -268,14 +267,14 @@ class VigilanteRAM:
             )
 
     def _descargar_modelo(self) -> None:
-        try:
-            # keep_alive=0 le pide a Ollama que saque el modelo de la RAM ya.
-            ollama.generate(model=self.modelo, prompt="", keep_alive=0)
-            with self._lock:
-                self._en_ram = False
-            logger.info("[Daemon RAM] %s descargado, RAM liberada.", self.modelo)
-        except Exception as e:
-            logger.warning("[Daemon RAM] Error al intentar limpiar la RAM: %s", e)
+        for modelo in self.modelos:
+            try:
+                ollama.generate(model=modelo, prompt="", keep_alive=0)
+                logger.info("[Daemon RAM] %s descargado, VRAM liberada.", modelo)
+            except Exception as e:
+                logger.warning("[Daemon RAM] Error al intentar limpiar %s: %s", modelo, e)
+        with self._lock:
+            self._en_ram = False
 
     def correr(self, detener: threading.Event) -> None:
         logger.info(
@@ -284,11 +283,14 @@ class VigilanteRAM:
         )
         while not detener.wait(self.intervalo_s):
             if self._debe_descargar():
-                logger.info("[Daemon RAM] Inactividad prolongada. Descargando %s...", self.modelo)
+                logger.info("[Daemon RAM] Inactividad prolongada. Descargando modelos locales...")
                 self._descargar_modelo()
 
-
-vigilante_ram = VigilanteRAM(MODELO_OLLAMA, INACTIVIDAD_RAM_SEGUNDOS, INTERVALO_VIGILANTE_SEGUNDOS)
+vigilante_ram = VigilanteRAM(
+    (config.MODELO_LOCAL, config.MODELO_UNCENSORED),
+    INACTIVIDAD_RAM_SEGUNDOS,
+    INTERVALO_VIGILANTE_SEGUNDOS,
+)
 
 
 # ===========================================================================
@@ -427,9 +429,9 @@ def renombrar_sesion_silenciosamente(sesion_id: str, texto_usuario: str) -> None
         )
         with vigilante_ram.generacion_activa():
             respuesta = ollama.chat(
-                model=MODELO_OLLAMA,
+                model=config.MODELO_LOCAL,
                 messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0.2, "num_predict": 15},
+                options={**config.OPCIONES_GPU_LOCAL, "temperature": 0.2, "num_predict": 15},
             )
         nuevo_titulo = respuesta["message"]["content"].strip('".*\n ')
 
@@ -568,6 +570,14 @@ def _hilo_chat(entrada: str, mensaje: MensajeUsuario, cola: queue.Queue) -> None
             {"tipo": "fin", "origen": origen, "documento": doc_activo, "workspace": nombre_workspace}
         )
 
+        # Renombrado en segundo plano UNA VEZ liberada la VRAM de la respuesta principal
+        threading.Thread(
+            target=renombrar_sesion_silenciosamente,
+            args=(sesion_id, entrada),
+            name="renombrar-sesion",
+            daemon=True,
+        ).start()
+
     except Exception as e:
         voz.detener_efecto_pensando()
 
@@ -670,12 +680,6 @@ def recibir_chat(mensaje: MensajeUsuario):
         # previa para que /cancelar no deje cortados los chats siguientes.
         evento_interrupcion.clear()
         voz.limpiar_silencio()
-        threading.Thread(
-            target=renombrar_sesion_silenciosamente,
-            args=(sesion_actual, entrada),
-            name="renombrar-sesion",
-            daemon=True,
-        ).start()
         threading.Thread(
             target=_hilo_chat,
             args=(entrada, mensaje, cola_streaming),

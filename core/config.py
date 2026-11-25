@@ -11,6 +11,7 @@ MODELO_LOCAL = "gemma2"                # Cerebro cotidiano (rápido, censurado)
 MODELO_UNCENSORED = "dolphin-mistral"  # Especialista sin filtros (bajo demanda)
 MODELO_NUBE_FLASH = "gemini-3.7-flash" # Analista rápido (visión, web, contexto medio)
 MODELO_NUBE_PRO = "gemini-3.1-pro"     # Artillería pesada (contexto enorme / análisis profundo)
+OPCIONES_GPU_LOCAL = {"num_gpu": 31}   # Unificado en todas las llamadas a Ollama para evitar recargas de VRAM
 
 # =========================================================
 # 2. MEMORIA RAG Y VECTORIZACIÓN (ChromaDB + SQLite)

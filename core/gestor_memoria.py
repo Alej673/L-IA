@@ -52,6 +52,7 @@ def asimilar_archivo(ruta_absoluta, grupo="general", tipo="documento"):
             return f"❌ Error vectorial al indexar en ChromaDB: {e}"
 
         try:
+            # 3. Registro Administrativo (SQLite)
             database.registrar_documento_rag(
                 doc_id=doc_id,
                 titulo=nombre_archivo,
@@ -67,16 +68,6 @@ def asimilar_archivo(ruta_absoluta, grupo="general", tipo="documento"):
             except Exception:
                 pass
             return f"❌ Error al registrar documento en SQLite: {e}"
-
-    # 3. Registro Administrativo (SQLite)
-    database.registrar_documento_rag(
-        doc_id=doc_id,
-        titulo=nombre_archivo,
-        grupo=grupo,
-        tipo=tipo,
-        ruta_archivo=ruta_absoluta,
-        total_chunks=total_chunks
-    )
 
     # NUEVO: Devolvemos un diccionario en lugar de un string
     return {

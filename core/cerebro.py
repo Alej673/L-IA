@@ -786,7 +786,12 @@ def _extraer_llamada_manual(texto):
     return None
 
 def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir, quiere_estado, quiere_entorno, quiere_buscar, callback_ui=None, callback_stream=None, callback_estado=None, motor_voz=config.MOTOR_VOZ_DEFAULT, usar_voz=False):
+    global _dolphin_cargado
     print(f"\n[🏠 Enrutando al Cerebro Local ({config.MODELO_LOCAL})...]")
+
+    if _dolphin_cargado:
+        _descargar_modelo_ollama(config.MODELO_UNCENSORED)
+        _dolphin_cargado = False
 
     requiere_herramienta = quiere_abrir or quiere_estado or quiere_entorno or quiere_buscar
 
@@ -797,6 +802,7 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
 
     # Configuración de inferencia optimizada para GPU de 6 GB
     opciones_ollama = {
+        **config.OPCIONES_GPU_LOCAL,
         'temperature': 0.7,
         'top_p': 0.9,
     }
@@ -838,7 +844,7 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
                 model=config.MODELO_LOCAL,
                 messages=mensajes,
                 format='json',
-                options={'temperature': 0.1}
+                options={**config.OPCIONES_GPU_LOCAL, 'temperature': 0.1}
             )
             t_fin_tool = time.perf_counter()
             print(f"⏱️ [Tool Check JSON]: {t_fin_tool - t_inicio_tool:.2f}s")
@@ -933,6 +939,8 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
 # ==========================================
 # 5.5 RUTA C: CEREBRO LOCAL SIN CENSURA (Dolphin-Mistral)
 # ==========================================
+_dolphin_cargado = False
+
 def _descargar_modelo_ollama(nombre_modelo):
     try:
         ollama.generate(model=nombre_modelo, prompt="", keep_alive=0)
@@ -940,10 +948,11 @@ def _descargar_modelo_ollama(nombre_modelo):
     except Exception as e:
         print(f"⚠️ [No se pudo liberar '{nombre_modelo}' de VRAM: {e}]")
 
-
 def responder_con_local_uncensored(instrucciones_sistema, contexto_historico, callback_stream=None, motor_voz=config.MOTOR_VOZ_UNCENSORED, usar_voz=False):
+    global _dolphin_cargado
     print(f"\n[🐬 Enrutando al Especialista Sin Censura ({config.MODELO_UNCENSORED})...]")
     _descargar_modelo_ollama(config.MODELO_LOCAL)
+    _dolphin_cargado = True
 
     # Prompt positivo (evitamos prohibiciones explícitas de tokens que lo confunden)
     prompt_bozal_dolphin = (
@@ -971,7 +980,7 @@ def responder_con_local_uncensored(instrucciones_sistema, contexto_historico, ca
             messages=mensajes,
             # Opciones clave para evitar bucles infinitos
             options={
-                'num_gpu': 31,
+                **config.OPCIONES_GPU_LOCAL,
                 'temperature': 0.6,          # Ligeramente más alto para darle fluidez
                 'repeat_penalty': 1.15,      # Evita que repita la misma frase
                 'stop': ['ALEJANDRO:', 'TÚ:', '> TÚ:', 'Usuario:']  # Se detiene si intenta hablar por ti
@@ -1117,9 +1126,10 @@ def _ejecutar_guardado_git(msg_lower, callback_ui=None):
     )
     print("🤖 [Generando mensaje de commit estructurado...]")
     respuesta_llm = ollama.chat(
-        model=config.MODELO_LOCAL,
-        messages=[{'role': 'user', 'content': prompt_commit}]
-    )['message']['content'].strip()
+      model=config.MODELO_LOCAL,
+      messages=[{'role': 'user', 'content': prompt_commit}],
+      options=config.OPCIONES_GPU_LOCAL,
+  )['message']['content'].strip()
 
     # Regex endurecido contra posibles asteriscos de Markdown generados por Gemma 2
     titulo_match = re.search(r'\*?TITULO\*?:\s*\*?(.*)', respuesta_llm, re.IGNORECASE)
@@ -1195,7 +1205,7 @@ def _procesar_workspace_fase_7(mensaje_real, msg_lower, fijar: bool, sesion_id="
                 respuesta = ollama.chat(
                     model=config.MODELO_LOCAL,
                     messages=[{'role': 'user', 'content': prompt_resumen}],
-                    options={'num_gpu': 31, 'temperature': 0.1}
+                    options={**config.OPCIONES_GPU_LOCAL, 'temperature': 0.1}
                 )
                 resumen_tecnico = respuesta['message']['content'].strip()
             except Exception as e:
@@ -1302,9 +1312,9 @@ def asimilar_documento_maestro(ruta_absoluta: str, origen_texto: str = "archivo"
     resumen_tecnico = "Ruta fijada, pero no se generó resumen."
     try:
         respuesta = ollama.chat(
-            model=config.MODELO_LOCAL,
-            messages=[{'role': 'user', 'content': prompt_resumen}],
-            options={'num_gpu': 31, 'temperature': 0.1}
+          model=config.MODELO_LOCAL,
+          messages=[{'role': 'user', 'content': prompt_resumen}],
+          options={**config.OPCIONES_GPU_LOCAL, 'temperature': 0.1}
         )
         resumen_tecnico = respuesta['message']['content'].strip()
         print(f"🧠 [Micro-resumen generado]: {resumen_tecnico}")
