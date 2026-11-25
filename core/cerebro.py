@@ -1688,6 +1688,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     if intenciones["guardar_git"]:
         _notificar_estado(callback_estado, {"estado_visual": "procesando_git"})
         texto_respuesta = _ejecutar_guardado_git(msg_lower, callback_ui=callback_ui)
+        database.guardar_mensaje("model", texto_respuesta, sesion_id=sesion_id)
         print(f"\n🤖 L-IA (Local/Git): {texto_respuesta}\n")
         return texto_respuesta, "Local"
     elif intenciones["git"]:

@@ -11,6 +11,7 @@ from core import config
 # Carga perezosa del motor vectorial para no bloquear el arranque general de L-IA
 _rag_instancia = None
 _rag_lock = threading.Lock()
+_memoria_lock = threading.Lock()
 
 def _obtener_rag():
     global _rag_instancia
@@ -35,18 +36,37 @@ def asimilar_archivo(ruta_absoluta, grupo="general", tipo="documento"):
     doc_id = f"doc_{uuid.uuid4().hex[:8]}"
 
     # 2. Vectorización Matemática (ChromaDB)
+    # 2. Vectorización Matemática (ChromaDB) + Registro Administrativo (SQLite)
     rag = _obtener_rag()
-    try:
-        total_chunks = rag.indexar_documento(
-            doc_id=doc_id,
-            texto_completo=contenido,
-            titulo=nombre_archivo,
-            grupo=grupo,
-            tipo=tipo,
-            origen=nombre_archivo
-        )
-    except Exception as e:
-        return f"❌ Error vectorial al indexar en ChromaDB: {e}"
+    with _memoria_lock:
+        try:
+            total_chunks = rag.indexar_documento(
+                doc_id=doc_id,
+                texto_completo=contenido,
+                titulo=nombre_archivo,
+                grupo=grupo,
+                tipo=tipo,
+                origen=nombre_archivo
+            )
+        except Exception as e:
+            return f"❌ Error vectorial al indexar en ChromaDB: {e}"
+
+        try:
+            database.registrar_documento_rag(
+                doc_id=doc_id,
+                titulo=nombre_archivo,
+                grupo=grupo,
+                tipo=tipo,
+                ruta_archivo=ruta_absoluta,
+                total_chunks=total_chunks
+            )
+        except Exception as e:
+            # Rollback compensatorio: si SQLite falla, limpiamos los vectores recién creados
+            try:
+                rag.eliminar_vectores_por_doc(doc_id)
+            except Exception:
+                pass
+            return f"❌ Error al registrar documento en SQLite: {e}"
 
     # 3. Registro Administrativo (SQLite)
     database.registrar_documento_rag(
@@ -68,57 +88,59 @@ def asimilar_archivo(ruta_absoluta, grupo="general", tipo="documento"):
 def consultar_memoria(consulta, n_resultados=config.MAX_RAG_RESULTS):
     """Busca en ChromaDB, filtra por distancia y actualiza estadísticas."""
     rag = _obtener_rag()
-    resultados = rag.buscar_contexto(consulta, n_resultados=n_resultados)
+    with _memoria_lock:
+        resultados = rag.buscar_contexto(consulta, n_resultados=n_resultados)
 
-    if not resultados or not resultados['documents'][0]:
-        return None
+        if not resultados or not resultados['documents'][0]:
+            return None
 
-    # FILTRO DE CORDURA VECTORIAL (Distancia L2)
-    docs_validos = []
-    metas_validas = []
+        # FILTRO DE CORDURA VECTORIAL (Distancia L2)
+        docs_validos = []
+        metas_validas = []
+
+        for i, distancia in enumerate(resultados['distances'][0]):
+            print(f"📊 [RAG Debug] Fragmento {i} - Distancia matemática calculada: {distancia}")
+            if distancia <= config.SIMILARITY_THRESHOLD:
+                docs_validos.append(resultados['documents'][0][i])
+                metas_validas.append(resultados['metadatas'][0][i])
+
+        if not docs_validos:
+            print(f"⚠️ [RAG] Fragmentos descartados por exceder el umbral de distancia ({config.SIMILARITY_THRESHOLD}).")
+            return None
+
+        # Registrar estadísticas SOLO de los fragmentos que sí sirvieron
+        docs_consultados = set()
+        for meta in metas_validas:
+            if 'doc_id' in meta:
+                docs_consultados.add(meta['doc_id'])
+
+        for doc_id in docs_consultados:
+            database.incrementar_uso_documento_rag(doc_id)
+
+        # Reconstruimos el diccionario con la estructura exacta que espera cerebro.py
+        return {
+            'documents': [docs_validos],
+            'metadatas': [metas_validas]
+        }
     
-    for i, distancia in enumerate(resultados['distances'][0]):
-        print(f"📊 [RAG Debug] Fragmento {i} - Distancia matemática calculada: {distancia}")
-        if distancia <= config.SIMILARITY_THRESHOLD:
-            docs_validos.append(resultados['documents'][0][i])
-            metas_validas.append(resultados['metadatas'][0][i])
-
-    if not docs_validos:
-        print(f"⚠️ [RAG] Fragmentos descartados por exceder el umbral de distancia ({config.SIMILARITY_THRESHOLD}).")
-        return None
-
-    # Registrar estadísticas SOLO de los fragmentos que sí sirvieron
-    docs_consultados = set()
-    for meta in metas_validas:
-        if 'doc_id' in meta:
-            docs_consultados.add(meta['doc_id'])
-
-    for doc_id in docs_consultados:
-        database.incrementar_uso_documento_rag(doc_id)
-
-    # Reconstruimos el diccionario con la estructura exacta que espera cerebro.py
-    return {
-        'documents': [docs_validos],
-        'metadatas': [metas_validas]
-    }
-
 def olvidar_documento(doc_id):
     """Elimina el rastro total del documento en ambas bases de datos simultáneamente."""
-    # 1. Destrucción de vectores
     rag = _obtener_rag()
-    rag.eliminar_vectores_por_doc(doc_id)
+    with _memoria_lock:
+        # 1. Destrucción de vectores
+        rag.eliminar_vectores_por_doc(doc_id)
 
-    # 2. Destrucción de metadatos
-    conexion = database.obtener_conexion()
-    try:
-        cursor = conexion.cursor()
-        cursor.execute("DELETE FROM documentos_memoria WHERE doc_id = ?", (doc_id,))
-        conexion.commit()
-    except Exception:
-        conexion.rollback()
-        raise
-    finally:
-        conexion.close()
+        # 2. Destrucción de metadatos
+        conexion = database.obtener_conexion()
+        try:
+            cursor = conexion.cursor()
+            cursor.execute("DELETE FROM documentos_memoria WHERE doc_id = ?", (doc_id,))
+            conexion.commit()
+        except Exception:
+            conexion.rollback()
+            raise
+        finally:
+            conexion.close()
 
     print(f"🧹 [Gestor] Documento {doc_id} erradicado permanentemente de ambas memorias.")
     return True
