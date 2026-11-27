@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,6 +37,45 @@ var carpetasExcluidas = map[string]bool{
 
 const maxResultadosBusqueda = 20
 
+// filtrarCarpetasRaiz elimina rutas duplicadas y subcarpetas cuya carpeta padre
+// ya está incluida en la lista (evita escaneos paralelos repetidos del mismo subárbol).
+func filtrarCarpetasRaiz(carpetas []string) []string {
+	limpias := make([]string, 0, len(carpetas))
+	for _, c := range carpetas {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		limpias = append(limpias, filepath.Clean(c))
+	}
+
+	sort.Slice(limpias, func(i, j int) bool {
+		return len(limpias[i]) < len(limpias[j])
+	})
+
+	sep := string(filepath.Separator)
+	raices := make([]string, 0, len(limpias))
+	for _, cand := range limpias {
+		candLower := strings.ToLower(cand)
+		esHija := false
+		for _, raiz := range raices {
+			raizLower := strings.ToLower(raiz)
+			prefijo := raizLower
+			if !strings.HasSuffix(prefijo, sep) {
+				prefijo += sep
+			}
+			if candLower == raizLower || strings.HasPrefix(candLower, prefijo) {
+				esHija = true
+				break
+			}
+		}
+		if !esHija {
+			raices = append(raices, cand)
+		}
+	}
+	return raices
+}
+
 func buscarArchivosHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	var req BuscarRequest
@@ -50,13 +90,16 @@ func buscarArchivosHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	carpetasRaiz := filtrarCarpetasRaiz(req.Carpetas)
+
 	resultados := make([]ArchivoEncontrado, 0, maxResultadosBusqueda)
+	vistos := make(map[string]struct{}, maxResultadosBusqueda)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	var limiteAlcanzado atomic.Bool
 
 	// Lanzar una goroutine por cada "Zona Segura" para buscar en paralelo
-	for _, carpeta := range req.Carpetas {
+	for _, carpeta := range carpetasRaiz {
 		wg.Add(1)
 		go func(rutaBase string) {
 			defer wg.Done()
@@ -85,12 +128,18 @@ func buscarArchivosHandler(w http.ResponseWriter, r *http.Request) {
 				if strings.Contains(strings.ToLower(d.Name()), palabra) {
 					info, err := d.Info()
 					if err == nil {
+						clave := filepath.Clean(strings.ToLower(path))
 						mu.Lock()
 						if len(resultados) >= maxResultadosBusqueda {
 							limiteAlcanzado.Store(true)
 							mu.Unlock()
 							return fs.SkipAll
 						}
+						if _, duplicado := vistos[clave]; duplicado {
+							mu.Unlock()
+							return nil
+						}
+						vistos[clave] = struct{}{}
 						resultados = append(resultados, ArchivoEncontrado{
 							Ruta:       path,
 							FechaModif: info.ModTime().Format("2006-01-02 15:04"),

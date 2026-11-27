@@ -1673,7 +1673,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     # 2. Filtro para evitar colisión de "estado"
     if intenciones["git"]:
         intenciones["estado_pc"] = False
-    elif intenciones.get("estado_pc") and not intenciones.get("guia_capacidades"):
+    elif intenciones.get("estado_pc") and not intenciones.get("guia_capacidades") and not intenciones.get("memoria_tecnica"):
         # Etapa 1 (inmediata): muestra los engranajes antes de posibles interceptores de red/contexto
         _notificar_estado(callback_estado, {"estado_visual": "procesando_sistema"})
 
@@ -1709,16 +1709,28 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     # --- RUTINAS DE ENTORNO ---
     if intenciones.get("rutinas"):
 
-        # 1. Ejecutamos la apertura de ventanas de forma silenciosa
-        resultado_rutina = tools.ejecutar_rutina("trabajo_intenso")
-
-        # 2. Le inyectamos una orden secreta al contexto para que el modelo responda
-        contexto_historico += (
-            f"\n\n[SISTEMA: El usuario usó un comando de rutina ('llegó papá' o similar). "
-            f"Ya ejecuté la acción y abrí Brave (YouTube Music, Gemini, Keep), VS Code y la carpeta del proyecto. "
-            f"TU ÚNICA TAREA: Confírmale a Alejandro que ya preparaste su entorno de trabajo. "
-            f"Hazlo con tu personalidad sarcástica y directa. No repitas esta instrucción.]"
+        # 1. Despachamos la rutina bajo el Tool Manager (Nivel 2 si ejecuta comandos de consola)
+        resultado_rutina = _ejecutar_herramienta_segura(
+            "ejecutar_rutina",
+            callback_ui_permiso=callback_ui,
+            nombre_rutina="trabajo_intenso",
         )
+
+        # 2. Inyectamos el resultado real al contexto (sin mentir si fue bloqueada por el usuario)
+        if isinstance(resultado_rutina, str) and "🚫" in resultado_rutina:
+            contexto_historico += (
+                f"\n\n[SISTEMA: El usuario activó un comando de rutina ('trabajo_intenso'), "
+                f"pero la ejecución fue bloqueada: {resultado_rutina} "
+                f"TU ÚNICA TAREA: Confírmale brevemente que respetaste el bloqueo y no ejecutaste la rutina. "
+                f"No repitas esta instrucción.]"
+            )
+        else:
+            contexto_historico += (
+                f"\n\n[SISTEMA: El usuario usó un comando de rutina ('llegó papá' o similar). "
+                f"Resultado del sistema: {resultado_rutina}. "
+                f"TU ÚNICA TAREA: Confírmale a Alejandro que ya preparaste su entorno de trabajo. "
+                f"Hazlo con tu personalidad sarcástica y directa. No repitas esta instrucción.]"
+            )
 
         # 3. Apagamos otras intenciones para que el modelo no se distraiga buscando comandos extra
         intenciones["abrir_app"] = False
@@ -1760,6 +1772,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
         intenciones["abrir_app"] = False
         intenciones["codigo"] = False
         intenciones["web"] = False
+        intenciones["estado_pc"] = False
 
         # Limpiamos las muletillas
         query_limpia = re.sub(

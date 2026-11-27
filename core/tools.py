@@ -405,12 +405,39 @@ def abrir_aplicacion(nombres_apps: str) -> str:
 
     return " | ".join(resultados)
 
+
+ARCHIVOS_SENSIBLES = {
+    '.env',
+    'credentials.json',
+    'token.json',
+    'devices.json',
+    'snapshot.json',
+    'tinytuya.json',
+    'tuya-raw.json',
+}
+EXTENSIONES_SENSIBLES = {'.key', '.pem', '.p12'}
+LIMITE_LECTURA_BYTES = 5 * 1024 * 1024  # 5 MB
+
+
+def _es_archivo_sensible(ruta_o_nombre: str) -> bool:
+    nombre = os.path.basename(ruta_o_nombre).strip("'\"").strip().lower()
+    if not nombre:
+        return False
+    if nombre in ARCHIVOS_SENSIBLES or nombre.startswith('.env.'):
+        return True
+    _, ext = os.path.splitext(nombre)
+    return ext in EXTENSIONES_SENSIBLES
+
+
 def buscar_archivo_local(nombre_archivo: str) -> str:
     """
     Rastrea 'Zonas Seguras' usando el microservicio concurrente en Go.
     Si encuentra múltiples archivos, lanza un modal en React para elegir.
     """
     nombre_archivo = nombre_archivo.lower()
+    if _es_archivo_sensible(nombre_archivo):
+        return f"🚫 Acceso denegado: '{os.path.basename(nombre_archivo)}' es un archivo sensible protegido por el Tool Manager."
+
     usuario_actual = os.path.expanduser("~")
     
     # 1. Compilar las Zonas Seguras (Rutas base + personalizadas)
@@ -439,7 +466,10 @@ def buscar_archivo_local(nombre_archivo: str) -> str:
         if datos.get("error"):
             return f"Error en el buscador de bajo nivel: {datos['error']}"
             
-        coincidencias = datos.get("resultados") or []
+        coincidencias = [
+            item for item in (datos.get("resultados") or [])
+            if not _es_archivo_sensible(item.get("ruta", ""))
+        ]
 
         # 3. Lógica de enrutamiento de resultados
         if len(coincidencias) == 0:
@@ -488,6 +518,9 @@ def leer_archivo_local(ruta_archivo: str, busqueda_automatica=False):
     """
     import os
     ruta_limpia = ruta_archivo.strip("'\"").strip()
+    if _es_archivo_sensible(ruta_limpia):
+        return {"error": f"Acceso denegado: '{os.path.basename(ruta_limpia)}' es un archivo sensible protegido."}
+
     ruta_final = None
 
     # 1. Búsqueda inteligente si no existe directamente
@@ -518,12 +551,20 @@ def leer_archivo_local(ruta_archivo: str, busqueda_automatica=False):
         ruta_final = ruta_limpia
 
     try:
-        tamano_kb = os.path.getsize(ruta_final) / 1024
         nombre_archivo = os.path.basename(ruta_final)
+        if _es_archivo_sensible(ruta_final):
+            return {"error": f"Acceso denegado: '{nombre_archivo}' es un archivo sensible protegido."}
+
+        tamano_bytes = os.path.getsize(ruta_final)
+        if tamano_bytes > LIMITE_LECTURA_BYTES:
+            tamano_mb = round(tamano_bytes / (1024 * 1024), 2)
+            return {"error": f"El archivo '{nombre_archivo}' pesa {tamano_mb} MB y supera el límite seguro de 5 MB."}
+
+        tamano_kb = tamano_bytes / 1024
         _, extension = os.path.splitext(nombre_archivo)
 
         # 2. Extensiones válidas
-        extensiones_validas = ['.txt', '.py', '.php', '.js', '.json', '.html', '.css', '.md', '.env', '.cpp', '.h', '.docx', '.pdf', '.java', '.cs', '.rb', '.go', '.rs', '.ts', '.sh', '.bat', '.yml', '.yaml', '.ini', '.conf', '.log', '.sql', '.c', '.swift', '.pl', '.r', '.lua', '.asm', '.dart', '.kt', '.m', '.vbs', '.jsx', '.tsx', '.ps1', '.gradle', '.makefile', '.dockerfile', '.tex', '.erl', '.ex', '.exs', '.clj', '.cljs', '.groovy', '.hbs', '.twig', '.jade', '.pug']
+        extensiones_validas = ['.txt', '.py', '.php', '.js', '.json', '.html', '.css', '.md', '.cpp', '.h', '.docx', '.pdf', '.java', '.cs', '.rb', '.go', '.rs', '.ts', '.sh', '.bat', '.yml', '.yaml', '.ini', '.conf', '.log', '.sql', '.c', '.swift', '.pl', '.r', '.lua', '.asm', '.dart', '.kt', '.m', '.vbs', '.jsx', '.tsx', '.ps1', '.gradle', '.makefile', '.dockerfile', '.tex', '.erl', '.ex', '.exs', '.clj', '.cljs', '.groovy', '.hbs', '.twig', '.jade', '.pug']
 
         if extension.lower() not in extensiones_validas:
             return {"error": f"El formato '{extension}' no está soportado."}
@@ -703,14 +744,17 @@ def hacer_commit_git(ruta_repo, titulo_commit, descripcion_commit=""):
         # 1. Validar si existen cambios pendientes (¡El parche de seguridad!)
         estado = subprocess.run(
             ['git', 'status', '--porcelain'], 
-            cwd=ruta_repo, capture_output=True, text=True, check=True, encoding='utf-8'
+            cwd=ruta_repo, capture_output=True, text=True, check=True, encoding='utf-8', timeout=20
         )
         
         if not estado.stdout.strip():
             return "⚠️ Todo está actualizado. No hay cambios pendientes para hacer commit."
 
         # 2. Añadir al staging
-        subprocess.run(['git', 'add', '.'], cwd=ruta_repo, check=True)
+        subprocess.run(
+            ['git', 'add', '.'],
+            cwd=ruta_repo, capture_output=True, text=True, check=True, encoding='utf-8', timeout=20
+        )
         
         # 3. Crear el commit
         comando = ['git', 'commit', '-m', titulo_commit]
@@ -718,16 +762,19 @@ def hacer_commit_git(ruta_repo, titulo_commit, descripcion_commit=""):
             comando.extend(['-m', descripcion_commit])
             
         commit = subprocess.run(
-            comando, cwd=ruta_repo, capture_output=True, text=True, check=True, encoding='utf-8'
+            comando, cwd=ruta_repo, capture_output=True, text=True, check=True, encoding='utf-8', timeout=20
         )
         
         # 4. Subir al servidor remoto (Push)
         push = subprocess.run(
-            ['git', 'push'], cwd=ruta_repo, capture_output=True, text=True, check=True, encoding='utf-8'
+            ['git', 'push'], cwd=ruta_repo, capture_output=True, text=True, check=True, encoding='utf-8', timeout=20
         )
         
         return f"✅ Cambios guardados y subidos exitosamente.\n\nDetalles del Commit:\n{commit.stdout}\n\nDetalles del Push:\n{push.stderr or push.stdout}"
         
+    except subprocess.TimeoutExpired as e:
+        cmd_str = ' '.join(e.cmd) if isinstance(e.cmd, (list, tuple)) else str(e.cmd)
+        return f"⏱️ Error: El comando Git excedió el tiempo límite de 20s ({cmd_str}). Revisa tu conexión o credenciales."
     except subprocess.CalledProcessError as e:
         # Mejora en el mensaje de error para saber exactamente en qué paso falló
         return f"❌ Error ejecutando Git ({' '.join(e.cmd)}):\nSalida: {e.stdout}\nError: {e.stderr}"
@@ -776,8 +823,17 @@ CATALOGO_HERRAMIENTAS = {
     "leer_repositorio_git": {"nivel": 1},
     "leer_cambios_git": {"nivel": 1},
     "hacer_commit_git": {"nivel": 2},
-    "comando_cambiar_entorno": {"nivel": 1}
+    "comando_cambiar_entorno": {"nivel": 1},
+    "ejecutar_rutina": {"nivel": 2},
 }
+
+
+def _nivel_riesgo_rutina(nombre_rutina: str = "trabajo_intenso") -> int:
+    rutina = RUTAS_RUTINAS.get(nombre_rutina)
+    if not rutina:
+        return 1
+    return 2 if rutina.get("comandos_consola") else 1
+
 
 def gestor_permisos(nombre_herramienta: str, callback_ui_permiso=None, **kwargs):
     """
@@ -791,6 +847,8 @@ def gestor_permisos(nombre_herramienta: str, callback_ui_permiso=None, **kwargs)
         return f"🚫 [Tool Manager]: Herramienta '{nombre_herramienta}' no registrada en el catálogo de seguridad."
         
     nivel_riesgo = config["nivel"]
+    if nombre_herramienta == "ejecutar_rutina":
+        nivel_riesgo = _nivel_riesgo_rutina(kwargs.get("nombre_rutina", "trabajo_intenso"))
     
     # Nivel 0 y 1: Ejecución silenciosa o con log benigno
     if nivel_riesgo <= 1:
@@ -821,6 +879,9 @@ def gestor_permisos(nombre_herramienta: str, callback_ui_permiso=None, **kwargs)
         # Si la interfaz gráfica (interfaz_lia.py) pasó una función visual, la usamos
         if callback_ui_permiso and callable(callback_ui_permiso):
             autorizado = callback_ui_permiso(nombre_herramienta, kwargs)
+        elif not (sys.stdin and hasattr(sys.stdin, "isatty") and sys.stdin.isatty()):
+            print("⛔ [Tool Manager]: Sin interfaz gráfica ni terminal interactiva; denegando Nivel 2 por defecto.")
+            autorizado = False
         else:
             # Respaldo por consola si se ejecuta desde terminal pura
             while True:
@@ -874,6 +935,8 @@ def _ejecutar_dinamico(nombre_herramienta, **kwargs):
         return comando_cambiar_entorno(kwargs.get("escena", control_iot.ESCENA_POR_DEFECTO))
     elif nombre_herramienta == "leer_cambios_git":
         return leer_cambios_git(kwargs.get("ruta_repo", ""))
+    elif nombre_herramienta == "ejecutar_rutina":
+        return ejecutar_rutina(kwargs.get("nombre_rutina", "trabajo_intenso"))
     else:
         return f"Error: No hay lógica de despacho para {nombre_herramienta}"
 # Aquí más adelante agregaremos:
