@@ -1,36 +1,61 @@
 # Entornos virtuales
 venv/
+.venv/
 env/
 
 # Archivos de caché de Python
 __pycache__/
 *.pyc
+*.pyo
 
-# Variables de entorno (Aquí guardaremos tu API Key más adelante por seguridad)
+# Variables de entorno y secretos
 .env
-
-# Capturas de pantalla temporales del asistente
-captura_temp.png
-captura_temp.jpg
-
-*.gif
-*.mp3
-*.wav
-
-# Credenciales de Google Cloud y OAuth
-config/l-ia-tts-*.json
-credentials.json
-token.json
 *.pem
 *.key
-
+*.p12
+credentials.json
+token.json
+config/l-ia-tts-*.json
 config/credentials.json
 config/token.json
 
-# ==========================================
 # Credenciales y Configuración de IoT / Tuya
-# ==========================================
 config/devices.json
 config/snapshot.json
 config/tinytuya.json
 config/tuya-raw.json
+
+# Capturas y multimedia temporal
+captura_temp.png
+captura_temp.jpg
+*.gif
+*.mp3
+*.wav
+temp_audio/
+temp_rag/
+
+# Bases de datos locales y memoria (SQLite y ChromaDB)
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+
+# Modelos de voz y pesos pesados (>275 MB)
+piper/
+core/VozLia/
+vosk-model-*/
+*.onnx
+*.bin
+
+# Node.js, builds de frontend y binarios Go/Rust
+node_modules/
+dist/
+lia-interfaz/dist/
+lia-interfaz/src-tauri/target/
+microservicios/*.exe
+
+# Residuos de npm en raíz (el proyecto real vive en lia-interfaz/)
+/package.json
+/package-lock.json
