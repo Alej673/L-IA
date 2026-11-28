@@ -69,11 +69,6 @@ if not api_key:
 
 client = genai.Client(api_key=api_key)
 
-# Ruta del proyecto/repositorio sobre el que se está trabajando. Persiste entre
-# turnos para que un "¿qué cambió?" sin ruta explícita reutilice el último
-# proyecto mencionado (lo actualizan _procesar_git y _ejecutar_guardado_git).
-PROYECTO_ACTIVO_ACTUAL = None
-
 # ==========================================
 # 1.5 ESTIMADOR DE TOKENS Y LÍMITES (Semáforo v3)
 # ==========================================
@@ -1061,28 +1056,30 @@ def _procesar_calendario(contexto_historico):
     return contexto_historico
 
 
-def _resolver_proyecto_activo(mensaje_real: str, msg_lower: str) -> str:
-    """Helper para centralizar la deducción de la ruta del proyecto activo (DRY)."""
-    global PROYECTO_ACTIVO_ACTUAL
+def _resolver_proyecto_activo(mensaje_real: str, msg_lower: str, sesion_id: str = "default") -> str:
+    """Deduce y persiste el repositorio Git activo aislado por sesion_id en SQLite."""
     rutas_conocidas = _cargar_rutas_personalizadas()
-
     alias_detectado, ruta_encontrada = _encontrar_ruta_inteligente(msg_lower, rutas_conocidas)
+    ruta_actual = database.obtener_proyecto_git_activo(sesion_id=sesion_id)
 
     if ruta_encontrada:
-        PROYECTO_ACTIVO_ACTUAL = ruta_encontrada
-        print(f"📌 [Proyecto activo cambiado por alias flexible: '{alias_detectado}']")
+        ruta_actual = ruta_encontrada
+        database.establecer_proyecto_git_activo(ruta_actual, sesion_id=sesion_id)
+        print(f"📌 [Sesión {sesion_id[:8]}] Proyecto Git activo cambiado por alias '{alias_detectado}': {ruta_actual}")
     else:
         match_ruta_explicita = re.search(r'[a-zA-Z]:\\(?:[^\s"<>|]+\\?)+', mensaje_real)
         if match_ruta_explicita:
-            PROYECTO_ACTIVO_ACTUAL = match_ruta_explicita.group(0).strip().rstrip('\\')
-        elif PROYECTO_ACTIVO_ACTUAL is None:
-            PROYECTO_ACTIVO_ACTUAL = os.getcwd()
+            ruta_actual = match_ruta_explicita.group(0).strip().rstrip('\\')
+            database.establecer_proyecto_git_activo(ruta_actual, sesion_id=sesion_id)
+        elif not ruta_actual:
+            ruta_actual = os.getcwd()
+            database.establecer_proyecto_git_activo(ruta_actual, sesion_id=sesion_id)
 
-    return PROYECTO_ACTIVO_ACTUAL
+    return ruta_actual
 
 
-def _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=None):
-    ruta = _resolver_proyecto_activo(mensaje_real, msg_lower)
+def _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=None, sesion_id="default"):
+    ruta = _resolver_proyecto_activo(mensaje_real, msg_lower, sesion_id=sesion_id)
 
     print(f"\n⚙️ [L-IA solicitando ejecución de: leer_repositorio_git en '{ruta}']")
     resultado_git = _ejecutar_herramienta_segura(
@@ -1094,8 +1091,8 @@ def _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=None)
     return contexto_historico
 
 
-def _ejecutar_guardado_git(msg_lower, callback_ui=None):
-    ruta = _resolver_proyecto_activo(msg_lower, msg_lower)
+def _ejecutar_guardado_git(mensaje_real, msg_lower, callback_ui=None, sesion_id="default"):
+    ruta = _resolver_proyecto_activo(mensaje_real, msg_lower, sesion_id=sesion_id)
 
     # Fallback de seguridad absoluto antes de interactuar con el SO
     if not ruta:
@@ -1104,17 +1101,19 @@ def _ejecutar_guardado_git(msg_lower, callback_ui=None):
     print(f"\n🧠 [L-IA analizando código en '{ruta}' para crear el commit...]")
 
     try:
-        proc_status = subprocess.run(['git', 'status', '--short'], cwd=ruta, capture_output=True, text=True, encoding='utf-8')
+        proc_status = subprocess.run(['git', 'status', '--short'], cwd=ruta, capture_output=True, text=True, encoding='utf-8', timeout=20)
         status = proc_status.stdout if proc_status.stdout else ""
 
         if not status.strip():
             return f"Alejandro, revisé la carpeta {ruta} y no hay ningún cambio para guardar."
 
-        proc_diff = subprocess.run(['git', 'diff', 'HEAD'], cwd=ruta, capture_output=True, text=True, encoding='utf-8')
+        proc_diff = subprocess.run(['git', 'diff', 'HEAD'], cwd=ruta, capture_output=True, text=True, encoding='utf-8', timeout=20)
         diff = proc_diff.stdout if proc_diff.stdout else ""
 
         # Corte seguro: diff ahora siempre es un string, incluso si está vacío.
         contexto_git = f"ESTADO DE ARCHIVOS:\n{status}\n\nDIFERENCIAS DE CÓDIGO:\n{diff[:1500]}"
+    except subprocess.TimeoutExpired:
+        return f"⏱️ Error: Git excedió el tiempo límite de 20s leyendo cambios en '{ruta}'."
     except Exception as e:
         return f"Error leyendo el estado de Git: {e}"
 
@@ -1572,11 +1571,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     # =================================================================
 
     intenciones = nlp.detectar_intenciones(msg_lower)
-    # --- PARCHE: FORZAR DETECCIÓN DEL RAG ---
-    if re.search(r'\b(memoria\s+t[eé]cnica|segundo\s+cerebro|bit[aá]cora|apuntes?|recuerdas?)\b', msg_lower):
-        intenciones["memoria_tecnica"] = True
-    # ----------------------------------------
-    
+
     # Se guarda la intención de código ANTES de que los interceptores de
     # archivo/entorno la apaguen; el semáforo la usa para decidir Pro.
     intenciones["codigo_bruto"] = bool(intenciones.get("codigo"))
@@ -1611,8 +1606,13 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
         or (bool(ruta_workspace) and not archivo_detectado
             and bool(nlp.PATRON_REFERENCIA_GENERICA.search(msg_lower)))
     )
-    # Fijar/limpiar el workspace y consultar la memoria técnica tienen su propio camino.
-    if es_orden_de_workspace or intenciones.get("memoria_tecnica"):
+    # Fijar/limpiar el workspace y las consultas puras a memoria técnica (sin documento activo
+    # referenciado explícitamente) siguen su propio camino.
+    if es_orden_de_workspace or (
+        intenciones.get("memoria_tecnica")
+        and not nlp.PATRON_LECTURA_IMPLICITA.search(msg_lower)
+        and not menciona_workspace
+    ):
         intentando_leer_documento = False
 
     documento_cargado = False
@@ -1697,14 +1697,18 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     # inyecta su salida como contexto del turno.
     if intenciones["guardar_git"]:
         _notificar_estado(callback_estado, {"estado_visual": "procesando_git"})
-        texto_respuesta = _ejecutar_guardado_git(msg_lower, callback_ui=callback_ui)
+        texto_respuesta = _ejecutar_guardado_git(
+            mensaje_real, msg_lower, callback_ui=callback_ui, sesion_id=sesion_id
+        )
         database.guardar_mensaje("model", texto_respuesta, sesion_id=sesion_id)
         print(f"\n🤖 L-IA (Local/Git): {texto_respuesta}\n")
         return texto_respuesta, "Local"
     elif intenciones["git"]:
         _notificar_estado(callback_estado, {"estado_visual": "procesando_git"})
         intenciones["estado_pc"] = False
-        contexto_historico = _procesar_git(mensaje_real, msg_lower, contexto_historico, callback_ui=callback_ui)
+        contexto_historico = _procesar_git(
+            mensaje_real, msg_lower, contexto_historico, callback_ui=callback_ui, sesion_id=sesion_id
+        )
 
     # --- RUTINAS DE ENTORNO ---
     if intenciones.get("rutinas"):
@@ -1759,9 +1763,10 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
     tipo_intencion_principal = "casual"
     contexto_recuperado = None
 
-    # PARCHE 2.0: Ampliamos el gatillo para atrapar peticiones de resumen
-    if re.search(r'\b(memoria\s+t[eé]cnica|segundo\s+cerebro|bit[aá]cora|apuntes?|recuerdas?|resumen|res[uú]meme|de qu[eé] trata|expl[ií]came\s+este)\b', msg_lower):
-        intenciones["memoria_tecnica"] = True
+    # Si el documento completo del Workspace ya se cargó en este turno, no pisarlo con
+    # ChromaDB salvo que el usuario pida explícitamente cruzarlo con su memoria técnica.
+    if documento_cargado and not nlp.PATRON_CRUZAR_MEMORIA_TECNICA.search(msg_lower):
+        intenciones["memoria_tecnica"] = False
 
     if intenciones.get("memoria_tecnica"):
         print("💡 [Semáforo] Consultando Segundo Cerebro (ChromaDB)...")

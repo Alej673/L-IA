@@ -21,19 +21,19 @@ def _construir_patron(raices, excluir=None):
 
 
 _RAICES = {
-    "vision": ["pantall", "monitor", "mir", "observ", "ve", "vio", "vier", "viend", "vist", "vem", "chequ", "escane", "fij[aá]te"],
-    "abrir_app": ["abr", "inici", "ejecut", "lanz", "lanc", "arranc", "activ", "prend", "corr[ée]", "carg", "levant", "monta"],
+    "vision": ["pantall", "monitor", "screenshot"],
+    "abrir_app": ["abr", "inici", "ejecut", "lanz", "lanc", "arranc"],
     "estado_pc": ["bater[ií]", "hardware", "ventilador", "temperatura", "laptop"],
-    "portapapeles": ["portapapeles", "copi", "peg", "clipboard"],
+    "portapapeles": ["portapapeles", "clipboard"],
     "codigo": ["c[oó]dig", "analiz", "bug", "error", "optimiz", "refactoriz", "revis", "depur", "corrig", "arregl", "audit", "mejor[aá]", "prueb[ae]"],
     "web": ["investig", "consult", "averigu", "googl", "indag", "infórmate", "informate"],
-    "buscar_archivo": ["busc", "encuentr", "rastre", "localiz", "archivo", "documento"],
+    "buscar_archivo": [],
     "clima": ["clima", "temperatur", "pronostic", "meteorolog", "llov", "llueve", "solead"],
     "calendario": ["calendari", "agend", "evento", "reuni[oó]n", "cita", "compromis"],
     "entorno_activo": ["ventana", "programa", "abierto ahora", "en la pantalla", "herramienta", "proyecto actual", "este documento", "este archivo", "este otro archivo", "este doc", "el otro archivo", "el otro documento"],
-    "rutinas": ["vamos a trabajar", "lleg[oó] pap[aá]", "empecemos", "modo hacker", "activa el protocolo", "prepara el entorno"],
+    "rutinas": ["vamos a trabajar", "lleg[oó] pap[aá]", "empecemos a trabajar", "modo hacker", "activa el protocolo", "prepara el entorno"],
     "entorno_iot": ["luz", "luces", "iluminaci", "foco", "tira"],
-    "memoria_tecnica": ["recuerd", "bit[aá]cor", "documentaci[oó]n", "c[oó]mo resolv", "incidente", "segundo cerebro", "apunte", "solucionam"],
+    "memoria_tecnica": ["memoria\\s+t[eé]cnica", "recuerd", "bit[aá]cor", "documentaci[oó]n", "c[oó]mo resolv", "incidente", "segundo cerebro", "apunte", "solucionam"],
 }
 
 _EXCLUSIONES = {
@@ -46,7 +46,34 @@ _EXCLUSIONES = {
 PATRONES_CLAVE = {
     clave: _construir_patron(raices, _EXCLUSIONES.get(clave))
     for clave, raices in _RAICES.items()
+    if raices
 }
+
+# Patrones con contexto semántico para evitar falsos positivos de raíces ultra-cortas
+PATRONES_CLAVE["vision"] = re.compile(
+    PATRONES_CLAVE["vision"].pattern
+    + r'|\bcaptura\s+de\s+pantalla\b'
+    + r'|\b(?:mir[aeo]\w*|ve[rs]?|ves|vemos|viendo|observ\w*|chequ\w*|escane\w*|f[ií]j[aá]te)\s+(?:en\s+)?(?:mi\s+|la\s+|esta\s+)?(?:pantalla|monitor|escritorio|imagen|ventana|lo\s+que\s+(?:hay|tengo|ves))\b'
+    + r'|\bqu[eé]\s+(?:ves|hay)\s+(?:en\s+)?(?:mi\s+|la\s+)?(?:pantalla|monitor)\b',
+    re.IGNORECASE
+)
+PATRONES_CLAVE["abrir_app"] = re.compile(
+    PATRONES_CLAVE["abrir_app"].pattern
+    + r'|\b(?:corr(?:e|er)|levant[ae]\w*|activ[ae]\w*|prend[ae]\w*|carg[ae]\w*)\s+(?:el\s+|la\s+|mi\s+)?(?:app|aplicaci[oó]n|programa|servidor|navegador|juego|carpeta|proyecto|vs\s*code|chrome|brave|spotify|discord|steam|laragon|unreal)\b',
+    re.IGNORECASE
+)
+PATRONES_CLAVE["portapapeles"] = re.compile(
+    PATRONES_CLAVE["portapapeles"].pattern
+    + r'|\b(?:lo\s+que|texto\s+que|c[oó]digo\s+que|esto\s+que)\s+(?:tengo\s+)?(?:copi\w*|peg\w*)\b'
+    + r'|\b(?:lee|revisa|analiza|mira|traduce|resume|corrige)\s+(?:lo\s+)?(?:copiad[oa]|del\s+portapapeles|el\s+portapapeles)\b'
+    + r'|\b(?:tengo|acab[oa]\s+de)\s+copiar\b',
+    re.IGNORECASE
+)
+PATRONES_CLAVE["buscar_archivo"] = re.compile(
+    r'\b(?:busc\w*|encuentr\w*|encontr\w*|rastre\w*|localiz\w*|d[oó]nde\s+(?:est[aá]|guard[eé]))\s+(?:el\s+|la\s+|un\s+|una\s+|mi\s+|los\s+|las\s+)?(?:archivo|documento|doc|pdf|docx|carpeta|proyecto|c[oó]digo|script|factura|cv|curr[ií]culum|bit[aá]cora|informe|reporte|nota)\b'
+    r'|\b(?:busc\w*|encuentr\w*|localiz\w*|rastre\w*)\s+["\']?[\w\-\.]+\.(?:py|js|jsx|ts|php|html|css|json|md|txt|pdf|docx|sql|go|rs)["\']?\b',
+    re.IGNORECASE
+)
 
 # gpu/vram/recursos/disco van con límite de palabra exacto (\b) para evitar
 # colisiones de prefijo como "discord", "discoteca" o "recursividad".
@@ -145,6 +172,10 @@ REGEX_ARCHIVO_EN_VENTANA = re.compile(
     r'([a-zA-Z0-9_\-\s]+\.(html|php|js|css|py|docx|pdf|txt|md|pptx|xlsx))',
     re.IGNORECASE
 )
+PATRON_CRUZAR_MEMORIA_TECNICA = re.compile(
+    r'\b(?:memoria\s+t[eé]cnica|segundo\s+cerebro|bit[aá]cora|tus\s+apuntes|mis\s+apuntes|historial\s+t[eé]cnico|cruza\w*\s+con\s+(?:tu|mi)\s+memoria)\b',
+    re.IGNORECASE
+)
 
 
 def evaluar_hostilidad(mensaje_lower: str) -> int:
@@ -162,7 +193,9 @@ def evaluar_hostilidad(mensaje_lower: str) -> int:
         r'\btont[oa]\b', r'\bbrut[oa]\b', r'\bpendej[oa]\b', r'\bimb[eé]cil\b',
         r'\bburr[oa]\b', r'\bobsoleta\b', r'\bputa\b', r'\bmierda\b', r'\bhuevad\w*\b',
         r'\bcarajo\b', r'\bchucha\b', r'\bno\s+entiendes\b', r'\bqu[eé]\s+hiciste\b',
-        r'\bas[ií]\s+no\b', r'\bno\s+quer[ií]a\s+eso\b', r'\barruinaste\b', r'\bmal\b',
+        r'\bas[ií]\s+no\b', r'\bno\s+quer[ií]a\s+eso\b', r'\barruinaste\b',
+        r'\b(?:lo\s+hiciste|respondes|respondiste|trabajas|eres|est[aá]s)\s+mal\b',
+        r'\bqu[eé]\s+mal(?:a)?\s+(?:eres|asistente|ia|respuesta)\b',
         r'\bte\s+equivocaste\b'
     ]
 
@@ -197,5 +230,9 @@ def detectar_intenciones(mensaje_lower: str) -> dict:
     # Anti-colisión: "revisa la batería" -> gana estado_pc sobre código.
     if intenciones.get("estado_pc"):
         intenciones["codigo"] = False
+
+    # Anti-colisión: consultas a la memoria técnica que mencionan "CPU/RAM" no son diagnóstico live.
+    if intenciones.get("memoria_tecnica"):
+        intenciones["estado_pc"] = False
 
     return intenciones

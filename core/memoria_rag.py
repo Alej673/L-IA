@@ -30,43 +30,92 @@ class MemoriaRAG:
             embedding_function=self.embedding_fn
         )
 
-    def _fragmentar_texto_inteligente(self, texto, max_chars=config.CHUNK_SIZE):
+    def _fragmentar_texto_inteligente(self, texto, max_chars=config.CHUNK_SIZE, overlap=config.CHUNK_OVERLAP):
         """
-        Divide el texto priorizando saltos lógicos (párrafos dobles y líneas).
-        Evita cortar funciones de código o ideas a la mitad.
+        Divide el texto priorizando saltos lógicos (párrafos y líneas), troceando
+        bloques o líneas largas con ventana deslizante y solapamiento (`overlap`),
+        sin producir fragmentos vacíos.
         """
-        parrafos = re.split(r'\n\n+', texto)
+        if not texto or not texto.strip():
+            return []
+
+        max_chars = max(1, int(max_chars))
+        overlap = max(0, min(int(overlap), max_chars // 2))
+
+        def _trocear_con_solapamiento(bloque: str) -> list[str]:
+            bloque = bloque.strip()
+            if not bloque:
+                return []
+            if len(bloque) <= max_chars:
+                return [bloque]
+            partes = []
+            paso = max(1, max_chars - overlap)
+            inicio = 0
+            n = len(bloque)
+            while inicio < n:
+                fin = min(n, inicio + max_chars)
+                fragmento = bloque[inicio:fin].strip()
+                if fragmento:
+                    partes.append(fragmento)
+                if fin >= n:
+                    break
+                inicio += paso
+            return partes
+
+        unidades = []
+        for parrafo in re.split(r'\n\n+', texto.strip()):
+            parrafo = parrafo.strip()
+            if not parrafo:
+                continue
+            if len(parrafo) <= max_chars:
+                unidades.append(parrafo)
+            else:
+                sub_chunk = ""
+                for linea in parrafo.split('\n'):
+                    if len(linea) > max_chars:
+                        if sub_chunk.strip():
+                            unidades.append(sub_chunk.strip())
+                            sub_chunk = ""
+                        unidades.extend(_trocear_con_solapamiento(linea))
+                    elif not sub_chunk:
+                        sub_chunk = linea
+                    elif len(sub_chunk) + 1 + len(linea) <= max_chars:
+                        sub_chunk += "\n" + linea
+                    else:
+                        if sub_chunk.strip():
+                            unidades.append(sub_chunk.strip())
+                        sub_chunk = linea
+                if sub_chunk.strip():
+                    unidades.append(sub_chunk.strip())
+
         chunks = []
         chunk_actual = ""
-
-        for parrafo in parrafos:
-            if len(chunk_actual) + len(parrafo) < max_chars:
-                chunk_actual += parrafo + "\n\n"
+        for unidad in unidades:
+            if not chunk_actual:
+                chunk_actual = unidad
+            elif len(chunk_actual) + 2 + len(unidad) <= max_chars:
+                chunk_actual += "\n\n" + unidad
             else:
-                if chunk_actual:
-                    chunks.append(chunk_actual.strip())
-                
-                # Si un solo bloque de código/texto es más grande que el máximo permitido
-                if len(parrafo) > max_chars:
-                    lineas = parrafo.split('\n')
-                    sub_chunk = ""
-                    for linea in lineas:
-                        if len(sub_chunk) + len(linea) < max_chars:
-                            sub_chunk += linea + "\n"
-                        else:
-                            chunks.append(sub_chunk.strip())
-                            sub_chunk = linea + "\n"
-                    chunk_actual = sub_chunk + "\n\n"
+                chunks.append(chunk_actual)
+                solape = chunk_actual[-overlap:].lstrip() if overlap > 0 else ""
+                if (
+                    solape
+                    and not unidad.startswith(solape[: min(20, len(solape))])
+                    and len(solape) + 2 + len(unidad) <= max_chars
+                ):
+                    chunk_actual = f"{solape}\n\n{unidad}"
                 else:
-                    chunk_actual = parrafo + "\n\n"
-        
-        if chunk_actual:
-            chunks.append(chunk_actual.strip())
-            
-        return chunks
+                    chunk_actual = unidad
 
-    def indexar_documento(self, doc_id, texto_completo, titulo, grupo="general", tipo="documento", origen="archivo"):
-        chunks = self._fragmentar_texto_inteligente(texto_completo)
+        if chunk_actual:
+            chunks.append(chunk_actual)
+
+        return [c for c in chunks if c]
+
+    def indexar_documento(self, doc_id, texto_completo, titulo, grupo="general", tipo="documento", origen="archivo", chunks=None):
+        chunks = chunks if chunks is not None else self._fragmentar_texto_inteligente(texto_completo)
+        if not chunks:
+            return 0
         ids = []
         metadatos = []
         fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

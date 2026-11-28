@@ -78,10 +78,16 @@ def inicializar_base_datos():
             workspace_activo TEXT,
             workspace_resumen TEXT,
             workspace_historial TEXT,
+            proyecto_git_activo TEXT,
             fecha_creacion TEXT,
             ultima_actualizacion TEXT
         )
         """)
+        # Migración idempotente para bases de datos existentes sin proyecto_git_activo
+        cursor.execute("PRAGMA table_info(sesiones_chat)")
+        columnas_sesiones = {fila["name"] for fila in cursor.fetchall()}
+        if "proyecto_git_activo" not in columnas_sesiones:
+            cursor.execute("ALTER TABLE sesiones_chat ADD COLUMN proyecto_git_activo TEXT")
 
         # 3. Historial de conversación (Vinculado a la sesión)
         cursor.execute("""
@@ -318,6 +324,29 @@ def limpiar_workspace_activo(sesion_id="default"):
             WHERE id = ?
         """, (_ahora(), sesion_id))
 
+
+def establecer_proyecto_git_activo(ruta_repo, sesion_id="default"):
+    """Fija el repositorio Git activo exclusivamente para la sesión indicada."""
+    if not sesion_id:
+        sesion_id = "default"
+    with _conexion(escribir=True) as conexion:
+        cursor = conexion.cursor()
+        cursor.execute(
+            "UPDATE sesiones_chat SET proyecto_git_activo = ?, ultima_actualizacion = ? WHERE id = ?",
+            (ruta_repo, _ahora(), sesion_id),
+        )
+
+
+def obtener_proyecto_git_activo(sesion_id="default"):
+    """Devuelve el repositorio Git activo de la sesión, o None."""
+    if not sesion_id:
+        sesion_id = "default"
+    with _conexion() as conexion:
+        cursor = conexion.cursor()
+        cursor.execute("SELECT proyecto_git_activo FROM sesiones_chat WHERE id = ?", (sesion_id,))
+        fila = cursor.fetchone()
+    return fila["proyecto_git_activo"] if fila else None
+
 # ============================================================
 # HISTORIAL DE CONVERSACIÓN
 # ============================================================
@@ -385,6 +414,26 @@ def buscar_ruta_proyecto_rag(nombre_proyecto):
         """, (f"%{nombre_proyecto}%", f"%{nombre_proyecto}%"))
         resultado = cursor.fetchone()
     return resultado["ruta_archivo"] if resultado else None
+
+
+def buscar_doc_ids_por_ruta(ruta_archivo):
+    """Devuelve los doc_id registrados cuya ruta normalizada coincide con `ruta_archivo`."""
+    objetivo = os.path.normcase(os.path.abspath(ruta_archivo))
+    with _conexion() as conexion:
+        cursor = conexion.cursor()
+        cursor.execute("SELECT doc_id, ruta_archivo FROM documentos_memoria WHERE ruta_archivo IS NOT NULL")
+        filas = cursor.fetchall()
+    return [
+        f["doc_id"] for f in filas
+        if f["ruta_archivo"] and os.path.normcase(os.path.abspath(f["ruta_archivo"])) == objetivo
+    ]
+
+
+def eliminar_documento_rag(doc_id):
+    """Elimina un registro puntual de documentos_memoria por doc_id."""
+    with _conexion(escribir=True) as conexion:
+        cursor = conexion.cursor()
+        cursor.execute("DELETE FROM documentos_memoria WHERE doc_id = ?", (doc_id,))
 
 def actualizar_workspace_resumen(resumen, sesion_id="default"):
     """Guarda el micro-resumen en la tabla de la sesión activa."""

@@ -2,8 +2,9 @@
 gestor_memoria.py — El Orquestador del Segundo Cerebro.
 Sincroniza las escrituras, lecturas y borrados entre ChromaDB (vectores) y SQLite (metadatos).
 """
+import hashlib
+import os
 import threading
-import uuid
 from core import database
 from core import tools
 from core import config
@@ -22,6 +23,12 @@ def _obtener_rag():
                 _rag_instancia = MemoriaRAG()
     return _rag_instancia
 
+def _generar_doc_id(ruta_absoluta: str) -> str:
+    """Genera un identificador determinista basado en la ruta normalizada del documento."""
+    ruta_norm = os.path.normcase(os.path.abspath(ruta_absoluta))
+    return f"doc_{hashlib.sha256(ruta_norm.encode('utf-8')).hexdigest()[:12]}"
+
+
 def asimilar_archivo(ruta_absoluta, grupo="general", tipo="documento"):
     """Lee un archivo, lo vectoriza en ChromaDB y registra la metadata en SQLite."""
     print(f"\n🧠 [Gestor] Iniciando asimilación de: {ruta_absoluta}")
@@ -33,20 +40,37 @@ def asimilar_archivo(ruta_absoluta, grupo="general", tipo="documento"):
 
     contenido = datos.get("contenido", "")
     nombre_archivo = datos.get("nombre", "archivo_desconocido")
-    doc_id = f"doc_{uuid.uuid4().hex[:8]}"
+    ruta_normalizada = os.path.abspath(datos.get("ruta_absoluta", ruta_absoluta))
 
-    # 2. Vectorización Matemática (ChromaDB)
+    if not contenido or not contenido.strip():
+        return f"❌ El archivo '{nombre_archivo}' no contiene texto extraíble (posible PDF escaneado o archivo vacío)."
+
+    doc_id = _generar_doc_id(ruta_normalizada)
+
     # 2. Vectorización Matemática (ChromaDB) + Registro Administrativo (SQLite)
     rag = _obtener_rag()
     with _memoria_lock:
+        chunks = rag._fragmentar_texto_inteligente(contenido)
+        if not chunks:
+            return f"❌ El archivo '{nombre_archivo}' no generó fragmentos indexables."
+
         try:
+            # Limpiar vectores previos del mismo documento (determinista o legados por misma ruta)
+            ids_previos = set(database.buscar_doc_ids_por_ruta(ruta_normalizada))
+            ids_previos.add(doc_id)
+            for prev_id in ids_previos:
+                rag.eliminar_vectores_por_doc(prev_id)
+                if prev_id != doc_id:
+                    database.eliminar_documento_rag(prev_id)
+
             total_chunks = rag.indexar_documento(
                 doc_id=doc_id,
                 texto_completo=contenido,
                 titulo=nombre_archivo,
                 grupo=grupo,
                 tipo=tipo,
-                origen=nombre_archivo
+                origen=nombre_archivo,
+                chunks=chunks,
             )
         except Exception as e:
             return f"❌ Error vectorial al indexar en ChromaDB: {e}"
@@ -58,7 +82,7 @@ def asimilar_archivo(ruta_absoluta, grupo="general", tipo="documento"):
                 titulo=nombre_archivo,
                 grupo=grupo,
                 tipo=tipo,
-                ruta_archivo=ruta_absoluta,
+                ruta_archivo=ruta_normalizada,
                 total_chunks=total_chunks
             )
         except Exception as e:
