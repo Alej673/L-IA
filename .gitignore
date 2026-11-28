@@ -55,6 +55,7 @@ dist/
 lia-interfaz/dist/
 lia-interfaz/src-tauri/target/
 microservicios/*.exe
+microservicios/*.exe~
 
 # Residuos de npm en raíz (el proyecto real vive en lia-interfaz/)
 /package.json

@@ -83,7 +83,7 @@ FASE_1 = [
     # ----------------------------------------------------------------------
     {
         "tipo": "sfx",
-        "archivo": "Sonido de buscar datos.wav"
+        "archivo": "Sonido de buscar datos.ogg"
     },
     {
         "tipo": "comando_ui",

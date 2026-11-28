@@ -95,15 +95,63 @@ def _descargar_modelo_ollama_unsafe(nombre_modelo: str) -> None:
         print(f"⚠️ [No se pudo liberar '{nombre_modelo}' de VRAM: {e}]")
 
 
-def descargar_modelos_ollama(modelos=None) -> None:
-    """Descarga de VRAM los modelos locales indicados de forma thread-safe."""
+def _coincide_modelo_ollama(objetivo: str, cargado: str) -> bool:
+    """Compara nombres de modelo tolerando el tag implícito ':latest'."""
+    obj = (objetivo or "").strip().lower()
+    car = (cargado or "").strip().lower()
+    if not obj or not car:
+        return False
+    if obj == car:
+        return True
+    return ":" not in obj and car.split(":", 1)[0] == obj
+
+
+def _modelos_cargados_ollama_unsafe():
+    """Consulta `ollama.ps()` bajo `_ollama_vram_lock`. Devuelve list[str] o None si falla."""
+    try:
+        respuesta = ollama.ps()
+    except Exception as e:
+        print(f"⚠️ [ollama.ps() falló; usando descarga de respaldo: {e}]")
+        return None
+
+    modelos = respuesta.get("models", []) if isinstance(respuesta, dict) else getattr(respuesta, "models", [])
+    nombres = []
+    for item in modelos or []:
+        if isinstance(item, dict):
+            nombre = item.get("model") or item.get("name")
+        else:
+            nombre = getattr(item, "model", None) or getattr(item, "name", None)
+        if nombre:
+            nombres.append(str(nombre))
+    return nombres
+
+
+def descargar_modelos_ollama(modelos=None) -> list[str]:
+    """Descarga de VRAM los modelos locales realmente cargados (vía `ollama.ps()`) de forma thread-safe."""
     global _modelo_ollama_activo
     objetivos = tuple(modelos) if modelos is not None else (config.MODELO_LOCAL, config.MODELO_UNCENSORED)
+    descargados: list[str] = []
     with _ollama_vram_lock:
-        for nombre in objetivos:
-            _descargar_modelo_ollama_unsafe(nombre)
-            if _modelo_ollama_activo == nombre:
+        cargados = _modelos_cargados_ollama_unsafe()
+        if cargados is not None:
+            a_descargar = [
+                nombre_cargado
+                for nombre_cargado in cargados
+                if any(_coincide_modelo_ollama(obj, nombre_cargado) for obj in objetivos)
+            ]
+            if _modelo_ollama_activo and not any(
+                _coincide_modelo_ollama(_modelo_ollama_activo, c) for c in cargados
+            ):
                 _modelo_ollama_activo = None
+        else:
+            a_descargar = list(objetivos)
+
+        for nombre in a_descargar:
+            _descargar_modelo_ollama_unsafe(nombre)
+            descargados.append(nombre)
+            if _modelo_ollama_activo and _coincide_modelo_ollama(_modelo_ollama_activo, nombre):
+                _modelo_ollama_activo = None
+    return descargados
 
 
 def _preparar_vram_ollama_unsafe(modelo_objetivo: str) -> None:
@@ -472,11 +520,12 @@ def _encontrar_ruta_inteligente(mensaje_lower, rutas_conocidas):
 # ==========================================
 # 2.5 DESPACHO SEGURO DE HERRAMIENTAS
 # ==========================================
-def _ejecutar_herramienta_segura(nombre_herramienta: str, callback_ui_permiso=None, **kwargs):
+def _ejecutar_herramienta_segura(nombre_herramienta: str, callback_ui_permiso=None, callback_archivo=None, **kwargs):
     print(f"⚙️ [Despacho seguro] Solicitando ejecución de: '{nombre_herramienta}' args={kwargs}")
     return tools.gestor_permisos(
         nombre_herramienta,
         callback_ui_permiso=callback_ui_permiso,
+        callback_archivo=callback_archivo,
         **kwargs
     )
 
@@ -684,6 +733,14 @@ comando_cambiar_entorno.__doc__ = (
     f"Opciones válidas: {', '.join(repr(e) for e in control_iot.ESCENAS_INTERACTIVAS)}."
 )
 
+def buscar_archivo_local(nombre_archivo: str) -> str:
+    """
+    Busca un archivo local en las Zonas Seguras del usuario por nombre o palabra clave y devuelve su contenido.
+    """
+    # Stub para el esquema de herramientas de Gemini; el Cerebro despacha
+    # la ejecución real vía _ejecutar_herramienta_segura con callback_archivo.
+    pass
+
 def _reportar_error(mensaje: str, callback_stream=None) -> str:
     """Envía `mensaje` a la GUI y lo devuelve.
 
@@ -755,7 +812,7 @@ def _ejecutar_con_reintentos(accion, callback_stream, emitidos, etiqueta="Nube",
 
 def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, buscar_web=False,
                         modelo_nube=config.MODELO_NUBE_FLASH, callback_ui=None, callback_stream=None,
-                        callback_estado=None, usar_herramientas=True, motor_voz=config.MOTOR_VOZ_DEFAULT, usar_voz=False):
+                        callback_estado=None, callback_archivo=None, usar_herramientas=True, motor_voz=config.MOTOR_VOZ_DEFAULT, usar_voz=False):
     """Responde con Gemini (Flash o Pro). Hay tres caminos:
 
       CASO 1  buscar_web=True          google_search + streaming real.
@@ -840,7 +897,7 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
     # salta el semáforo de permisos (`callback_ui` / `gestor_permisos`).
     # Desactivado, `response.function_calls` siempre llega intacto y decidimos
     # nosotros si se ejecuta.
-    herramientas_activas = [tools.abrir_aplicacion, leer_repositorio_git, comando_cambiar_entorno, tools.buscar_archivo_local]
+    herramientas_activas = [tools.abrir_aplicacion, leer_repositorio_git, comando_cambiar_entorno, buscar_archivo_local]
     config_deteccion = types.GenerateContentConfig(
         tools=herramientas_activas,
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
@@ -868,6 +925,7 @@ def responder_con_nube(instrucciones_sistema, contexto_historico, usar_vision, b
             resultado_sistema = _ejecutar_herramienta_segura(
                 llamada.name,
                 callback_ui_permiso=callback_ui,
+                callback_archivo=callback_archivo,
                 **argumentos
             )
             print(f"✅ [Sistema: {resultado_sistema}]")
@@ -939,7 +997,7 @@ def _extraer_llamada_manual(texto):
 
     return None
 
-def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir, quiere_estado, quiere_entorno, quiere_buscar, callback_ui=None, callback_stream=None, callback_estado=None, motor_voz=config.MOTOR_VOZ_DEFAULT, usar_voz=False):
+def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir, quiere_estado, quiere_entorno, quiere_buscar, callback_ui=None, callback_stream=None, callback_estado=None, callback_archivo=None, motor_voz=config.MOTOR_VOZ_DEFAULT, usar_voz=False):
     print(f"\n[🏠 Enrutando al Cerebro Local ({config.MODELO_LOCAL})...]")
 
     requiere_herramienta = quiere_abrir or quiere_estado or quiere_entorno or quiere_buscar
@@ -1028,6 +1086,7 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
                 resultado = _ejecutar_herramienta_segura(
                     accion,
                     callback_ui_permiso=callback_ui,
+                    callback_archivo=callback_archivo,
                     **kwargs_herramienta
                 )
                 print(f"✅ [Sistema: {resultado}]")
@@ -1648,7 +1707,7 @@ def _notificar_estado(callback_estado, info: dict):
 # ==========================================
 # 8. ENRUTADOR PRINCIPAL
 # ==========================================
-def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None, callback_estado=None, sesion_id="default", usar_voz=False):
+def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None, callback_estado=None, callback_archivo=None, sesion_id="default", usar_voz=False):
     """Punto de entrada de cada mensaje. Devuelve (texto_respuesta, ruta_usada).
 
     `callback_ui`      pide permiso al usuario para herramientas sensibles.
@@ -1676,7 +1735,8 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None, cal
             _stream_vigilado if callback_stream else None,
             callback_estado,
             sesion_id,
-            usar_voz=usar_voz
+            usar_voz=usar_voz,
+            callback_archivo=callback_archivo,
         )
     except Exception as e:
         # Salvoconducto para el colapso orgánico: debe llegar intacto a api.py
@@ -1691,7 +1751,7 @@ def charlar_con_lia(mensaje_usuario, callback_ui=None, callback_stream=None, cal
     return texto, ruta
 
 
-def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_estado, sesion_id="default", usar_voz=False):
+def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_estado, sesion_id="default", usar_voz=False, callback_archivo=None):
     # 1. Armamos el historial previo (sin duplicar el turno actual) y luego persistimos el mensaje
     contexto_historico = prompt_builder.armar_historial_usuario(mensaje_usuario, sesion_id=sesion_id)
     database.guardar_mensaje("user", mensaje_usuario, sesion_id=sesion_id)
@@ -1981,7 +2041,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
         sesion_id=sesion_id,
     )
 
-    tokens_totales = estimar_tokens(contexto_historico)
+    tokens_totales = estimar_tokens(instrucciones_sistema) + estimar_tokens(contexto_historico)
     print(f"🚦 [SEMÁFORO v3] Tokens estimados del contexto total: {tokens_totales}")
 
     ruta_elegida, modelo_nube_seleccionado, motivo_ruta = _elegir_ruta(intenciones, msg_lower, tokens_totales)
@@ -2022,6 +2082,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
             callback_ui=callback_ui,
             callback_stream=callback_stream,
             callback_estado=callback_estado,
+            callback_archivo=callback_archivo,
             # Pro solo usa herramientas locales si el usuario pidió abrir algo;
             # si no, va en streaming directo (ver CASO 2 de responder_con_nube).
             usar_herramientas=(not es_pro) or intenciones["abrir_app"],
@@ -2043,6 +2104,7 @@ def _procesar_mensaje(mensaje_usuario, callback_ui, callback_stream, callback_es
             callback_ui=callback_ui,
             callback_stream=callback_stream,
             callback_estado=callback_estado,
+            callback_archivo=callback_archivo,
             motor_voz=motor_voz_elegido,
             usar_voz=usar_voz
         )

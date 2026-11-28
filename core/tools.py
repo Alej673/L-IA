@@ -429,10 +429,11 @@ def _es_archivo_sensible(ruta_o_nombre: str) -> bool:
     return ext in EXTENSIONES_SENSIBLES
 
 
-def buscar_archivo_local(nombre_archivo: str) -> str:
+def buscar_archivo_local(nombre_archivo: str, callback_archivo=None) -> str:
     """
     Rastrea 'Zonas Seguras' usando el microservicio concurrente en Go.
-    Si encuentra múltiples archivos, lanza un modal en React para elegir.
+    Si encuentra múltiples archivos y existe `callback_archivo`, delega la
+    desambiguación en memoria hacia la interfaz; si no, lista las rutas.
     """
     nombre_archivo = nombre_archivo.lower()
     if _es_archivo_sensible(nombre_archivo):
@@ -481,29 +482,23 @@ def buscar_archivo_local(nombre_archivo: str) -> str:
             return leer_archivo_local(coincidencias[0]['ruta'], busqueda_automatica=True)
 
         else:
-            # 4. ¡Múltiples archivos! 
-            # Hacemos una petición interna a nuestra propia API para congelar 
-            # este hilo hasta que React muestre el modal y el usuario responda.
-            print("⚠️ Múltiples opciones. Levantando modal en React...")
-            try:
-                resp_espera = requests.post(
-                    "http://127.0.0.1:10500/semaforo/interno/esperar_archivo",
-                    json={"opciones": coincidencias},
-                    timeout=130 # 10 segundos extra sobre el timeout de la API
-                ).json()
-                
-                ruta_elegida = resp_espera.get("ruta")
-                
-                if ruta_elegida:
-                    # Una vez que haces clic en React, leemos ese archivo exacto
-                    return leer_archivo_local(ruta_elegida, busqueda_automatica=True)
-                else:
-                    return "Operación cancelada: Alejandro cerró el modal sin seleccionar ningún archivo."
-            
-            except requests.exceptions.Timeout:
-                return "Tiempo de espera agotado: no seleccionaste ningún archivo en la interfaz a tiempo."
-            except Exception as e:
-                return f"Error intentando desambiguar con la interfaz: {e}"
+            # 4. ¡Múltiples archivos! Desambiguación en memoria vía callback UI.
+            if callback_archivo and callable(callback_archivo):
+                print("⚠️ Múltiples opciones. Levantando modal en React...")
+                try:
+                    ruta_elegida = callback_archivo(coincidencias)
+                    if ruta_elegida:
+                        # Una vez que haces clic en React, leemos ese archivo exacto
+                        return leer_archivo_local(ruta_elegida, busqueda_automatica=True)
+                    return "Operación cancelada: no se seleccionó ningún archivo en la interfaz (cancelado o tiempo agotado)."
+                except Exception as e:
+                    return f"Error intentando desambiguar con la interfaz: {e}"
+
+            listado = "\n".join(
+                f"{idx}. {item['ruta']} ({item['tamano_kb']:.1f} KB, {item['fecha']})"
+                for idx, item in enumerate(coincidencias, start=1)
+            )
+            return f"Se encontraron múltiples coincidencias para '{nombre_archivo}':\n{listado}"
 
     # --- Bloques except del try principal (Go en puerto 10510) ---
     except requests.exceptions.ConnectionError:
@@ -511,7 +506,7 @@ def buscar_archivo_local(nombre_archivo: str) -> str:
     except Exception as e:
         return f"Error inesperado durante la búsqueda concurrente: {e}"
 
-def leer_archivo_local(ruta_archivo: str, busqueda_automatica=False):
+def leer_archivo_local(ruta_archivo: str, busqueda_automatica=False, callback_archivo=None):
     """
     Lee un archivo de texto, código, Word (.docx) o PDF desde una ruta.
     Busca inteligentemente en el directorio de trabajo si solo se pasa un nombre.
@@ -543,7 +538,7 @@ def leer_archivo_local(ruta_archivo: str, busqueda_automatica=False):
             
             # Si aún así no lo encontramos localmente, lanzamos la búsqueda global
             if not ruta_final and not busqueda_automatica:
-                return buscar_archivo_local(ruta_limpia)
+                return buscar_archivo_local(ruta_limpia, callback_archivo=callback_archivo)
         
         if not ruta_final:
             return {"error": f"No se encontró la ruta ni el archivo: {ruta_limpia}"}
@@ -817,7 +812,7 @@ def _nivel_riesgo_rutina(nombre_rutina: str = "trabajo_intenso") -> int:
     return 2 if rutina.get("comandos_consola") else 1
 
 
-def gestor_permisos(nombre_herramienta: str, callback_ui_permiso=None, **kwargs):
+def gestor_permisos(nombre_herramienta: str, callback_ui_permiso=None, callback_archivo=None, **kwargs):
     """
     Cortafuegos interno adaptado para interfaz gráfica.
     - callback_ui_permiso: una función externa (idealmente un popup de Tkinter) 
@@ -836,7 +831,7 @@ def gestor_permisos(nombre_herramienta: str, callback_ui_permiso=None, **kwargs)
     if nivel_riesgo <= 1:
         if nivel_riesgo == 1:
             print(f"🛡️ [Tool Manager]: Acción benigna permitida automáticamente ({nombre_herramienta})")
-        return _ejecutar_dinamico(nombre_herramienta, **kwargs)
+        return _ejecutar_dinamico(nombre_herramienta, callback_archivo=callback_archivo, **kwargs)
         
     # Nivel 2: Intervención humana obligatoria
     if nivel_riesgo == 2:
@@ -879,21 +874,21 @@ def gestor_permisos(nombre_herramienta: str, callback_ui_permiso=None, **kwargs)
                     
         if autorizado:
             print("✅ Ejecución autorizada.")
-            return _ejecutar_dinamico(nombre_herramienta, **kwargs)
+            return _ejecutar_dinamico(nombre_herramienta, callback_archivo=callback_archivo, **kwargs)
         else:
             print("⛔ Ejecución bloqueada.")
             return f"🚫 [Tool Manager]: El usuario (Alejandro) bloqueó manualmente la ejecución de '{nombre_herramienta}' por razones de seguridad."
 
-def _ejecutar_dinamico(nombre_herramienta, **kwargs):
+def _ejecutar_dinamico(nombre_herramienta, callback_archivo=None, **kwargs):
     """Enrutador interno (dispatch) hacia la función real en tools.py"""
     if nombre_herramienta == "abrir_aplicacion":
         return abrir_aplicacion(kwargs.get("nombres_apps", ""))
     elif nombre_herramienta == "obtener_estado_sistema":
         return obtener_estado_sistema()
     elif nombre_herramienta == "buscar_archivo_local":
-        return buscar_archivo_local(kwargs.get("nombre_archivo", ""))
+        return buscar_archivo_local(kwargs.get("nombre_archivo", ""), callback_archivo=callback_archivo)
     elif nombre_herramienta == "leer_archivo_local":
-        return leer_archivo_local(kwargs.get("ruta_archivo", ""))
+        return leer_archivo_local(kwargs.get("ruta_archivo", ""), callback_archivo=callback_archivo)
     elif nombre_herramienta == "leer_portapapeles":
         return leer_portapapeles()
     elif nombre_herramienta == "ejecutar_comando_sistema":

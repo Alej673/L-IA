@@ -15,6 +15,22 @@ def _esperar_interrumpible(segundos: float, evento_cancelacion=None) -> bool:
     return False
 
 
+def _asegurar_mixer_sfx() -> bool:
+    """Inicializa pygame.mixer bajo demanda vía core.voz antes de reproducir SFX en frío."""
+    try:
+        import core.voz as voz
+        return voz.asegurar_mixer()
+    except Exception:
+        if pygame.mixer.get_init():
+            return True
+        try:
+            pygame.mixer.init(channels=2)
+            pygame.mixer.set_num_channels(8)
+            return True
+        except Exception:
+            return False
+
+
 def _orquestar_evento(libreto, callback_ui, usar_voz=True, evento_cancelacion=None):
     """
     Lee el libreto y dispara las acciones síncronamente.
@@ -60,7 +76,7 @@ def _orquestar_evento(libreto, callback_ui, usar_voz=True, evento_cancelacion=No
 
             if ruta_audio.exists():
                 try:
-                    if pygame.mixer.get_init():
+                    if _asegurar_mixer_sfx():
                         pygame.mixer.Sound(str(ruta_audio)).play()
                 except Exception as e:
                     print(f"⚠️ [SFX Error] Fallo al reproducir {archivo_sfx}: {e}")

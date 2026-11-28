@@ -126,9 +126,6 @@ class ActualizarTituloRequest(BaseModel):
 class RespuestaSeleccionArchivo(BaseModel):
     ruta: Optional[str] = None
 
-class SolicitudDesambiguacion(BaseModel):
-    opciones: list[dict]
-
 
 class EventoTactilNucleo(BaseModel):
     tipo: str
@@ -315,8 +312,11 @@ class VigilanteRAM:
 
     def _descargar_modelo(self) -> None:
         try:
-            descargar_modelos_ollama(self.modelos)
-            logger.info("[Daemon RAM] Modelos %s descargados, VRAM liberada.", self.modelos)
+            descargados = descargar_modelos_ollama(self.modelos)
+            if descargados:
+                logger.info("[Daemon RAM] Modelos %s descargados, VRAM liberada.", descargados)
+            else:
+                logger.info("[Daemon RAM] ollama.ps() confirmó que no había modelos locales cargados en VRAM.")
         except Exception as e:
             logger.warning("[Daemon RAM] Error al intentar limpiar modelos: %s", e)
         with self._lock:
@@ -602,6 +602,9 @@ def _hilo_chat(entrada: str, mensaje: MensajeUsuario, cola: queue.Queue) -> None
     def permiso_interfaz(herramienta: str, argumentos: Any) -> bool:
         return semaforo.solicitar_autorizacion(herramienta, argumentos)
 
+    def seleccionar_archivo_interfaz(opciones: list) -> Optional[str]:
+        return semaforo_archivos.solicitar_seleccion(opciones)
+
     def estado_interfaz(info: dict) -> None:
         cola.put({"tipo": "estado", **info})
 
@@ -615,6 +618,7 @@ def _hilo_chat(entrada: str, mensaje: MensajeUsuario, cola: queue.Queue) -> None
                 callback_ui=permiso_interfaz,
                 callback_stream=stream_consola,
                 callback_estado=estado_interfaz,
+                callback_archivo=seleccionar_archivo_interfaz,
                 sesion_id=sesion_id,
                 usar_voz=mensaje.usar_voz,
             )
@@ -857,13 +861,6 @@ async def responder_semaforo_archivos(respuesta: RespuestaSeleccionArchivo):
     """React envía la ruta exacta que el usuario clickeó en el modal."""
     aceptada = semaforo_archivos.registrar_respuesta(respuesta.ruta)
     return {"status": "ok" if aceptada else "ignorado"}
-
-
-@router_semaforo.post("/interno/esperar_archivo")
-def esperar_archivo_interno(req: SolicitudDesambiguacion):
-    """tools.py llama a este endpoint interno y se queda congelado esperando a React."""
-    ruta = semaforo_archivos.solicitar_seleccion(req.opciones)
-    return {"ruta": ruta}
 
 
 # --- Interacciones táctiles con el núcleo (sin chat/SSE ni colapso) --------

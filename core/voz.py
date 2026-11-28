@@ -114,6 +114,11 @@ def _asegurar_mixer() -> bool:
     return _mixer_disponible
 
 
+def asegurar_mixer() -> bool:
+    """Helper público para asegurar la inicialización perezosa de pygame.mixer."""
+    return _asegurar_mixer()
+
+
 def _obtener_kokoro():
     """Carga Kokoro en CPU bajo demanda con double-checked locking."""
     global pipeline_kokoro, _kokoro_intentado
