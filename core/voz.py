@@ -8,19 +8,14 @@ import queue
 import re
 import threading
 import time
+import uuid
+from typing import Optional
 from xml.sax.saxutils import escape as _escapar_xml
 
 import numpy as np
 import pygame
 import sounddevice as sd
 import soundfile as sf
-from vosk import Model, KaldiRecognizer
-from faster_whisper import WhisperModel
-
-# --- IMPORTS TTS ---
-from kokoro import KPipeline
-import edge_tts
-from google.cloud import texttospeech
 
 from core.config import (
     SAMPLE_RATE_STT, UMBRAL_VOZ_ESCUCHA, GRACIA_MAX_PITIDO,
@@ -29,7 +24,6 @@ from core.config import (
     VOICE_NUBE, RATE_EDGE, VOICE_DOLPHIN, VELOCIDAD_GOOGLE,
     CANAL_VOZ, CANAL_EFECTOS, AUDIO_EXTENSION
 )
-from core import rutas
 
 # Funciona si lo importa cerebro.py (core.rutas) o si ejecutas voz.py directo.
 try:
@@ -54,21 +48,35 @@ RUTAS_SONIDOS = {
 
 
 # =========================================================
-# INICIALIZACIÓN
+# INICIALIZACIÓN PEREZOSA (LAZY LOADING)
 # =========================================================
 # Credenciales de Google: solo se registran si el archivo existe. El cliente se
 # crea la primera vez que se usa; si fallan, hablar() cae a Kokoro.
 if rutas.RUTA_GOOGLE_JSON.exists():
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(rutas.RUTA_GOOGLE_JSON)
 _cliente_google = None
+_lock_google = threading.Lock()
 
-# OJO: en pygame.mixer.init(), `channels` es mono/estéreo (1 o 2), NO la cantidad
-# de canales de mezcla. Esa se fija con set_num_channels().
-pygame.mixer.init(channels=2)
-pygame.mixer.set_num_channels(8)
+_mixer_intentado = False
+_mixer_disponible = False
+_lock_mixer = threading.Lock()
 _canal_pensando = None
 _cache_efectos = {}
+
+pipeline_kokoro = None
+_kokoro_intentado = False
+_lock_carga_kokoro = threading.Lock()
 _lock_kokoro = threading.Lock()  # Kokoro no debe usarse desde dos hilos a la vez
+
+_whisper_model = None
+_whisper_intentado = False
+_lock_carga_whisper = threading.Lock()
+
+_vosk_model = None
+_vosk_intentado = False
+_lock_carga_vosk = threading.Lock()
+
+_lock_reproduccion = threading.Lock()  # Evita que dos turnos TTS se pisen en CANAL_VOZ
 evento_silencio = threading.Event()
 _cancelar_escucha = threading.Event()
 _lock_escucha = threading.Lock()
@@ -84,18 +92,75 @@ def _cargar(nombre, fabrica):
         return None
 
 
-for _nombre, _ruta in rutas.verificar_rutas():
-    print(f"⚠️ Falta {_nombre}: {_ruta}")
+def _asegurar_mixer() -> bool:
+    """Inicializa pygame.mixer bajo demanda; tolera equipos sin dispositivo de audio."""
+    global _mixer_intentado, _mixer_disponible
+    if _mixer_intentado:
+        return _mixer_disponible
+    with _lock_mixer:
+        if _mixer_intentado:
+            return _mixer_disponible
+        try:
+            # OJO: en pygame.mixer.init(), `channels` es mono/estéreo (1 o 2),
+            # NO la cantidad de canales de mezcla (set_num_channels).
+            pygame.mixer.init(channels=2)
+            pygame.mixer.set_num_channels(8)
+            _mixer_disponible = True
+        except Exception as e:
+            print(f"⚠️ Audio no disponible (pygame.mixer.init falló): {e}")
+            _mixer_disponible = False
+        finally:
+            _mixer_intentado = True
+    return _mixer_disponible
 
-print("⏳ Cargando el cerebro local de voz (Kokoro)...")
-# En CPU: evita el conflicto de cuDNN y no compite por la VRAM de 6 GB con gemma2/dolphin.
-pipeline_kokoro = _cargar("Kokoro", lambda: KPipeline(lang_code="e", device="cpu"))
 
-print("🧠 Cargando modelo auditivo Whisper (puede tardar la primera vez)...")
-_whisper_model = _cargar("Whisper", lambda: WhisperModel("small", device="cpu", compute_type="int8"))
+def _obtener_kokoro():
+    """Carga Kokoro en CPU bajo demanda con double-checked locking."""
+    global pipeline_kokoro, _kokoro_intentado
+    if _kokoro_intentado:
+        return pipeline_kokoro
+    with _lock_carga_kokoro:
+        if not _kokoro_intentado:
+            print("⏳ Cargando el cerebro local de voz (Kokoro)...")
+            # En CPU: evita el conflicto de cuDNN y no compite por la VRAM de 6 GB con gemma2/dolphin.
+            def _fabrica():
+                from kokoro import KPipeline
+                return KPipeline(lang_code="e", device="cpu")
+            pipeline_kokoro = _cargar("Kokoro", _fabrica)
+            _kokoro_intentado = True
+    return pipeline_kokoro
 
-print("👂 Cargando modelo centinela Vosk...")
-_vosk_model = _cargar("Vosk", lambda: Model(str(rutas.VOSK_MODEL_PATH)))
+
+def _obtener_whisper():
+    """Carga Faster-Whisper en CPU bajo demanda con double-checked locking."""
+    global _whisper_model, _whisper_intentado
+    if _whisper_intentado:
+        return _whisper_model
+    with _lock_carga_whisper:
+        if not _whisper_intentado:
+            print("🧠 Cargando modelo auditivo Whisper (puede tardar la primera vez)...")
+            def _fabrica():
+                from faster_whisper import WhisperModel
+                return WhisperModel("small", device="cpu", compute_type="int8")
+            _whisper_model = _cargar("Whisper", _fabrica)
+            _whisper_intentado = True
+    return _whisper_model
+
+
+def _obtener_vosk():
+    """Carga Vosk bajo demanda con double-checked locking."""
+    global _vosk_model, _vosk_intentado
+    if _vosk_intentado:
+        return _vosk_model
+    with _lock_carga_vosk:
+        if not _vosk_intentado:
+            print("👂 Cargando modelo centinela Vosk...")
+            def _fabrica():
+                from vosk import Model
+                return Model(str(rutas.VOSK_MODEL_PATH))
+            _vosk_model = _cargar("Vosk", _fabrica)
+            _vosk_intentado = True
+    return _vosk_model
 
 
 # =========================================================
@@ -103,6 +168,8 @@ _vosk_model = _cargar("Vosk", lambda: Model(str(rutas.VOSK_MODEL_PATH)))
 # =========================================================
 def _obtener_efecto(nombre):
     """Carga cada efecto una sola vez y lo reutiliza."""
+    if not _asegurar_mixer():
+        return None
     if nombre not in _cache_efectos:
         ruta = RUTAS_SONIDOS.get(nombre)
         try:
@@ -115,6 +182,8 @@ def _obtener_efecto(nombre):
 def reproducir_efecto(nombre_efecto) -> float:
     """Reproduce un efecto. Si es 'pensando', entra en bucle hasta que se detenga."""
     global _canal_pensando
+    if not _asegurar_mixer():
+        return 0.0
     efecto = _obtener_efecto(nombre_efecto)
     if efecto is None:
         return 0.0
@@ -130,8 +199,12 @@ def reproducir_efecto(nombre_efecto) -> float:
 
 def detener_efecto_pensando():
     global _canal_pensando
-    if _canal_pensando and _canal_pensando.get_busy():
-        _canal_pensando.stop()
+    if _canal_pensando:
+        try:
+            if _canal_pensando.get_busy():
+                _canal_pensando.stop()
+        except Exception:
+            pass
     _canal_pensando = None
 
 
@@ -141,7 +214,8 @@ def detener_efecto_pensando():
 def escuchar(duracion_maxima: float = 20.0, silencio_para_cortar: float = 1.2,
              timeout_inicio: float = 6.0, umbral_voz: float = UMBRAL_VOZ_ESCUCHA) -> str:
     global _evento_corte_activo
-    if not _whisper_model:
+    whisper_model = _obtener_whisper()
+    if not whisper_model:
         return ""
 
     bloques = []
@@ -206,7 +280,7 @@ def escuchar(duracion_maxima: float = 20.0, silencio_para_cortar: float = 1.2,
     audio_np = np.concatenate(bloques, axis=0).flatten().astype(np.float32)
 
     print("🧠 Whisper procesando el audio...")
-    segments, _ = _whisper_model.transcribe(
+    segments, _ = whisper_model.transcribe(
         audio_np, language="es", beam_size=5,
         condition_on_previous_text=False,
         vad_filter=True,  # descarta tramos sin voz (el bip, ruido) y reduce alucinaciones
@@ -225,12 +299,15 @@ def cancelar_escucha():
             _evento_corte_activo.set()
 
 
-def esperar_palabra_clave() -> bool:
+def esperar_palabra_clave(detener: Optional[threading.Event] = None) -> bool:
     """Centinela Vosk con escudo anti-ruido (noise gate)."""
-    if not _vosk_model:
+    vosk_model = _obtener_vosk()
+    if not vosk_model:
         return False
 
-    reconocedor = KaldiRecognizer(_vosk_model, SAMPLE_RATE_STT)
+    from vosk import KaldiRecognizer
+
+    reconocedor = KaldiRecognizer(vosk_model, SAMPLE_RATE_STT)
     q = queue.Queue()
 
     def callback(indata, frames, time_info, status):
@@ -243,11 +320,14 @@ def esperar_palabra_clave() -> bool:
 
     with sd.RawInputStream(samplerate=SAMPLE_RATE_STT, blocksize=4000, dtype="int16",
                            channels=1, callback=callback):
-        while True:
-            data, rms = q.get()
+        while not (detener and detener.is_set()):
+            try:
+                data, rms = q.get(timeout=0.5)
+            except queue.Empty:
+                continue
 
             # 1. Anti-retroalimentación: L-IA no se escucha a sí misma
-            if pygame.mixer.get_busy():
+            if _mixer_disponible and pygame.mixer.get_busy():
                 reconocedor.AcceptWaveform(b"\x00" * len(data))
                 bloques_gracia = 0
                 continue
@@ -273,6 +353,7 @@ def esperar_palabra_clave() -> bool:
                 return True
             if texto:
                 print(f"📡 Radar [Vol: {rms:.3f}]: {texto}       ", end="\r", flush=True)
+    return False
 
 
 # =========================================================
@@ -333,11 +414,12 @@ def elegir_motor(texto) -> str:
 # SALIDA (TTS - HABLA)
 # =========================================================
 def generar_kokoro(texto, archivo):
-    if pipeline_kokoro is None:
+    kokoro = _obtener_kokoro()
+    if kokoro is None:
         raise RuntimeError("Kokoro no está cargado")
     with _lock_kokoro:
         # (el texto ya no trae saltos de línea, por eso no se usa split_pattern)
-        generador = pipeline_kokoro(texto, voice=VOICE_KOKORO, speed=VELOCIDAD_KOKORO)
+        generador = kokoro(texto, voice=VOICE_KOKORO, speed=VELOCIDAD_KOKORO)
         audios = [audio for _, _, audio in generador if audio is not None]
     if not audios:
         raise ValueError("Kokoro no generó audio para este fragmento")
@@ -345,28 +427,33 @@ def generar_kokoro(texto, archivo):
 
 def generar_edge(texto, archivo):
     """Genera audio con Edge TTS aislando el event loop para que no choque en hilos secundarios."""
+    import edge_tts
+
+    loop = asyncio.new_event_loop()
     try:
-        # 1. Creamos un bucle de eventos completamente nuevo y aislado para este hilo
-        loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        
-        # 2. Ejecutamos la comunicación asíncrona
         comunicador = edge_tts.Communicate(texto, VOICE_NUBE, rate=RATE_EDGE)
         loop.run_until_complete(comunicador.save(archivo))
-        
-        # 3. Cerramos el bucle limpiamente
-        loop.close()
     except Exception as e:
         print(f"❌ Error crítico en Edge TTS: {e}")
+        raise
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
 
 def _obtener_cliente_google():
     global _cliente_google
     if _cliente_google is None:
-        _cliente_google = texttospeech.TextToSpeechClient()
+        with _lock_google:
+            if _cliente_google is None:
+                from google.cloud import texttospeech
+                _cliente_google = texttospeech.TextToSpeechClient()
     return _cliente_google
 
 
 def generar_google_emocional(texto, archivo, nivel_distorsion=0):
+    from google.cloud import texttospeech
+
     # Se escapan &, < y > porque el texto va dentro de SSML (XML).
     texto_seguro = _escapar_xml(texto)
     if nivel_distorsion == 1:
@@ -398,7 +485,7 @@ def preparar_voz(texto, motor="kokoro", nivel_distorsion=0):
 
     # CORRECCIÓN: Se usa rutas.CARPETA_TEMP_AUDIO y la extensión correcta
     extension = AUDIO_EXTENSION.get(motor, ".wav")
-    archivo_salida = str(rutas.CARPETA_TEMP_AUDIO / f"temp_tts_{int(time.time() * 1000)}{extension}")
+    archivo_salida = str(rutas.CARPETA_TEMP_AUDIO / f"temp_tts_{uuid.uuid4().hex}{extension}")
     
     print(f"🗣️ L-IA ({motor.upper()}): Sintetizando bloque...")
 
@@ -412,30 +499,40 @@ def preparar_voz(texto, motor="kokoro", nivel_distorsion=0):
         return archivo_salida
     except Exception as e:
         print(f"❌ Error en el motor {motor.upper()}: {e}")
+        descartar_audio(archivo_salida)
         return None
 
 
-def reproducir_voz(archivo):
+def reproducir_voz(archivo, evento_cancelacion: Optional[threading.Event] = None):
     """
     Fase 2: Reproduce el archivo de audio pre-renderizado.
     """
     if not archivo or not os.path.exists(archivo):
         return
 
-    if evento_silencio.is_set():
+    def _debe_cortar() -> bool:
+        return evento_silencio.is_set() or (evento_cancelacion is not None and evento_cancelacion.is_set())
+
+    if _debe_cortar() or not _asegurar_mixer():
         descartar_audio(archivo)
         return
 
     detener_efecto_pensando()
 
     try:
-        sonido = pygame.mixer.Sound(archivo)
-        canal_voz = pygame.mixer.Channel(CANAL_VOZ)
-        canal_voz.play(sonido)
+        with _lock_reproduccion:
+            if _debe_cortar():
+                return
+            sonido = pygame.mixer.Sound(archivo)
+            canal_voz = pygame.mixer.Channel(CANAL_VOZ)
+            canal_voz.play(sonido)
 
-        # Espera activa hasta que el audio termine de sonar
-        while canal_voz.get_busy():
-            time.sleep(0.1)
+            # Espera activa con corte inmediato ante silencio o nuevo turno
+            while canal_voz.get_busy():
+                if _debe_cortar():
+                    canal_voz.stop()
+                    break
+                time.sleep(0.05)
     except Exception as e:
         print(f"❌ Error reproduciendo TTS: {e}")
     finally:
@@ -454,12 +551,13 @@ def descartar_audio(archivo):
 
 def precalentar_motores():
     """Carga los tensores de Kokoro en RAM al arrancar, para que el primer mensaje no sea lento."""
-    if pipeline_kokoro is None:
+    kokoro = _obtener_kokoro()
+    if kokoro is None:
         return
     print("🔥 Precalentando cuerdas vocales (Kokoro)...")
     try:
         with _lock_kokoro:
-            for _ in pipeline_kokoro("a", voice=VOICE_KOKORO, speed=1.0):
+            for _ in kokoro("a", voice=VOICE_KOKORO, speed=1.0):
                 pass
         print("✅ Kokoro listo para respuesta inmediata.")
     except Exception as e:
@@ -468,7 +566,20 @@ def precalentar_motores():
 
 def detener_audio_global():
     """Freno de emergencia: corta cualquier voz o sonido en reproducción."""
-    pygame.mixer.stop()
+    if _mixer_disponible:
+        try:
+            pygame.mixer.stop()
+        except Exception:
+            pass
+
+
+def detener_canal_voz():
+    """Detiene CANAL_VOZ sin activar `evento_silencio` (para cambio de turno TTS)."""
+    if _mixer_disponible:
+        try:
+            pygame.mixer.Channel(CANAL_VOZ).stop()
+        except Exception as e:
+            print(f"⚠️ Error deteniendo CANAL_VOZ: {e}")
 
 
 def limpiar_silencio():
@@ -484,10 +595,7 @@ def esta_silenciada() -> bool:
 def silenciar_voz():
     """Detiene CANAL_VOZ al instante, limpia temporales TTS y silencia el turno actual."""
     evento_silencio.set()
-    try:
-        pygame.mixer.Channel(CANAL_VOZ).stop()
-    except Exception as e:
-        print(f"⚠️ Error deteniendo CANAL_VOZ: {e}")
+    detener_canal_voz()
     try:
         for archivo in rutas.CARPETA_TEMP_AUDIO.glob("temp_tts_*"):
             descartar_audio(str(archivo))

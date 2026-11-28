@@ -50,7 +50,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
-import ollama
 from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -59,7 +58,14 @@ from pydantic import BaseModel
 import core.eventos_anomalos as eventos_anomalos
 import core.voz as voz
 from core import config, database, rutas
-from core.cerebro import asimilar_documento_maestro, charlar_con_lia, evento_interrupcion
+from core.cerebro import (
+    asimilar_documento_maestro,
+    cancelar_tts_activo,
+    charlar_con_lia,
+    descargar_modelos_ollama,
+    evento_interrupcion,
+    llamar_ollama_seguro,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("lia.api")
@@ -136,47 +142,65 @@ class EventoTactilNucleo(BaseModel):
 @dataclass
 class SemaforoAutorizacion:
     """Pausa a L-IA cuando necesita permiso del usuario para ejecutar Nivel 2."""
-    evento: threading.Event = field(default_factory=threading.Event)
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    _cond: threading.Condition = field(default_factory=threading.Condition)
     alerta_actual: Optional[dict] = None
     autorizacion_concedida: bool = False
+    _resuelto: bool = False
+    _solicitud_id: int = 0
 
     def solicitar_autorizacion(self, herramienta: str, argumentos: Any) -> bool:
-        with self.lock:
+        with self._cond:
+            self._cond.wait_for(lambda: self.alerta_actual is None)
+            self._solicitud_id += 1
+            mi_id = self._solicitud_id
             self.autorizacion_concedida = False
-            self.evento.clear()
+            self._resuelto = False
             self.alerta_actual = {"herramienta": herramienta, "argumentos": str(argumentos)}
 
             logger.info("Esperando autorización del usuario para: %s", herramienta)
             try:
-                respondio_a_tiempo = self.evento.wait(timeout=TIMEOUT_AUTORIZACION_SEGUNDOS)
+                respondio_a_tiempo = self._cond.wait_for(
+                    lambda: self._resuelto or self._solicitud_id != mi_id,
+                    timeout=TIMEOUT_AUTORIZACION_SEGUNDOS,
+                )
+                concedida = bool(respondio_a_tiempo and self.autorizacion_concedida)
             finally:
-                self.alerta_actual = None
+                if self._solicitud_id == mi_id:
+                    self.alerta_actual = None
+                    self._resuelto = False
+                    self._cond.notify_all()
 
             if not respondio_a_tiempo:
                 logger.warning("Tiempo agotado para: %s. Abortando por defecto.", herramienta)
                 return False
 
-            return self.autorizacion_concedida
+            return concedida
 
     def registrar_respuesta(self, autorizado: bool) -> bool:
-        if self.alerta_actual is None:
-            return False
-        self.autorizacion_concedida = autorizado
-        self.evento.set()
-        return True
+        with self._cond:
+            if self.alerta_actual is None or self._resuelto:
+                return False
+            self.autorizacion_concedida = bool(autorizado)
+            self._resuelto = True
+            self._cond.notify_all()
+            return True
 
     def cancelar(self) -> None:
         """Despierta un hilo esperando autorización denegándola y limpia el estado pendiente."""
-        self.autorizacion_concedida = False
-        self.alerta_actual = None
-        self.evento.set()
+        with self._cond:
+            if self.alerta_actual is None:
+                return
+            self.autorizacion_concedida = False
+            self._resuelto = True
+            self.alerta_actual = None
+            self._cond.notify_all()
 
     def estado_actual(self) -> dict:
-        alerta = self.alerta_actual
-        if alerta:
-            return {"activa": True, "herramienta": alerta["herramienta"], "argumentos": alerta["argumentos"]}
-        return {"activa": False}
+        with self._cond:
+            alerta = self.alerta_actual
+            if alerta and not self._resuelto:
+                return {"activa": True, "herramienta": alerta["herramienta"], "argumentos": alerta["argumentos"]}
+            return {"activa": False}
 
 semaforo = SemaforoAutorizacion()
 
@@ -185,41 +209,59 @@ semaforo = SemaforoAutorizacion()
 @dataclass
 class SemaforoArchivos:
     """Pausa a L-IA para que el usuario elija entre múltiples archivos en la UI."""
-    evento: threading.Event = field(default_factory=threading.Event)
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    _cond: threading.Condition = field(default_factory=threading.Condition)
     opciones_actuales: Optional[list] = None
     ruta_seleccionada: Optional[str] = None
+    _resuelto: bool = False
+    _solicitud_id: int = 0
 
     def solicitar_seleccion(self, opciones: list) -> Optional[str]:
-        with self.lock:
+        with self._cond:
+            self._cond.wait_for(lambda: self.opciones_actuales is None)
+            self._solicitud_id += 1
+            mi_id = self._solicitud_id
             self.ruta_seleccionada = None
-            self.opciones_actuales = opciones
-            self.evento.clear()
+            self._resuelto = False
+            self.opciones_actuales = list(opciones)
 
             logger.info("Esperando selección de archivo desde React...")
             try:
-                self.evento.wait(timeout=TIMEOUT_AUTORIZACION_SEGUNDOS)
+                respondio_a_tiempo = self._cond.wait_for(
+                    lambda: self._resuelto or self._solicitud_id != mi_id,
+                    timeout=TIMEOUT_AUTORIZACION_SEGUNDOS,
+                )
+                seleccion = self.ruta_seleccionada if respondio_a_tiempo else None
             finally:
-                self.opciones_actuales = None
-            return self.ruta_seleccionada
+                if self._solicitud_id == mi_id:
+                    self.opciones_actuales = None
+                    self._resuelto = False
+                    self._cond.notify_all()
+            return seleccion
 
     def registrar_respuesta(self, ruta: Optional[str]) -> bool:
-        if self.opciones_actuales is None:
-            return False
-        self.ruta_seleccionada = ruta
-        self.evento.set()
-        return True
+        with self._cond:
+            if self.opciones_actuales is None or self._resuelto:
+                return False
+            self.ruta_seleccionada = ruta
+            self._resuelto = True
+            self._cond.notify_all()
+            return True
 
     def cancelar(self) -> None:
         """Despierta un hilo esperando selección de archivo devolviendo None."""
-        self.ruta_seleccionada = None
-        self.opciones_actuales = None
-        self.evento.set()
+        with self._cond:
+            if self.opciones_actuales is None:
+                return
+            self.ruta_seleccionada = None
+            self._resuelto = True
+            self.opciones_actuales = None
+            self._cond.notify_all()
 
     def estado_actual(self) -> dict:
-        if self.opciones_actuales:
-            return {"activa": True, "opciones": self.opciones_actuales}
-        return {"activa": False}
+        with self._cond:
+            if self.opciones_actuales and not self._resuelto:
+                return {"activa": True, "opciones": list(self.opciones_actuales)}
+            return {"activa": False}
 
 semaforo_archivos = SemaforoArchivos()
 
@@ -272,12 +314,11 @@ class VigilanteRAM:
             )
 
     def _descargar_modelo(self) -> None:
-        for modelo in self.modelos:
-            try:
-                ollama.generate(model=modelo, prompt="", keep_alive=0)
-                logger.info("[Daemon RAM] %s descargado, VRAM liberada.", modelo)
-            except Exception as e:
-                logger.warning("[Daemon RAM] Error al intentar limpiar %s: %s", modelo, e)
+        try:
+            descargar_modelos_ollama(self.modelos)
+            logger.info("[Daemon RAM] Modelos %s descargados, VRAM liberada.", self.modelos)
+        except Exception as e:
+            logger.warning("[Daemon RAM] Error al intentar limpiar modelos: %s", e)
         with self._lock:
             self._en_ram = False
 
@@ -308,7 +349,7 @@ def daemon_escucha_activa(detener: threading.Event) -> None:
     logger.info("[Daemon de Voz] Iniciando radar permanente...")
     while not detener.is_set():
         try:
-            if voz.esperar_palabra_clave():
+            if voz.esperar_palabra_clave(detener=detener):
                 # Bengala inmediata: React despierta la UI ya mismo
                 mensajes_radar.put({"accion": "despertar"})
 
@@ -319,6 +360,9 @@ def daemon_escucha_activa(detener: threading.Event) -> None:
                 else:
                     # Ruido sin voz: se apaga la UI
                     mensajes_radar.put({"accion": "cancelar"})
+            elif not detener.is_set():
+                logger.warning("[Daemon de Voz] Radar Vosk no disponible; deteniendo hilo centinela.")
+                break
         except Exception as e:
             logger.error("[Daemon de Voz] Error: %s", e)
             time.sleep(2)
@@ -385,9 +429,12 @@ async def lifespan(_: FastAPI):
     database.inicializar_base_datos()
     _detener_daemons.clear()
     orquestador.iniciar()
-    threading.Thread(
-        target=daemon_escucha_activa, args=(_detener_daemons,), name="daemon-voz", daemon=True
-    ).start()
+    if config.RADAR_VOZ_AUTOSTART:
+        threading.Thread(
+            target=daemon_escucha_activa, args=(_detener_daemons,), name="daemon-voz", daemon=True
+        ).start()
+    else:
+        logger.info("[Daemon de Voz] Autostart desactivado (LIA_RADAR_VOZ=0); Vosk no se cargará en frío.")
     threading.Thread(
         target=vigilante_ram.correr, args=(_detener_daemons,), name="vigilante-ram", daemon=True
     ).start()
@@ -433,10 +480,10 @@ def renombrar_sesion_silenciosamente(sesion_id: str, texto_usuario: str) -> None
             f"Mensaje: {texto_usuario}"
         )
         with vigilante_ram.generacion_activa():
-            respuesta = ollama.chat(
-                model=config.MODELO_LOCAL,
-                messages=[{"role": "user", "content": prompt}],
-                options={**config.OPCIONES_GPU_LOCAL, "temperature": 0.2, "num_predict": 15},
+            respuesta = llamar_ollama_seguro(
+                config.MODELO_LOCAL,
+                [{"role": "user", "content": prompt}],
+                options={"temperature": 0.2, "num_predict": 15},
             )
         nuevo_titulo = respuesta["message"]["content"].strip('".*\n ')
 
@@ -692,12 +739,16 @@ def recibir_chat(mensaje: MensajeUsuario):
         if not _candado_colapso.acquire(blocking=False):
             cola_streaming.put({"tipo": "error", "texto": "Ya hay un evento de colapso en curso."})
             return respuesta_sse(cola_streaming)
+        cancelar_tts_activo()
+        voz.detener_canal_voz()
         evento_interrupcion.clear()
         voz.limpiar_silencio()
         _colapso_en_hilo(cola_streaming, al_terminar=_candado_colapso.release)
     else:
         # Flujo normal y trigger orgánico. Se limpia una posible cancelación
         # previa para que /cancelar no deje cortados los chats siguientes.
+        cancelar_tts_activo()
+        voz.detener_canal_voz()
         evento_interrupcion.clear()
         voz.limpiar_silencio()
         threading.Thread(
@@ -728,6 +779,7 @@ async def cancelar_generacion():
     """Botón de pánico: detiene la inferencia del LLM y silencia cualquier audio."""
     logger.info("[API] Orden de abortar recibida. Deteniendo LLM, semáforos y audio...")
     evento_interrupcion.set()  # el Cerebro deja de generar texto
+    cancelar_tts_activo()
     semaforo.cancelar()
     semaforo_archivos.cancelar()
     try:
@@ -741,6 +793,7 @@ async def cancelar_generacion():
 async def silenciar_voz_turno():
     """Corta CANAL_VOZ, limpia temporales pendientes y silencia el turno actual sin abortar el texto."""
     logger.info("[API] Silenciando salida de voz del turno actual...")
+    cancelar_tts_activo()
     try:
         voz.silenciar_voz()
     except Exception as e:

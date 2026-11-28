@@ -59,6 +59,149 @@ import core.control_iot as control_iot
 evento_interrupcion = threading.Event()
 
 # ==========================================
+# 0.6 CONTROL CENTRALIZADO DE VRAM OLLAMA Y TURNOS TTS
+# ==========================================
+_ollama_vram_lock = threading.Lock()
+_modelo_ollama_activo = None
+
+_lock_turno_tts = threading.Lock()
+_cancelar_tts_actual = None
+
+
+def cancelar_tts_activo():
+    """Cancela de forma permanente cualquier pipeline TTS desacoplado en curso."""
+    global _cancelar_tts_actual
+    with _lock_turno_tts:
+        if _cancelar_tts_actual is not None:
+            _cancelar_tts_actual.set()
+            _cancelar_tts_actual = None
+
+
+def _registrar_turno_tts(cancelar_local: threading.Event):
+    """Cancela el turno TTS previo (si seguía reproduciendo) y registra el nuevo."""
+    global _cancelar_tts_actual
+    with _lock_turno_tts:
+        if _cancelar_tts_actual is not None:
+            _cancelar_tts_actual.set()
+        _cancelar_tts_actual = cancelar_local
+
+
+def _descargar_modelo_ollama_unsafe(nombre_modelo: str) -> None:
+    """Descarga un modelo de VRAM (requiere mantener `_ollama_vram_lock`)."""
+    try:
+        ollama.generate(model=nombre_modelo, prompt="", keep_alive=0)
+        print(f"🧹 [VRAM liberada de '{nombre_modelo}']")
+    except Exception as e:
+        print(f"⚠️ [No se pudo liberar '{nombre_modelo}' de VRAM: {e}]")
+
+
+def descargar_modelos_ollama(modelos=None) -> None:
+    """Descarga de VRAM los modelos locales indicados de forma thread-safe."""
+    global _modelo_ollama_activo
+    objetivos = tuple(modelos) if modelos is not None else (config.MODELO_LOCAL, config.MODELO_UNCENSORED)
+    with _ollama_vram_lock:
+        for nombre in objetivos:
+            _descargar_modelo_ollama_unsafe(nombre)
+            if _modelo_ollama_activo == nombre:
+                _modelo_ollama_activo = None
+
+
+def _preparar_vram_ollama_unsafe(modelo_objetivo: str) -> None:
+    """Descarga el modelo opuesto cuando se alterna entre MODELO_LOCAL y MODELO_UNCENSORED."""
+    global _modelo_ollama_activo
+    if modelo_objetivo == config.MODELO_UNCENSORED and _modelo_ollama_activo != config.MODELO_UNCENSORED:
+        _descargar_modelo_ollama_unsafe(config.MODELO_LOCAL)
+    elif _modelo_ollama_activo is not None and _modelo_ollama_activo != modelo_objetivo:
+        _descargar_modelo_ollama_unsafe(_modelo_ollama_activo)
+    _modelo_ollama_activo = modelo_objetivo
+
+
+class _StreamOllamaProtegido:
+    """Envuelve un stream de Ollama manteniendo `_ollama_vram_lock` hasta el cierre."""
+
+    def __init__(self, stream_iter, lock: threading.Lock):
+        self._stream = stream_iter
+        self._lock = lock
+        self._liberado = False
+
+    def _liberar(self):
+        if not self._liberado:
+            self._liberado = True
+            cerrar = getattr(self._stream, "close", None)
+            if callable(cerrar):
+                try:
+                    cerrar()
+                except Exception:
+                    pass
+            self._lock.release()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        try:
+            return next(self._stream)
+        except StopIteration:
+            self._liberar()
+            raise
+        except Exception:
+            self._liberar()
+            raise
+
+    def close(self):
+        self._liberar()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self._liberar()
+        return False
+
+    def __del__(self):
+        self._liberar()
+
+
+def llamar_ollama_seguro(modelo, messages, stream=False, options=None, keep_alive=None, format=None):
+    """
+    Punto único thread-safe para invocar `ollama.chat`.
+    - Serializa acceso a los 6 GB de VRAM con `_ollama_vram_lock`.
+    - Gestiona descarga mutua (`keep_alive=0`) entre Gemma 2 y Dolphin-Mistral.
+    - Inyecta `config.OPCIONES_GPU_LOCAL` (`num_gpu` + `num_ctx`).
+    """
+    global _modelo_ollama_activo
+    opciones_finales = {**config.OPCIONES_GPU_LOCAL, **(options or {})}
+    kwargs = {
+        "model": modelo,
+        "messages": messages,
+        "stream": stream,
+        "options": opciones_finales,
+    }
+    if keep_alive is not None:
+        kwargs["keep_alive"] = keep_alive
+    if format is not None:
+        kwargs["format"] = format
+
+    if not stream:
+        with _ollama_vram_lock:
+            _preparar_vram_ollama_unsafe(modelo)
+            respuesta = ollama.chat(**kwargs)
+            if keep_alive == 0:
+                _modelo_ollama_activo = None
+            return respuesta
+
+    _ollama_vram_lock.acquire()
+    try:
+        _preparar_vram_ollama_unsafe(modelo)
+        stream_crudo = iter(ollama.chat(**kwargs))
+        if keep_alive == 0:
+            _modelo_ollama_activo = None
+    except Exception:
+        _ollama_vram_lock.release()
+        raise
+    return _StreamOllamaProtegido(stream_crudo, _ollama_vram_lock)
+
+# ==========================================
 # 1. CONFIGURACIÓN INICIAL Y SEMÁFORO
 # ==========================================
 load_dotenv()
@@ -378,9 +521,11 @@ def _generar_respuesta_con_voz(generador_texto, motor="kokoro", nivel_distorsion
         cola_texto = queue.Queue()
         cola_audio = queue.Queue(maxsize=3)
         cancelar_local = threading.Event()
+        _registrar_turno_tts(cancelar_local)
+        voz.detener_canal_voz()
 
         def _voz_detenida() -> bool:
-            return evento_interrupcion.is_set() or voz.esta_silenciada() or cancelar_local.is_set()
+            return cancelar_local.is_set() or evento_interrupcion.is_set() or voz.esta_silenciada()
 
         def hilo_sintetizador():
             try:
@@ -395,28 +540,42 @@ def _generar_respuesta_con_voz(generador_texto, motor="kokoro", nivel_distorsion
                     except Exception:
                         archivo = None
                     if archivo:
-                        if _voz_detenida():
+                        while not _voz_detenida():
+                            try:
+                                cola_audio.put(archivo, timeout=0.2)
+                                archivo = None
+                                break
+                            except queue.Full:
+                                continue
+                        if archivo:
                             voz.descartar_audio(archivo)
-                            continue
-                        cola_audio.put(archivo)
             finally:
                 cola_audio.put(None)
 
         def hilo_reproductor():
-            while True:
-                archivo = cola_audio.get()
-                if archivo is None:
-                    break
-                if _voz_detenida():
-                    voz.descartar_audio(archivo)
-                    continue
-                try:
-                    voz.reproducir_voz(archivo)
-                except Exception:
-                    voz.descartar_audio(archivo)
+            try:
+                while True:
+                    archivo = cola_audio.get()
+                    if archivo is None:
+                        break
+                    if _voz_detenida():
+                        voz.descartar_audio(archivo)
+                        continue
+                    try:
+                        voz.reproducir_voz(archivo, evento_cancelacion=cancelar_local)
+                    except Exception:
+                        voz.descartar_audio(archivo)
+            finally:
+                while not cola_audio.empty():
+                    try:
+                        sobrante = cola_audio.get_nowait()
+                        if sobrante:
+                            voz.descartar_audio(sobrante)
+                    except queue.Empty:
+                        break
 
-        t_sintetizador = threading.Thread(target=hilo_sintetizador, daemon=True)
-        t_reproductor = threading.Thread(target=hilo_reproductor, daemon=True)
+        t_sintetizador = threading.Thread(target=hilo_sintetizador, name="tts-sintetizador", daemon=True)
+        t_reproductor = threading.Thread(target=hilo_reproductor, name="tts-reproductor", daemon=True)
         t_sintetizador.start()
         t_reproductor.start()
 
@@ -473,21 +632,21 @@ def _generar_respuesta_con_voz(generador_texto, motor="kokoro", nivel_distorsion
             cancelar_local.set()
         raise
     finally:
+        cerrar_gen = getattr(generador_texto, "close", None)
+        if callable(cerrar_gen):
+            try:
+                cerrar_gen()
+            except Exception:
+                pass
         if hablar:
-            if not hubo_error and not _voz_detenida():
+            if hubo_error or _voz_detenida():
+                cancelar_local.set()
+            else:
                 resto = bloque_actual.strip()
                 if len(resto) > 2:
                     cola_texto.put(resto)
+            # Desacoplado: encolamos fin de texto sin bloquear el cierre del turno SSE
             cola_texto.put(None)
-            t_sintetizador.join()
-            t_reproductor.join()
-            while not cola_audio.empty():
-                try:
-                    sobrante = cola_audio.get_nowait()
-                    if sobrante:
-                        voz.descartar_audio(sobrante)
-                except queue.Empty:
-                    break
 
     print()
     return respuesta_completa if not texto_para_mostrar else texto_para_mostrar
@@ -781,12 +940,7 @@ def _extraer_llamada_manual(texto):
     return None
 
 def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir, quiere_estado, quiere_entorno, quiere_buscar, callback_ui=None, callback_stream=None, callback_estado=None, motor_voz=config.MOTOR_VOZ_DEFAULT, usar_voz=False):
-    global _dolphin_cargado
     print(f"\n[🏠 Enrutando al Cerebro Local ({config.MODELO_LOCAL})...]")
-
-    if _dolphin_cargado:
-        _descargar_modelo_ollama(config.MODELO_UNCENSORED)
-        _dolphin_cargado = False
 
     requiere_herramienta = quiere_abrir or quiere_estado or quiere_entorno or quiere_buscar
 
@@ -795,9 +949,8 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
         {'role': 'user', 'content': contexto_historico}
     ]
 
-    # Configuración de inferencia optimizada para GPU de 6 GB
+    # Opciones de muestreo (num_gpu y num_ctx se inyectan desde llamar_ollama_seguro)
     opciones_ollama = {
-        **config.OPCIONES_GPU_LOCAL,
         'temperature': 0.7,
         'top_p': 0.9,
     }
@@ -835,11 +988,11 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
 
         try:
             t_inicio_tool = time.perf_counter()
-            response = ollama.chat(
-                model=config.MODELO_LOCAL,
-                messages=mensajes,
+            response = llamar_ollama_seguro(
+                config.MODELO_LOCAL,
+                mensajes,
                 format='json',
-                options={**config.OPCIONES_GPU_LOCAL, 'temperature': 0.1}
+                options={'temperature': 0.1},
             )
             t_fin_tool = time.perf_counter()
             print(f"⏱️ [Tool Check JSON]: {t_fin_tool - t_inicio_tool:.2f}s")
@@ -897,23 +1050,24 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
         conteo_tokens = [0]
         t_primer_token = [0.0]
 
-        response_stream = ollama.chat(
-            model=config.MODELO_LOCAL,
-            messages=mensajes,
+        response_stream = llamar_ollama_seguro(
+            config.MODELO_LOCAL,
+            mensajes,
+            stream=True,
             options=opciones_ollama,
-            stream=True
         )
 
         def generador_con_telemetria():
             nonlocal primer_token
-            for chunk in response_stream:
-                token = chunk['message']['content']
-                if token:
-                    if primer_token:
-                        t_primer_token[0] = time.perf_counter() - t_inicio
-                        primer_token = False
-                    conteo_tokens[0] += 1
-                    yield token
+            with response_stream as stream:
+                for chunk in stream:
+                    token = chunk['message']['content']
+                    if token:
+                        if primer_token:
+                            t_primer_token[0] = time.perf_counter() - t_inicio
+                            primer_token = False
+                        conteo_tokens[0] += 1
+                        yield token
 
         resultado = _generar_respuesta_con_voz(generador_con_telemetria(), motor=motor_voz, callback_stream=callback_stream, usar_voz=usar_voz)
 
@@ -934,20 +1088,8 @@ def responder_con_local(instrucciones_sistema, contexto_historico, quiere_abrir,
 # ==========================================
 # 5.5 RUTA C: CEREBRO LOCAL SIN CENSURA (Dolphin-Mistral)
 # ==========================================
-_dolphin_cargado = False
-
-def _descargar_modelo_ollama(nombre_modelo):
-    try:
-        ollama.generate(model=nombre_modelo, prompt="", keep_alive=0)
-        print(f"🧹 [VRAM liberada de '{nombre_modelo}']")
-    except Exception as e:
-        print(f"⚠️ [No se pudo liberar '{nombre_modelo}' de VRAM: {e}]")
-
 def responder_con_local_uncensored(instrucciones_sistema, contexto_historico, callback_stream=None, motor_voz=config.MOTOR_VOZ_UNCENSORED, usar_voz=False):
-    global _dolphin_cargado
     print(f"\n[🐬 Enrutando al Especialista Sin Censura ({config.MODELO_UNCENSORED})...]")
-    _descargar_modelo_ollama(config.MODELO_LOCAL)
-    _dolphin_cargado = True
 
     # Prompt positivo (evitamos prohibiciones explícitas de tokens que lo confunden)
     prompt_bozal_dolphin = (
@@ -970,20 +1112,23 @@ def responder_con_local_uncensored(instrucciones_sistema, contexto_historico, ca
 
     try:
         print("\n🤖 L-IA (Dolphin, pensando y hablando en bloques)...")
-        response_stream = ollama.chat(
-            model=config.MODELO_UNCENSORED,
-            messages=mensajes,
+        response_stream = llamar_ollama_seguro(
+            config.MODELO_UNCENSORED,
+            mensajes,
+            stream=True,
             # Opciones clave para evitar bucles infinitos
             options={
-                **config.OPCIONES_GPU_LOCAL,
                 'temperature': 0.6,          # Ligeramente más alto para darle fluidez
                 'repeat_penalty': 1.15,      # Evita que repita la misma frase
                 'stop': ['ALEJANDRO:', 'TÚ:', '> TÚ:', 'Usuario:']  # Se detiene si intenta hablar por ti
             },
-            stream=True
         )
-        generador = (chunk['message']['content'] for chunk in response_stream)
-        return _generar_respuesta_con_voz(generador, motor=motor_voz, nivel_distorsion=0, callback_stream=callback_stream, usar_voz=usar_voz)
+        def generador():
+            with response_stream as stream:
+                for chunk in stream:
+                    yield chunk['message']['content']
+
+        return _generar_respuesta_con_voz(generador(), motor=motor_voz, nivel_distorsion=0, callback_stream=callback_stream, usar_voz=usar_voz)
 
     except Exception as e:
         return _reportar_error(f"❌ Error en el cerebro Dolphin: {e}", callback_stream)
@@ -1124,11 +1269,10 @@ def _ejecutar_guardado_git(mensaje_real, msg_lower, callback_ui=None, sesion_id=
         f"DESCRIPCION: [Explicación técnica detallada de los cambios en 1 o 2 oraciones]"
     )
     print("🤖 [Generando mensaje de commit estructurado...]")
-    respuesta_llm = ollama.chat(
-      model=config.MODELO_LOCAL,
-      messages=[{'role': 'user', 'content': prompt_commit}],
-      options=config.OPCIONES_GPU_LOCAL,
-  )['message']['content'].strip()
+    respuesta_llm = llamar_ollama_seguro(
+        config.MODELO_LOCAL,
+        [{'role': 'user', 'content': prompt_commit}],
+    )['message']['content'].strip()
 
     # Regex endurecido contra posibles asteriscos de Markdown generados por Gemma 2
     titulo_match = re.search(r'\*?TITULO\*?:\s*\*?(.*)', respuesta_llm, re.IGNORECASE)
@@ -1201,10 +1345,10 @@ def _procesar_workspace_fase_7(mensaje_real, msg_lower, fijar: bool, sesion_id="
                 f"tecnologías clave usadas. Cero saludos.\n\n{fragmento}"
             )
             try:
-                respuesta = ollama.chat(
-                    model=config.MODELO_LOCAL,
-                    messages=[{'role': 'user', 'content': prompt_resumen}],
-                    options={**config.OPCIONES_GPU_LOCAL, 'temperature': 0.1}
+                respuesta = llamar_ollama_seguro(
+                    config.MODELO_LOCAL,
+                    [{'role': 'user', 'content': prompt_resumen}],
+                    options={'temperature': 0.1},
                 )
                 resumen_tecnico = respuesta['message']['content'].strip()
             except Exception as e:
@@ -1310,10 +1454,10 @@ def asimilar_documento_maestro(ruta_absoluta: str, origen_texto: str = "archivo"
 
     resumen_tecnico = "Ruta fijada, pero no se generó resumen."
     try:
-        respuesta = ollama.chat(
-          model=config.MODELO_LOCAL,
-          messages=[{'role': 'user', 'content': prompt_resumen}],
-          options={**config.OPCIONES_GPU_LOCAL, 'temperature': 0.1}
+        respuesta = llamar_ollama_seguro(
+            config.MODELO_LOCAL,
+            [{'role': 'user', 'content': prompt_resumen}],
+            options={'temperature': 0.1},
         )
         resumen_tecnico = respuesta['message']['content'].strip()
         print(f"🧠 [Micro-resumen generado]: {resumen_tecnico}")

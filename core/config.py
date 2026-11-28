@@ -4,6 +4,8 @@ Si necesitas cambiar de hardware, de modelo LLM o ajustar la memoria,
 solo tocas este archivo.
 """
 
+import os
+
 # =========================================================
 # 1. MODELOS DE LENGUAJE (Cerebro)
 # =========================================================
@@ -11,7 +13,8 @@ MODELO_LOCAL = "gemma2"                # Cerebro cotidiano (rápido, censurado)
 MODELO_UNCENSORED = "dolphin-mistral"  # Especialista sin filtros (bajo demanda)
 MODELO_NUBE_FLASH = "gemini-3.7-flash" # Analista rápido (visión, web, contexto medio)
 MODELO_NUBE_PRO = "gemini-3.1-pro"     # Artillería pesada (contexto enorme / análisis profundo)
-OPCIONES_GPU_LOCAL = {"num_gpu": 31}   # Unificado en todas las llamadas a Ollama para evitar recargas de VRAM
+OLLAMA_NUM_CTX = int(os.getenv("LIA_OLLAMA_NUM_CTX", "4096"))
+OPCIONES_GPU_LOCAL = {"num_gpu": 31, "num_ctx": OLLAMA_NUM_CTX}  # Unificado para proteger los 6 GB de VRAM
 
 # =========================================================
 # 2. MEMORIA RAG Y VECTORIZACIÓN (ChromaDB + SQLite)
@@ -35,6 +38,7 @@ SIMILARITY_THRESHOLD = 0.85  # Distancia L2 máxima permitida (menor = más estr
 # 3. AUDIO, ESCUCHA Y MOTORES DE VOZ (STT / TTS)
 # =========================================================
 SAMPLE_RATE_STT = 16000
+RADAR_VOZ_AUTOSTART = os.getenv("LIA_RADAR_VOZ", "0") == "1"  # Evita cargar Vosk en frío al arrancar la API
 
 # --- Escucha (Whisper) y Radar (Vosk) ---
 UMBRAL_VOZ_ESCUCHA = 0.015

@@ -514,14 +514,9 @@ export default function App() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tipo, clics: evento.clics ?? 0 }),
+    }).catch((e) => {
+      console.warn(`No se pudo registrar interacción '${tipo}':`, e)
     })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data?.aplicado && data?.mensaje) agregarSistema(data.mensaje)
-      })
-      .catch((e) => {
-        console.warn(`No se pudo registrar interacción '${tipo}':`, e)
-      })
   }, [])
 
   const responderSemaforoArchivos = async (rutaSeleccionada) => {
