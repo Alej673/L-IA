@@ -47,7 +47,7 @@ MATRIZ DE TONO CONTEXTUAL (ajuste dinámico según la situación actual)"""
 # =============================================================================
 # BLOQUES DINÁMICOS (dependen de lo guardado en la base de datos)
 # =============================================================================
-def _armar_workspace(workspace_activo, workspace_resumen, hechos):
+def _armar_workspace(workspace_activo, workspace_resumen, workspace_historial=None):
     """Arma el bloque del archivo/proyecto activo (Fase 7) y, si existen, los
     archivos recientes que quedaron en segundo plano."""
     if not workspace_activo:
@@ -58,16 +58,28 @@ def _armar_workspace(workspace_activo, workspace_resumen, hechos):
     if workspace_resumen:
         texto += f"   - Resumen: {workspace_resumen}\n"
 
-    historial_str = next((h['valor'] for h in hechos if h['clave'] == 'workspace_historial'), None)
-    if historial_str:
+    historial = None
+    if isinstance(workspace_historial, str) and workspace_historial.strip():
         try:
-            historial = json.loads(historial_str)
-            if historial:
-                texto += "\n📚 EN SEGUNDO PLANO (Archivos recientes cerrados):\n"
-                for item in historial:
-                    texto += f"   - {item.get('ruta')} (Resumen: {item.get('resumen')})\n"
+            historial = json.loads(workspace_historial)
         except json.JSONDecodeError:
-            pass
+            historial = None
+    elif isinstance(workspace_historial, list):
+        # Compatibilidad defensiva si un llamador legado pasa `hechos`
+        if workspace_historial and isinstance(workspace_historial[0], dict) and "clave" in workspace_historial[0]:
+            historial_str = next((h["valor"] for h in workspace_historial if h.get("clave") == "workspace_historial"), None)
+            if historial_str:
+                try:
+                    historial = json.loads(historial_str)
+                except json.JSONDecodeError:
+                    historial = None
+        else:
+            historial = workspace_historial
+
+    if historial:
+        texto += "\n📚 EN SEGUNDO PLANO (Archivos recientes cerrados):\n"
+        for item in historial:
+            texto += f"   - {item.get('ruta')} (Resumen: {item.get('resumen')})\n"
 
     # LA NUEVA REGLA ESTRICTA
     texto += (
@@ -77,10 +89,22 @@ def _armar_workspace(workspace_activo, workspace_resumen, hechos):
     )
     return texto
 
+_CLAVES_OCULTAS_HECHOS = {
+    'workspace_activo',
+    'workspace_resumen',
+    'workspace_historial',
+    'nivel_corrupcion',
+}
+
+
 def _armar_hechos(hechos):
     """Lista lo aprendido del usuario, omitiendo las claves internas del
-    workspace (esas ya se muestran en _armar_workspace)."""
-    filtrados = [h for h in hechos if h['clave'] not in ('workspace_activo', 'workspace_resumen', 'workspace_historial')]
+    workspace y estado emocional/sistema."""
+    filtrados = [
+        h for h in hechos
+        if h.get('clave') not in _CLAVES_OCULTAS_HECHOS
+        and (h.get('categoria') or '').lower() not in ('estado_emocional', 'sistema')
+    ]
     if not filtrados:
         return ""
     texto = "\n[DATOS APRENDIDOS DEL USUARIO]\n"
@@ -94,6 +118,11 @@ def _armar_hechos(hechos):
 # =============================================================================
 def _aplicar_semaforo_tono(intencion, contexto_rag=None, nivel_corrupcion=0):
     """Elige la matriz de tono según la intención y aplica los modificadores de corrupción."""
+    try:
+        nivel_corrupcion = int(nivel_corrupcion or 0)
+    except (ValueError, TypeError):
+        nivel_corrupcion = 0
+
     tono_base = ""
     
     if contexto_rag:
@@ -141,17 +170,18 @@ def obtener_instrucciones_sistema(intencion_detectada="casual", contexto_rag=Non
     # 3. Ya no buscamos en los 'hechos' generales, el database ya nos los dio limpios
     workspace_activo = contexto.get('workspace_activo')
     workspace_resumen = contexto.get('workspace_resumen')
+    workspace_historial = contexto.get('workspace_historial')
 
-    # NOTA: En tu versión anterior, le pasabas contexto['hechos'] a _armar_workspace, 
-    # pero como ya movimos el historial a la sesión, asegúrate de que _armar_workspace
-    # ya no dependa de 'hechos' o pásale un array vacío si no quieres modificar esa función ahora.
-    workspace_texto = _armar_workspace(workspace_activo, workspace_resumen, contexto['hechos'])
+    workspace_texto = _armar_workspace(workspace_activo, workspace_resumen, workspace_historial)
     hechos_texto = _armar_hechos(contexto['hechos'])
     reglas_documento_texto = f"\n{REGLAS_DOCUMENTO}\n" if workspace_activo else ""
 
     # --- LÍNEAS MODIFICADAS ---
-    # Extraemos el nivel de corrupción que inyectamos en database.py
-    nivel_corrupcion = contexto.get('nivel_corrupcion', 0)
+    # Extraemos el nivel de corrupción como entero seguro desde database.py
+    try:
+        nivel_corrupcion = int(contexto.get('nivel_corrupcion', 0) or 0)
+    except (ValueError, TypeError):
+        nivel_corrupcion = 0
     # Tono según la intención + Nivel de Corrupción
     matriz_tono_dinamica = _aplicar_semaforo_tono(intencion_detectada, contexto_rag, nivel_corrupcion)
 

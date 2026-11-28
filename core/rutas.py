@@ -27,7 +27,7 @@ VOSK_MODEL_PATH = BASE_DIR / "vosk-model-small-es-0.42"
 RUTA_GOOGLE_JSON = CARPETA_CONFIG / "l-ia-tts-11c82ae533db.json"
 
 # NUEVAS RUTAS DE MEMORIA (SQLite y ChromaDB)
-SQLITE_DB_PATH = CARPETA_DATA / "lia_memoria.db"
+SQLITE_DB_PATH = CARPETA_DATA / "lia_memory.db"
 CHROMA_DB_PATH = CARPETA_DATA / "lia_chroma_db"
 CARPETA_INGESTAS = CARPETA_DATA / "ingestas"
 

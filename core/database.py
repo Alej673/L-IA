@@ -5,15 +5,17 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime
 
-# 1. Calculamos la ruta absoluta de la carpeta raíz del proyecto (L-IA)
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+try:
+    from core import rutas
+except ModuleNotFoundError:
+    import rutas
 
-# 2. Obligamos a que la base de datos viva SIEMPRE dentro de la carpeta "data"
-DATA_DIR = os.path.join(BASE_DIR, "data")
-os.makedirs(DATA_DIR, exist_ok=True) 
+# Rutas unificadas desde core/rutas.py (SSOT)
+BASE_DIR = str(rutas.BASE_DIR)
+DATA_DIR = str(rutas.CARPETA_DATA)
+os.makedirs(DATA_DIR, exist_ok=True)
 
-# 3. Ruta absoluta e inamovible de la base de datos
-DB_NAME = os.path.join(DATA_DIR, "lia_memory.db")
+DB_NAME = str(rutas.SQLITE_DB_PATH)
 
 def obtener_conexion():
     """Establece una conexión con la base de datos SQLite."""
@@ -441,25 +443,76 @@ def listar_hechos(categoria=None):
         filas = cursor.fetchall()
     return [dict(f) for f in filas]
 
+_CLAVES_HECHOS_INTERNAS = {"nivel_corrupcion"}
+_CATEGORIAS_HECHOS_INTERNAS = {"estado_emocional", "sistema"}
+
+
 def construir_contexto_ia(limite_historial=10, sesion_id="default"):
     """
     Ahora el contexto se arma aislando el workspace y el historial de la pestaña actual.
     """
-    hechos_generales = [h for h in listar_hechos(categoria=None) if not h['clave'].startswith('workspace_')]
-    
     with _conexion() as conexion:
         cursor = conexion.cursor()
-        cursor.execute("SELECT workspace_activo, workspace_resumen FROM sesiones_chat WHERE id = ?", (sesion_id,))
+
+        cursor.execute("SELECT * FROM perfil_usuario WHERE id = 1")
+        fila_perfil = cursor.fetchone()
+        perfil = dict(fila_perfil) if fila_perfil else None
+
+        cursor.execute("SELECT * FROM self_state WHERE id = 1")
+        fila_estado = cursor.fetchone()
+        self_state = dict(fila_estado) if fila_estado else None
+
+        cursor.execute("SELECT * FROM herramientas WHERE activa = 1 ORDER BY nombre")
+        herramientas = [dict(f) for f in cursor.fetchall()]
+
+        cursor.execute("SELECT * FROM memoria_hechos")
+        todos_hechos = [dict(f) for f in cursor.fetchall()]
+
+        cursor.execute(
+            "SELECT workspace_activo, workspace_resumen, workspace_historial FROM sesiones_chat WHERE id = ?",
+            (sesion_id,),
+        )
         sesion = cursor.fetchone()
 
+        cursor.execute(
+            """
+            SELECT rol, mensaje FROM historial_conversacion
+            WHERE sesion_id = ?
+            ORDER BY id DESC LIMIT ?
+            """,
+            (sesion_id, limite_historial),
+        )
+        historial_reciente = [dict(msg) for msg in reversed(cursor.fetchall())]
+
+    nivel_corrupcion = 0
+    hechos_generales = []
+    for h in todos_hechos:
+        clave = h.get("clave", "")
+        categoria = (h.get("categoria") or "").lower()
+        if clave == "nivel_corrupcion":
+            try:
+                nivel_corrupcion = max(0, min(100, int(h.get("valor") or 0)))
+            except (ValueError, TypeError):
+                nivel_corrupcion = 0
+            continue
+        if (
+            clave.startswith("workspace_")
+            or clave in _CLAVES_HECHOS_INTERNAS
+            or categoria in _CATEGORIAS_HECHOS_INTERNAS
+        ):
+            continue
+        hechos_generales.append(h)
+
     return {
-        "perfil": obtener_perfil(),
-        "self_state": obtener_self_state(),
-        "herramientas": listar_herramientas(solo_activas=True),
+        "perfil": perfil,
+        "self_state": self_state,
+        "herramientas": herramientas,
         "workspace_activo": sesion["workspace_activo"] if sesion else None,
         "workspace_resumen": sesion["workspace_resumen"] if sesion else None,
+        "workspace_historial": sesion["workspace_historial"] if sesion else None,
+        "nivel_corrupcion": nivel_corrupcion,
         "hechos": hechos_generales,
-        "historial_reciente": obtener_historial_reciente(limite=limite_historial, sesion_id=sesion_id),
+        "historial_reciente": historial_reciente,
     }
 
 # ============================================================

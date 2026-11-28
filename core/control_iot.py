@@ -86,6 +86,20 @@ ALIAS_ESCENAS = {
     "encendido": ("encendido", "encend", "prend", "luz", "luces"),
 }
 
+
+def resolver_escena(texto: str) -> str:
+    """SSOT para normalizar y resolver cualquier texto de escena IoT."""
+    escena_normalizada = (texto or "").lower().strip()
+    if not escena_normalizada:
+        return ESCENA_VACIA_FALLBACK
+    if escena_normalizada in ESCENAS_INTERACTIVAS:
+        return escena_normalizada
+    for escena_objetivo, palabras_clave in ALIAS_ESCENAS.items():
+        if any(palabra in escena_normalizada for palabra in palabras_clave):
+            return escena_objetivo
+    return ESCENA_POR_DEFECTO
+
+
 def aplicar_escena(nombre_escena: str):
     def _cambiar_luces():
         try:

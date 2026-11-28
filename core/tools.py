@@ -783,25 +783,7 @@ def hacer_commit_git(ruta_repo, titulo_commit, descripcion_commit=""):
 
 def comando_cambiar_entorno(escena: str) -> str:
     """Nivel 1. Cambia la iluminación física de la habitación de Alejandro."""
-    escena_normalizada = escena.lower().strip()
-    escena_final = None
-
-    if not escena_normalizada:
-        escena_final = control_iot.ESCENA_VACIA_FALLBACK
-    elif escena_normalizada in control_iot.ESCENAS_INTERACTIVAS:
-        escena_final = escena_normalizada
-    elif escena_normalizada in control_iot.ALIAS_EXACTOS:
-        escena_final = control_iot.ALIAS_EXACTOS[escena_normalizada]
-    else:
-        for escena_objetivo, palabras_clave in control_iot.ALIAS_ESCENAS.items():
-            if any(palabra in escena_normalizada for palabra in palabras_clave):
-                escena_final = escena_objetivo
-                break
-
-    if not escena_final:
-        opciones = ", ".join(control_iot.ESCENAS_INTERACTIVAS)
-        return f"Error: La escena '{escena_normalizada}' no está configurada. Intenta con: {opciones}."
-
+    escena_final = control_iot.resolver_escena(escena)
     control_iot.aplicar_escena(escena_final)
     return f"Éxito: Escena física de iluminación cambiada a '{escena_final}'."
 

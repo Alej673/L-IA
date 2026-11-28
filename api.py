@@ -123,6 +123,11 @@ class RespuestaSeleccionArchivo(BaseModel):
 class SolicitudDesambiguacion(BaseModel):
     opciones: list[dict]
 
+
+class EventoTactilNucleo(BaseModel):
+    tipo: str
+    clics: int = 0
+
 # ===========================================================================
 # 3. Semáforos de Interfaz (Autorizaciones y Desambiguación)
 # ===========================================================================
@@ -476,12 +481,16 @@ def respuesta_sse(cola: queue.Queue) -> StreamingResponse:
     return StreamingResponse(generador_sse(cola), media_type="text/event-stream")
 
 
+_candado_colapso = threading.Lock()
+
+
 def _lanzar_colapso(cola: queue.Queue) -> None:
     """Ejecuta la Fase 1 (Voz + IoT + UI) volcando la UI a la cola. Puede lanzar excepciones."""
     eventos_anomalos.desatar_fase_1(
         callback_estado=None,
         callback_ui=crear_puente_ui(cola),
         usar_voz=True,
+        evento_cancelacion=evento_interrupcion,
     )
 
 
@@ -584,7 +593,14 @@ def _hilo_chat(entrada: str, mensaje: MensajeUsuario, cola: queue.Queue) -> None
         # Colapso orgánico lanzado desde cerebro.py
         if str(e) == TRIGGER_COLAPSO:
             logger.warning("¡Hostilidad al máximo! Disparando Fase 1 orgánica...")
-            _colapso_y_cerrar(cola)
+            if _candado_colapso.acquire(blocking=False):
+                try:
+                    _colapso_y_cerrar(cola)
+                finally:
+                    _candado_colapso.release()
+            else:
+                logger.info("[Colapso] Ya había una secuencia activa; omitiendo disparo simultáneo.")
+                cola.put({"tipo": "fin", "origen": "sistema"})
         else:
             logger.error("[Chat] Error: %s", e)
             cola.put({"tipo": "error", "texto": str(e)})
@@ -672,9 +688,13 @@ def recibir_chat(mensaje: MensajeUsuario):
     cola_streaming: queue.Queue = queue.Queue()
 
     if entrada == COMANDO_DEBUG_COLAPSO:
-        # Trigger manual (comando de debug)
+        # Trigger manual (comando de debug) protegido contra solapamientos
+        if not _candado_colapso.acquire(blocking=False):
+            cola_streaming.put({"tipo": "error", "texto": "Ya hay un evento de colapso en curso."})
+            return respuesta_sse(cola_streaming)
+        evento_interrupcion.clear()
         voz.limpiar_silencio()
-        _colapso_en_hilo(cola_streaming)
+        _colapso_en_hilo(cola_streaming, al_terminar=_candado_colapso.release)
     else:
         # Flujo normal y trigger orgánico. Se limpia una posible cancelación
         # previa para que /cancelar no deje cortados los chats siguientes.
@@ -758,7 +778,6 @@ def leer_radar():
 
 # --- Debug: disparar el evento anómalo desde un botón de pruebas -----------
 router_debug = APIRouter(tags=["debug"])
-_candado_colapso = threading.Lock()
 
 
 @router_debug.post("/debug/forzar_fase_1")
@@ -767,6 +786,8 @@ def disparar_evento_anomalo():
     if not _candado_colapso.acquire(blocking=False):
         return {"status": "ignorado", "mensaje": "Ya está en curso"}
 
+    evento_interrupcion.clear()
+    voz.limpiar_silencio()
     cola_streaming: queue.Queue = queue.Queue()
     # El candado se libera al terminar o fallar el colapso
     _colapso_en_hilo(cola_streaming, al_terminar=_candado_colapso.release)
@@ -801,6 +822,22 @@ CARICIA_COOLDOWN_SEG = 4.5
 _candado_caricia = threading.Lock()
 _ultima_caricia_ts = 0.0
 
+# Señales táctiles sin impacto en corrupción (Lote 7: poke_advertencia y escudo_paciencia)
+EVENTO_TACTIL_COOLDOWN_SEG = {
+    "poke_advertencia": 5.0,
+    "escudo_paciencia": 8.0,
+}
+EVENTO_TACTIL_MENSAJES = {
+    "poke_advertencia": "[NÚCLEO] Advertencia táctil registrada. Modera los clics sobre el núcleo.",
+    "escudo_paciencia": "[NÚCLEO] Escudo de paciencia activado. Reiniciando tolerancia táctil...",
+}
+_candado_tactil = threading.Lock()
+_ultimo_evento_tactil_ts: dict[str, float] = {}
+_contadores_tactiles: dict[str, int] = {
+    "poke_advertencia": 0,
+    "escudo_paciencia": 0,
+}
+
 
 @router_interacciones.post("/caricia")
 def registrar_caricia():
@@ -824,6 +861,40 @@ def registrar_caricia():
         "aplicado": True,
         "delta": CARICIA_DELTA_CORRUPCION,
         "nivel_corrupcion": nuevo_nivel,
+    }
+
+
+@router_interacciones.post("/nucleo")
+def registrar_interaccion_nucleo(evento: EventoTactilNucleo):
+    """Registra eventos táctiles (poke_advertencia / escudo_paciencia) fuera de corrupción y con cooldown."""
+    tipo = (evento.tipo or "").strip()
+    if tipo not in EVENTO_TACTIL_COOLDOWN_SEG:
+        raise HTTPException(status_code=400, detail=f"Tipo de interacción táctil no soportado: '{tipo}'")
+
+    ahora = time.monotonic()
+    cooldown = EVENTO_TACTIL_COOLDOWN_SEG[tipo]
+    with _candado_tactil:
+        ultimo = _ultimo_evento_tactil_ts.get(tipo, 0.0)
+        if ahora - ultimo < cooldown:
+            return {
+                "status": "ok",
+                "aplicado": False,
+                "tipo": tipo,
+                "conteo": _contadores_tactiles[tipo],
+                "mensaje": None,
+            }
+        _ultimo_evento_tactil_ts[tipo] = ahora
+        _contadores_tactiles[tipo] += 1
+        conteo = _contadores_tactiles[tipo]
+
+    logger.info("[API] Interacción táctil '%s' registrada (clics=%d, total=%d)", tipo, evento.clics, conteo)
+    return {
+        "status": "ok",
+        "aplicado": True,
+        "tipo": tipo,
+        "clics": evento.clics,
+        "conteo": conteo,
+        "mensaje": EVENTO_TACTIL_MENSAJES[tipo],
     }
 
 # --- Ingesta directa al Segundo Cerebro (Drag & Drop / Clip en React) ------
@@ -854,6 +925,11 @@ def ingestar_documento(
             )
 
         if isinstance(recibo_markdown, str) and "❌" in recibo_markdown:
+            try:
+                if os.path.exists(ruta_destino):
+                    os.remove(ruta_destino)
+            except OSError as cleanup_err:
+                logger.warning("[API] No se pudo limpiar archivo rechazado '%s': %s", ruta_destino, cleanup_err)
             return JSONResponse(
                 status_code=400,
                 content={"status": "error", "mensaje": recibo_markdown},
@@ -864,6 +940,11 @@ def ingestar_documento(
             "mensaje": recibo_markdown,
         }
     except Exception as e:
+        try:
+            if os.path.exists(ruta_destino):
+                os.remove(ruta_destino)
+        except OSError:
+            pass
         logger.exception("[API] Error al ingestar archivo '%s'", nombre_seguro)
         return JSONResponse(
             status_code=500,

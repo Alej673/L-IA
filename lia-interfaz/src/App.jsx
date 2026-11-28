@@ -12,7 +12,7 @@ import { invoke } from '@tauri-apps/api/core';
 const API = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:10500'
 
 // Extensiones que el backend sabe leer (ajústalas a tu /ingestar)
-const EXTENSIONES_VALIDAS = ['txt', 'md', 'py', 'js', 'php', 'html', 'css', 'json', 'docx', 'pdf', 'pptx', 'xlsx']
+const EXTENSIONES_VALIDAS = ['txt', 'md', 'py', 'js', 'php', 'html', 'css', 'json', 'docx', 'pdf']
 
 // Estados visuales permitidos que el backend (SSOT) puede sincronizar vía SSE
 const ESTADOS_VISUALES_BACKEND = new Set([
@@ -292,6 +292,7 @@ export default function App() {
   vozGlobalRef.current = vozGlobal
   const escuchaTokenRef = useRef(0)
   const escucharAbortRef = useRef(null)
+  const ultimoEventoTactilRef = useRef({})
 
   // Lector de voz
   const { idLeyendo, alternar: alternarLectura, detener: detenerLectura } = useLectorVoz()
@@ -492,12 +493,35 @@ export default function App() {
     }, 1100)
   }, [])
 
-  // Solo 'caricia' reduce corrupción; 'poke_advertencia' y 'escudo_paciencia' quedan libres para eventos futuros
+  // 'caricia' reduce corrupción; 'poke_advertencia' y 'escudo_paciencia' se registran aparte con cooldown
   const manejarInteraccionNucleo = useCallback((evento) => {
-    if (evento?.tipo !== 'caricia') return
-    fetch(`${API}/interaccion/caricia`, { method: 'POST' }).catch((e) => {
-      console.warn('No se pudo registrar caricia en el núcleo:', e)
+    const tipo = evento?.tipo
+    if (tipo === 'caricia') {
+      fetch(`${API}/interaccion/caricia`, { method: 'POST' }).catch((e) => {
+        console.warn('No se pudo registrar caricia en el núcleo:', e)
+      })
+      return
+    }
+
+    if (tipo !== 'poke_advertencia' && tipo !== 'escudo_paciencia') return
+
+    const cooldownMs = tipo === 'escudo_paciencia' ? 8000 : 5000
+    const ahora = performance.now()
+    if (ahora - (ultimoEventoTactilRef.current[tipo] || 0) < cooldownMs) return
+    ultimoEventoTactilRef.current[tipo] = ahora
+
+    fetch(`${API}/interaccion/nucleo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tipo, clics: evento.clics ?? 0 }),
     })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.aplicado && data?.mensaje) agregarSistema(data.mensaje)
+      })
+      .catch((e) => {
+        console.warn(`No se pudo registrar interacción '${tipo}':`, e)
+      })
   }, [])
 
   const responderSemaforoArchivos = async (rutaSeleccionada) => {
@@ -555,6 +579,7 @@ export default function App() {
     setEstadoLIA('procesando_pregunta')
     setMensajeEspera(null)
     let huboError = false
+    let colapsoEnTurno = false
 
     try {
       const respuesta = await fetch(`${API}/chat`, {
@@ -590,6 +615,7 @@ export default function App() {
               const jsonStr = parte.slice(6, -3); 
               const trigger = JSON.parse(jsonStr);
               
+              colapsoEnTurno = true;
               setModoColapso(true);
               setComandoColapso(trigger);
 
@@ -601,6 +627,7 @@ export default function App() {
               else if (trigger.comando === 'RESTAURAR_SISTEMA') {
                 invoke('restaurar_ventana').catch(console.error);
                 setModoColapso(false);
+                colapsoEnTurno = false;
               }
 
             } catch (e) {
@@ -616,6 +643,7 @@ export default function App() {
           if (data.tipo === 'estado') {
             // Si el backend avisa de un error crítico ANTES de hablar, preparamos el telón
             if (data.perfil === 'error_critico') {
+              colapsoEnTurno = true;
               setModoColapso(true);
             }
             if (!yaEscribiendo) {
@@ -646,6 +674,10 @@ export default function App() {
             // Quitamos el modo colapso para devolver la app a la normalidad
             setModoColapso(false);
             setComandoColapso(null);
+            if (colapsoEnTurno) {
+              invoke('restaurar_ventana').catch(console.error);
+              colapsoEnTurno = false;
+            }
             
             actualizarUltimoMensaje(m => ({ ...m, origen: data.origen, documento: data.documento || m.documento }))
             if (data.workspace !== undefined) setWorkspaceActivo(data.workspace)
@@ -654,6 +686,12 @@ export default function App() {
             setTimeout(cargarSesiones, 3000)
           } else if (data.tipo === 'error') {
             huboError = true
+            if (colapsoEnTurno) {
+              setModoColapso(false);
+              setComandoColapso({ comando: 'RESET' });
+              invoke('restaurar_ventana').catch(console.error);
+              colapsoEnTurno = false;
+            }
             actualizarUltimoMensaje(m => ({ ...m, texto: m.texto + `\n[ERROR]: ${data.texto}` }))
           }
         }
@@ -666,6 +704,12 @@ export default function App() {
         actualizarUltimoMensaje(m => ({ ...m, texto: m.texto + '\n\n[ERROR] Caída del enlace con el núcleo.' }))
       }
     } finally {
+      if (colapsoEnTurno) {
+        setModoColapso(false)
+        setComandoColapso({ comando: 'RESET' })
+        invoke('restaurar_ventana').catch(console.error)
+        colapsoEnTurno = false
+      }
       setCargando(false)
       cargandoRef.current = false
       setMensajeEspera(null)
@@ -1137,6 +1181,7 @@ export default function App() {
         <NucleoLIA
           estado={estadoLIA}
           mensajeEspera={mensajeEspera}
+          modoColapso={modoColapso}
           onInteraccion={manejarInteraccionNucleo}
           semaforoVisual={semaforo.activa ? 'seguridad' : semaforoArchivos.activa ? 'archivos' : null}
           feedbackDecision={feedbackDecision}
